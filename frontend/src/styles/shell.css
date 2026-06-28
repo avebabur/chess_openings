@@ -1,0 +1,83 @@
+/* App shell — Material light theme. Loaded after light.css. */
+html {
+  /* Reserve the scrollbar gutter so a vertical scrollbar toggling on/off (e.g. when
+   * the columns stack below 1181px) never changes the layout width and shifts the
+   * board sideways. No-op with macOS overlay scrollbars; matters elsewhere. */
+  scrollbar-gutter: stable;
+}
+body {
+  margin: 0;
+  color-scheme: light;
+  background: var(--bg, oklch(20.5% 0.014 256));
+}
+
+.app {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.app.light {
+  background: var(--bg, oklch(20.5% 0.014 256));
+}
+
+.openings-app {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.openings-main {
+  flex: 1;
+}
+
+/* Nav */
+.nav2 {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  flex: 0 0 56px;
+  padding: 0 22px;
+  height: 56px;
+  background: var(--surface, oklch(24% 0.016 256));
+  border-bottom: 1px solid var(--line);
+  position: sticky;
+  top: 0;
+  z-index: 40;
+}
+.nav2-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 15px;
+  font-weight: 740;
+  letter-spacing: 0;
+  color: var(--text);
+  text-decoration: none;
+}
+.nav2-logo {
+  color: var(--accent);
+  font-size: 20px;
+}
+.nav2-links { display: flex; gap: 3px; }
+.nav2-link {
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 8px 15px;
+  border-radius: var(--radius-sm);
+  transition: color 0.15s var(--ease), background 0.15s var(--ease);
+}
+.nav2-link:hover { color: var(--text); background: var(--surface-2); }
+.nav2-link.on { color: var(--accent-2); background: var(--accent-soft); }
+
+@media (max-width: 720px) {
+  .nav2 { flex-direction: column; height: auto; padding: 10px 14px; gap: 10px; }
+  .nav2-links { flex-wrap: wrap; justify-content: center; }
+}
+
+.route-loading { padding: 80px 20px; text-align: center; color: var(--muted); font-size: 15px; }
+.cr2 .link, .link { color: var(--accent-2); text-decoration: none; font-weight: 600; }
+.cr2 .link:hover { text-decoration: underline; }

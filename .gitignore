@@ -1,0 +1,30 @@
+# --- Python ---
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.env
+
+# --- Database (generated locally; do not commit) ---
+chess_review.db
+chess_review.db-shm
+chess_review.db-wal
+*.db.bak-*
+backups/
+
+# --- Frontend (Node / Vite) ---
+frontend/node_modules/
+frontend/dist/
+frontend/test-results/
+frontend/playwright-report/
+frontend/blob-report/
+frontend/.vite/
+
+# --- Runtime / tooling state ---
+.runtime/
+.DS_Store
+
+# --- Editor / local config ---
+.claude/settings.local.json
+.vscode/
+.idea/

@@ -1,0 +1,102 @@
+/* Chess Review — design system (v2).
+ * Scoped under `.cr2` so it can live alongside the legacy App.css during the
+ * incremental rewrite. New screens render inside a `.cr2` wrapper. */
+.cr2 {
+  color-scheme: dark;
+
+  --bg: oklch(20.5% 0.014 256);
+  --surface: oklch(24% 0.016 256);
+  --surface-2: oklch(28.5% 0.018 256);
+  --surface-3: oklch(33.5% 0.02 256);
+  --line: oklch(34% 0.018 256);
+  --line-strong: oklch(47% 0.026 256);
+
+  --text: oklch(95% 0.01 256);
+  --muted: oklch(73% 0.022 256);
+  --faint: color-mix(in oklch, var(--muted), var(--bg) 44%);
+
+  --accent: oklch(70% 0.142 248);
+  --accent-2: oklch(64% 0.17 252);
+  --on-accent: oklch(99% 0.004 256);
+  --accent-soft: color-mix(in oklch, var(--accent), transparent 85%);
+  --accent-line: color-mix(in oklch, var(--accent), transparent 50%);
+
+  --win: oklch(72% 0.15 150);
+  --draw: oklch(62% 0.02 256);
+  --loss: oklch(67% 0.17 25);
+  --info: oklch(68% 0.13 252);
+
+  --radius: 8px;
+  --radius-sm: 7px;
+  --radius-xs: 5px;
+  --shadow: 0 16px 40px oklch(14% 0.02 256 / 0.55);
+  --shadow-sm: 0 1px 4px oklch(14% 0.02 256 / 0.5);
+  --ring: 0 0 0 2px var(--accent-line);
+
+  --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+}
+
+.cr2 *,
+.cr2 *::before,
+.cr2 *::after { box-sizing: border-box; }
+
+.cr2 ::selection { background: var(--accent-soft); }
+
+/* Buttons / chips shared primitives */
+.cr2 .seg {
+  display: inline-flex;
+  padding: 3px;
+  gap: 2px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+.cr2 .seg button {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-weight: 600;
+  font-size: 13px;
+  padding: 7px 16px;
+  border-radius: var(--radius-xs);
+  cursor: pointer;
+  transition: color 0.15s var(--ease), background 0.15s var(--ease);
+}
+.cr2 .seg button:hover { color: var(--text); }
+.cr2 .seg button.on {
+  color: var(--on-accent);
+  background: var(--accent-2);
+  box-shadow: var(--shadow-sm);
+}
+
+.cr2 .chip {
+  appearance: none;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--muted);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 6px 13px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: all 0.15s var(--ease);
+}
+.cr2 .chip:hover { color: var(--text); border-color: var(--line-strong); }
+.cr2 .chip.on {
+  color: var(--accent-2);
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+
+.cr2 .card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
