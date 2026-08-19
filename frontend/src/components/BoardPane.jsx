@@ -70,6 +70,7 @@ export default function BoardPane({
           onClick={() => { if (inSession) onExitSession(); else onGoStart() }}
           disabled={!displayPath.length && !inSession}
           title="Return to start (↑ / Home)"
+          aria-label={inSession ? 'Exit session' : 'Return to start'}
         >
           ⟲
         </button>

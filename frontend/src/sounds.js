@@ -61,8 +61,20 @@ function load(name) {
   return task
 }
 
+// Off the critical path, as lichess does (its constructor wraps the whole
+// AudioContext setup in requestIdleCallback). Building the context is not free
+// — it can block while the audio device spins up — and main.jsx calls this at
+// module load, before React has mounted or bound a single listener.
+const whenIdle = (fn) => {
+  if (typeof window === 'undefined') return
+  if (typeof window.requestIdleCallback === 'function') window.requestIdleCallback(fn, { timeout: 2000 })
+  else setTimeout(fn, 0)
+}
+
 export function preloadSounds() {
-  for (const name of BOARD_SOUNDS) load(name)
+  whenIdle(() => {
+    for (const name of BOARD_SOUNDS) load(name)
+  })
 }
 
 // Browsers start the context suspended until a real gesture. Resume on the
@@ -79,7 +91,7 @@ function prime() {
   const context = audioContext()
   if (!context) return unprime()
   if (context.state === 'suspended') context.resume().catch(() => {})
-  preloadSounds()
+  for (const name of BOARD_SOUNDS) load(name)
   unprime()
 }
 

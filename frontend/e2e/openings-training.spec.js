@@ -328,7 +328,10 @@ test('failed training writes block progress and retry without duplicating the at
   await page.getByRole('button', { name: 'Retry' }).click()
   expect((await retried).ok()).toBeTruthy()
   await expect(page.getByRole('alert')).toHaveCount(0)
-  await expect(page.getByRole('status')).toHaveCount(0)
+  // Scoped to the write indicator: the session rail is also a role="status"
+  // (it carries the run's progress), so a bare getByRole('status') matches it
+  // for the whole drill.
+  await expect(page.locator('.review-write-error')).toHaveCount(0)
   await playMove(page, 'e2', 'e4')
   await expect(page.getByText('Line complete')).toBeVisible()
 })
@@ -350,6 +353,7 @@ test('mobile viewport smoke test', async ({ page }) => {
 
 test('depth shortcuts persist across positions and stay suspended in the accounts dialog', async ({ page }) => {
   await page.goto('/')
+  await expect(page.locator('.op-engine-controls .op-line-depth')).toBeVisible()
 
   await page.keyboard.press('=')
   await expect(page.locator('.op-engine-controls .op-line-depth')).toContainText('10')
@@ -396,12 +400,17 @@ test('a line saved under one move order is recognized when reached by another', 
   })
 
   await page.goto('/')
+  await expect(page.locator('.cr-board-inner')).toBeVisible()
   // The same position by the other order — 1.d4 e6 2.c4 d5 — which was never
   // saved. Before positions became the identity this offered a duplicate save.
   await playMove(page, 'd2', 'd4')
+  await expect(page.locator('.op-crumbs')).toContainText('1.d4')
   await playMove(page, 'e7', 'e6')
+  await expect(page.locator('.op-crumbs')).toContainText('e6')
   await playMove(page, 'c2', 'c4')
+  await expect(page.locator('.op-crumbs')).toContainText('2.c4')
   await playMove(page, 'd7', 'd5')
+  await expect(page.locator('.op-crumbs')).toContainText('d5')
 
   await page.getByRole('tab', { name: 'Repertoire' }).click()
 
@@ -416,17 +425,26 @@ test('transposed game stats are pooled, not split by move order', async ({ page 
   await page.goto('/')
   await page.getByRole('tab', { name: 'Explore' }).click()
 
+  // Each move has to land before the next is clicked: clickSquare measures the
+  // board fresh every time, and clicking through faster than the position
+  // settles drops moves.
+  const play = async (from, to, crumb) => {
+    await playMove(page, from, to)
+    await expect(page.locator('.op-crumbs')).toContainText(crumb)
+  }
+
   // With no imported games in the e2e database every count is zero, so assert
   // the wiring instead: the same position by two orders reports one figure.
-  await playMove(page, 'd2', 'd4')
-  await playMove(page, 'g8', 'f6')
-  await playMove(page, 'c2', 'c4')
+  await play('d2', 'd4', '1.d4')
+  await play('g8', 'f6', 'Nf6')
+  await play('c2', 'c4', '2.c4')
   const viaD4 = await page.locator('.op-statline .op-stat-num').first().textContent()
 
-  await page.getByRole('button', { name: 'Return to start (↑ / Home)' }).click()
-  await playMove(page, 'c2', 'c4')
-  await playMove(page, 'g8', 'f6')
-  await playMove(page, 'd2', 'd4')
+  await page.getByRole('button', { name: 'Return to start' }).click()
+  await expect(page.locator('.op-crumbs-scroll .crumb')).toHaveCount(0)
+  await play('c2', 'c4', '1.c4')
+  await play('g8', 'f6', 'Nf6')
+  await play('d2', 'd4', '2.d4')
   const viaC4 = await page.locator('.op-statline .op-stat-num').first().textContent()
 
   expect(viaC4).toBe(viaD4)
