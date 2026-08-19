@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api } from '../api'
+import { positionKeyFromFen } from '../domain/chessLine'
 
 const DEBOUNCE_MS = 150
 
@@ -14,15 +15,21 @@ const DEBOUNCE_MS = 150
  *
  * `filterKey` — not the filters object — is the effect dependency: it's stable across
  * renders and order-independent, so re-picking the same chips can't spin the fetch.
+ *
+ * Keyed on the *position*, not the raw FEN: the halfmove/fullmove counters differ
+ * between move orders that reach the same board, and the backend collapses those to
+ * one cache row anyway (lichess_explorer._cache_key). Comparing position keys means
+ * navigating into a transposition reuses the result instead of refetching it.
  */
 export function useOpeningExplorer(fen, filters = null, filterKey = '') {
+  const positionKey = positionKeyFromFen(fen)
   const [explorer, setExplorer] = useState(null)
-  const [trackedFen, setTrackedFen] = useState(fen)
+  const [trackedKey, setTrackedKey] = useState(positionKey)
   const [trackedFilterKey, setTrackedFilterKey] = useState(filterKey)
   const [reloadKey, setReloadKey] = useState(0)
 
-  if (fen !== trackedFen || filterKey !== trackedFilterKey) {
-    setTrackedFen(fen)
+  if (positionKey !== trackedKey || filterKey !== trackedFilterKey) {
+    setTrackedKey(positionKey)
     setTrackedFilterKey(filterKey)
     setExplorer(null)
   }
@@ -54,8 +61,10 @@ export function useOpeningExplorer(fen, filters = null, filterKey = '') {
       clearTimeout(timer)
       controller.abort()
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- filterKey stands in for filters
-  }, [fen, filterKey, reloadKey])
+    // filterKey stands in for filters, and positionKey for fen: two move orders
+    // reaching one position must not refetch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [positionKey, filterKey, reloadKey])
 
   const reload = useCallback(() => {
     setExplorer(previous => (

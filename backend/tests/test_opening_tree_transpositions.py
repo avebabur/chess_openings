@@ -107,6 +107,39 @@ class RepetitionTests(unittest.TestCase):
         # 1.Nf3 and 3.Nf3 are the same edge out of the same position.
         self.assertEqual(nf3["games"], 1)
 
+    def test_a_shuffle_does_not_invent_a_move_out_of_the_start(self):
+        """A back-edge is not a real branch.
+
+        1.Nf3 Nf6 2.Ng1 Ng8 returns to the starting position, so 3.e4 leaves the
+        start for the *second* time in one game. Counting that edge again made
+        the root's move shares add up past 100%.
+        """
+        games = [_game(i, "1. e4 e5 *") for i in range(10)]
+        games.append(_game(99, "1. Nf3 Nf6 2. Ng1 Ng8 3. e4 e5 *"))
+        root = opening_tree.node(games, "white", [])
+
+        by_san = {m["san"]: m for m in root["moves"]}
+        self.assertEqual(root["total_games"], 11)
+        # The shuffle game reached the start twice but leaves it once, by Nf3.
+        self.assertEqual(by_san["e4"]["games"], 10)  # not 11
+        self.assertEqual(by_san["Nf3"]["games"], 1)
+        self.assertLessEqual(sum(m["games"] for m in root["moves"]), root["total_games"])
+        self.assertLessEqual(sum(m["share"] for m in root["moves"]), 100.0)
+
+    def test_move_counts_never_outrun_the_position_they_leave(self):
+        """The invariant the share percentages depend on, at every position."""
+        games = [_game(i, "1. e4 e5 *") for i in range(10)]
+        games.append(_game(99, "1. Nf3 Nf6 2. Ng1 Ng8 3. e4 e5 *"))
+        games.append(_game(98, "1. Nf3 Nf6 2. Ng1 Ng8 3. Nf3 Nf6 4. d4 *"))
+
+        for path in ([], ["Nf3"], ["Nf3", "Nf6"], ["Nf3", "Nf6", "Ng1"], ["e4"]):
+            with self.subTest(path=path):
+                node = opening_tree.node(games, "white", path)
+                self.assertLessEqual(
+                    sum(m["games"] for m in node["moves"]), node["total_games"],
+                )
+                self.assertLessEqual(sum(m["share"] for m in node["moves"]), 100.0)
+
     def test_paths_add_up_to_the_game_count(self):
         node = opening_tree.node([self.SHUFFLE, VIA_D4, VIA_C4], "white", [])
 

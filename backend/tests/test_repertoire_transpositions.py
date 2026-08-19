@@ -163,6 +163,83 @@ class DueQueueTests(RepertoireTranspositionTestCase):
         accepted = {reply["san"] for reply in tree["due"][0]["accepted"]}
         self.assertEqual(accepted, {"d4", "e4"})
 
+    def test_answering_with_one_reply_drains_the_whole_position(self):
+        """Two saved replies to one position are one question, not two.
+
+        The queue serves a single item per position and accepts either answer,
+        so crediting only the reply that was played left the *other* card due
+        forever and the position resurfaced every session.
+        """
+        self.db.save_repertoire_branch("white", "queens pawn", "d4 d5")
+        self.db.save_repertoire_branch("white", "kings pawn", "e4 e5")
+        _, nodes = self._nodes_by_path()
+        self._drill(nodes["d4"]["id"], "miss-drain")
+        self.assertEqual(self.db.get_repertoire_tree("white")["stats"]["due"], 1)
+
+        # Answer the same queue item with the other accepted reply.
+        self._drill(nodes["e4"]["id"], "solve-drain", solved=True)
+
+        tree = self.db.get_repertoire_tree("white")
+        self.assertEqual(tree["due"], [])
+        self.assertEqual(tree["stats"]["due"], 0)
+
+    def test_the_schedule_moves_together_but_the_counters_do_not(self):
+        """One schedule per position; per-move counters stay per move."""
+        self.db.save_repertoire_branch("white", "queens pawn", "d4 d5")
+        self.db.save_repertoire_branch("white", "kings pawn", "e4 e5")
+        _, nodes = self._nodes_by_path()
+        self._drill(nodes["d4"]["id"], "miss-split")
+        self._drill(nodes["e4"]["id"], "solve-split", solved=True)
+
+        conn = self.db.get_db()
+        try:
+            rows = {
+                row["san"]: dict(row)
+                for row in conn.execute(
+                    "SELECT san, drill_count, drill_solved, drill_missed, "
+                    "       interval_days, next_review_at "
+                    "FROM repertoire_positions WHERE color = 'white' AND drill_count > 0",
+                )
+            }
+        finally:
+            conn.close()
+
+        self.assertEqual(rows["d4"]["drill_count"], 1)
+        self.assertEqual(rows["d4"]["drill_missed"], 1)
+        self.assertEqual(rows["e4"]["drill_count"], 1)
+        self.assertEqual(rows["e4"]["drill_solved"], 1)
+        # ...but both were pushed out to the same next review.
+        self.assertEqual(rows["d4"]["next_review_at"], rows["e4"]["next_review_at"])
+        self.assertEqual(rows["d4"]["interval_days"], rows["e4"]["interval_days"])
+
+    def test_a_missed_sibling_keeps_the_position_on_a_short_leash(self):
+        """The position's interval follows its weakest answer, not its best."""
+        self.db.save_repertoire_branch("white", "queens pawn", "d4 d5")
+        self.db.save_repertoire_branch("white", "kings pawn", "e4 e5")
+        _, nodes = self._nodes_by_path()
+        # Build e4 up to a long interval, then miss d4 at the same position.
+        self._drill(nodes["e4"]["id"], "e4-1", solved=True)
+        self._drill(nodes["e4"]["id"], "e4-2", solved=True)
+        self._drill(nodes["d4"]["id"], "d4-miss")
+
+        # Solving once now must not jump straight back to the long interval.
+        self._drill(nodes["e4"]["id"], "e4-3", solved=True)
+
+        conn = self.db.get_db()
+        try:
+            intervals = {
+                row["san"]: row["interval_days"]
+                for row in conn.execute(
+                    "SELECT san, interval_days FROM repertoire_positions "
+                    "WHERE color = 'white' AND drill_count > 0",
+                )
+            }
+        finally:
+            conn.close()
+
+        self.assertEqual(intervals["d4"], intervals["e4"])
+        self.assertEqual(intervals["e4"], 2)
+
     def test_a_deleted_line_does_not_leave_a_card_in_the_queue(self):
         branch = self.db.save_repertoire_branch("white", "line", "d4 Nf6 c4")
         _, nodes = self._nodes_by_path()
@@ -253,6 +330,44 @@ class TranspositionReportTests(RepertoireTranspositionTestCase):
         self.assertEqual({m["san"] for m in conflicts[0]["moves"]}, {"Nc3", "Nf3"})
         self.assertEqual(tree["transpositions"][0]["conflict"], True)  # sorted first
 
+    def test_a_line_you_labelled_an_alternative_is_not_a_contradiction(self):
+        """You already told us it is deliberate; do not call it a conflict.
+
+        The label lives on the branch, not the node — repertoire_nodes.label
+        defaults to 'sideline' and only the terminal move of a branch carries
+        the real one — so the check has to read through to the branches that
+        pass through each competing node.
+        """
+        self.db.save_repertoire_branch("white", "d4 first", "d4 Nf6 c4 e6 Nc3")
+        self.db.save_repertoire_branch(
+            "white", "c4 first", "c4 Nf6 d4 e6 Nf3", label="alternative",
+        )
+
+        tree = self.db.get_repertoire_tree("white")
+
+        # Still worth showing as a transposition, just not as a contradiction.
+        self.assertGreater(tree["stats"]["transpositions"], 0)
+        self.assertEqual(tree["stats"]["conflicts"], 0)
+
+    def test_a_deliberate_label_mid_line_still_counts(self):
+        """The competing move is not the branch's terminal move."""
+        self.db.save_repertoire_branch("white", "d4 first", "d4 Nf6 c4 e6 Nc3 Bb4")
+        self.db.save_repertoire_branch(
+            "white", "c4 first", "c4 Nf6 d4 e6 Nf3 b6", label="trap",
+        )
+
+        tree = self.db.get_repertoire_tree("white")
+
+        self.assertEqual(tree["stats"]["conflicts"], 0)
+
+    def test_two_main_lines_disagreeing_is_still_a_conflict(self):
+        self.db.save_repertoire_branch("white", "d4 first", "d4 Nf6 c4 e6 Nc3 Bb4")
+        self.db.save_repertoire_branch("white", "c4 first", "c4 Nf6 d4 e6 Nf3 b6")
+
+        tree = self.db.get_repertoire_tree("white")
+
+        self.assertEqual(tree["stats"]["conflicts"], 1)
+
     def test_several_opponent_replies_are_coverage_not_a_conflict(self):
         # In a White repertoire, Black having many answers to 1.d4 is the point.
         self.db.save_repertoire_branch("white", "vs Nf6", "d4 Nf6 c4")
@@ -282,6 +397,16 @@ class SaveWarningTests(RepertoireTranspositionTestCase):
         self.assertEqual(conflicts[0]["san"], "Nf3")
         self.assertEqual(conflicts[0]["other_san"], "Nc3")
         self.assertEqual(conflicts[0]["other_path_san"], "d4 Nf6 c4 e6 Nc3")
+
+    def test_saving_a_labelled_alternative_is_not_reported_as_a_conflict(self):
+        self.db.save_repertoire_branch("white", "d4 first", "d4 Nf6 c4 e6 Nc3")
+        result = self.db.save_repertoire_branch(
+            "white", "c4 first", "c4 Nf6 d4 e6 Nf3", label="alternative",
+        )
+
+        kinds = {w["kind"] for w in result["warnings"]}
+        self.assertNotIn("conflict", kinds)
+        self.assertIn("transposition", kinds)
 
     def test_a_first_line_warns_about_nothing(self):
         result = self.db.save_repertoire_branch("white", "only line", "d4 Nf6 c4")

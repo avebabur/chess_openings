@@ -154,7 +154,7 @@ def _build_graph(games, color, plies_for=None):
         # could not; a graph can, so each game counts a node — and an edge — at
         # most once, and is credited to the first move order that got there.
         seen_positions = {START_KEY}
-        seen_edges = set()
+        seen_departures = set()
         path = []
 
         for san, epd_before, epd_after in plies_for(game):
@@ -166,8 +166,14 @@ def _build_graph(games, color, plies_for=None):
             edge = parent["moves"].get(san)
             if edge is None:
                 edge = parent["moves"][san] = {"agg": _new_agg(), "epd": epd_after}
-            if (epd_before, san) not in seen_edges:
-                seen_edges.add((epd_before, san))
+            if epd_before not in seen_departures:
+                # One departure per position per game. A game that wanders back
+                # (repetitions, knight shuffles) leaves the same position twice,
+                # and crediting both made the move shares at that position sum
+                # past 100%. The first choice is the one that answers "when I
+                # reached here, what did I play?"; the later one only happened
+                # because the game returned.
+                seen_departures.add(epd_before)
                 _tally(edge["agg"], game, color)
 
             node = graph.get(epd_after)

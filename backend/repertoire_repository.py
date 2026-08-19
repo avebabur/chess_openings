@@ -187,13 +187,18 @@ def _transposition_warnings(conn, color, moves_san):
         f"""SELECT mine.path_san AS my_path, mine.san AS my_san,
                    mine.epd_before AS epd,
                    other.path_san AS other_path, other.san AS other_san,
-                   other.label AS other_label
+                   other.label AS other_label,
+                   {_main_line_expr("bo")} AS other_main_line,
+                   {_main_line_expr("bm")} AS my_main_line
             FROM repertoire_nodes mine
             JOIN repertoire_nodes other
               ON other.color = mine.color
              AND other.epd_before = mine.epd_before
              AND other.id != mine.id
+            {_main_line_join("other", "bo")}
+            {_main_line_join("mine", "bm")}
             WHERE mine.color = ? AND mine.path_san IN ({placeholders})
+            GROUP BY mine.id, other.id
             ORDER BY mine.ply, other.path_san""",
         (color, *prefixes),
     ).fetchall()
@@ -207,9 +212,17 @@ def _transposition_warnings(conn, color, moves_san):
         if _prior_path(row["other_path"]) == _prior_path(row["my_path"]):
             continue  # sibling replies from the same line, not a transposition
         same_move = row["other_san"] == row["my_san"]
+        # A line the user filed as an alternative/trap/sideline is a second
+        # answer they chose on purpose, so it is coverage rather than a
+        # contradiction even when it disagrees with the main line.
+        contradicts = (
+            not same_move
+            and bool(row["my_main_line"]) and bool(row["other_main_line"])
+            and _is_user_turn(color, row["epd"])
+        )
         warnings.append({
             "kind": "transposition" if same_move else (
-                "conflict" if _is_user_turn(color, row["epd"]) else "coverage"
+                "conflict" if contradicts else "coverage"
             ),
             "path_san": row["my_path"],
             "san": row["my_san"],
@@ -744,6 +757,20 @@ def _next_review_offset(solved, interval_days):
     return 1, "+0 minutes"
 
 
+def _position_interval(conn, color, epd, played_id):
+    """The interval the *position* is on: the shortest among its live cards.
+
+    Several saved replies to one position share one review schedule, so the one
+    you know least well sets the pace for all of them.
+    """
+    row = conn.execute(
+        """SELECT MIN(interval_days) AS interval_days FROM repertoire_positions
+           WHERE color = ? AND epd = ? AND (drill_count > 0 OR id = ?)""",
+        (color, epd, played_id),
+    ).fetchone()
+    return (row and row["interval_days"]) or 1
+
+
 def _drill_source(value):
     source = (value or "practice").strip().lower()
     return source if source in ("practice", "review") else "practice"
@@ -819,18 +846,33 @@ def record_repertoire_node_drill(node_id, solved, attempt=None, event_key=None):
             "WHERE color = ? AND epd = ? AND san = ?",
             card,
         ).fetchone()
-        interval, offset = _next_review_offset(bool(solved), position["interval_days"])
+        # Counters are per move: which reply you gave is real information.
         cur = conn.execute(
             """UPDATE repertoire_positions
                SET drill_count = drill_count + 1,
                    drill_solved = drill_solved + ?,
                    drill_missed = drill_missed + ?,
-                   interval_days = ?,
+                   updated_at = datetime('now')
+               WHERE id = ?""",
+            (1 if solved else 0, 0 if solved else 1, position["id"]),
+        )
+        # The *schedule*, though, belongs to the position, not the move. The due
+        # queue asks one question per position and accepts any saved reply, so
+        # advancing only the reply that was played left every other card due
+        # forever and the position never drained. Pace it off the weakest
+        # answer, so a move you missed keeps the whole position on a short
+        # leash even when you answer with one you know.
+        interval, offset = _next_review_offset(
+            bool(solved), _position_interval(conn, card[0], card[1], position["id"]),
+        )
+        conn.execute(
+            """UPDATE repertoire_positions
+               SET interval_days = ?,
                    next_review_at = datetime('now', ?),
                    last_drilled_at = datetime('now'),
                    updated_at = datetime('now')
-               WHERE id = ?""",
-            (1 if solved else 0, 0 if solved else 1, interval, offset, position["id"]),
+               WHERE color = ? AND epd = ? AND (drill_count > 0 OR id = ?)""",
+            (interval, offset, card[0], card[1], position["id"]),
         )
         _insert_repertoire_drill_attempt(
             conn,
@@ -997,6 +1039,23 @@ def _is_user_turn(color, epd):
     return ("white" if fields[1] == "w" else "black") == color
 
 
+# A node's own `label` is not the answer: repertoire_nodes.label defaults to
+# 'sideline' and only a branch's terminal move ever gets the real one. What the
+# user actually declared lives on the branches running through the node, so a
+# move counts as a main-line prescription when at least one `main` branch passes
+# through it. Anything the user explicitly filed as alternative/trap/sideline is
+# a deliberate second answer, not a contradiction.
+def _main_line_join(node, branch):
+    return (f"LEFT JOIN repertoire_branches {branch}"
+            f"       ON {branch}.color = {node}.color"
+            f"      AND ({branch}.moves_san = {node}.path_san"
+            f"           OR {branch}.moves_san LIKE {node}.path_san || ' %')")
+
+
+def _main_line_expr(branch):
+    return f"MAX(CASE WHEN COALESCE({branch}.label, 'main') = 'main' THEN 1 ELSE 0 END)"
+
+
 def _prior_path(path_san):
     """The move order that led up to this node's own move."""
     return " ".join(path_san.split()[:-1])
@@ -1011,9 +1070,14 @@ def _transposition_report(conn, color):
     decision: your own turn, with the orders prescribing different moves.
     """
     rows = conn.execute(
-        """SELECT epd_before, san, path_san, label FROM repertoire_nodes
-           WHERE color = ? AND epd_before IS NOT NULL
-           ORDER BY ply, path_san""",
+        f"""SELECT n.epd_before AS epd_before, n.san AS san,
+                   n.path_san AS path_san, n.label AS label,
+                   {_main_line_expr("b")} AS main_line
+            FROM repertoire_nodes n
+            {_main_line_join("n", "b")}
+            WHERE n.color = ? AND n.epd_before IS NOT NULL
+            GROUP BY n.id
+            ORDER BY n.ply, n.path_san""",
         (color,),
     ).fetchall()
 
@@ -1024,6 +1088,7 @@ def _transposition_report(conn, color):
             "path_san": row["path_san"],
             "prior_path_san": _prior_path(row["path_san"]),
             "label": row["label"],
+            "main_line": bool(row["main_line"]),
         })
 
     report = []
@@ -1035,7 +1100,7 @@ def _transposition_report(conn, color):
             "orders": sorted({entry["prior_path_san"] for entry in entries}),
             "conflict": (
                 _is_user_turn(color, epd)
-                and len({entry["san"] for entry in entries}) > 1
+                and len({e["san"] for e in entries if e["main_line"]}) > 1
             ),
             "moves": entries,
         })

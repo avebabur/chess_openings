@@ -27,6 +27,7 @@ import {
   needsPromotion,
   pieceAt,
   sansFromPgn,
+  sideToMove,
   splitSanLine,
   indexNodesByEpdBefore,
   positionKeyFromFen,
@@ -249,7 +250,7 @@ export default function OpeningsExplorer() {
     [canMoveBoard, display.fen],
   )
 
-  const movableColor = display.fen.includes(' w ') ? 'white' : 'black'
+  const movableColor = sideToMove(display.fen)
   const summary = tree?.summary
   const moves = tree?.moves || []
   const branches = useMemo(() => repertoire?.branches || [], [repertoire?.branches])
@@ -315,7 +316,7 @@ export default function OpeningsExplorer() {
       setSelectedAccountId(null)
     }
   }, [accounts, profile, selectedAccountId])
-  const sideToMove = display.fen.includes(' w ') ? 'White' : 'Black'
+  const sideToMoveLabel = sideToMove(display.fen) === 'white' ? 'White' : 'Black'
   const trainerStrip = isTraining ? {
     label: trainer.scope?.label || 'Training',
     done: trainer.linesDone,
@@ -940,7 +941,7 @@ export default function OpeningsExplorer() {
               localEval={localEval}
               cloud={cloud}
               explorer={explorer}
-              sideToMove={sideToMove}
+              sideToMove={sideToMoveLabel}
               target={target}
               actionError={evalActionError}
               explorerFilters={explorerFilters}
@@ -1023,7 +1024,7 @@ export default function OpeningsExplorer() {
             )}
             {activeTab === 'Explore' && (
               <ExploreTab
-                sideToMove={sideToMove}
+                sideToMove={sideToMoveLabel}
                 path={path}
                 currentLineTitle={currentLineTitle}
                 saveTarget={saveTarget}
