@@ -1,4 +1,8 @@
-/* Board container — sized explicitly via boardSize prop (matches Game Review). */
+/* Board chrome. Square colours, piece sprites and coordinate placement are
+ * ported from lichess: chessground.brown.css (square states) and lila's
+ * ui/lib/css/theme/board/_coords-in.scss (coordinates inside the board).
+ * Only the palette is retuned for this app's blue board and dark theme. */
+
 .board-area {
   position: relative;
   flex-shrink: 0;
@@ -7,15 +11,17 @@
   overflow: visible;
 }
 
+/* No frame of its own: the rounded board *is* the edge, as on lichess. The
+ * shadow lifts it off the page; overflow stays visible so a dragged piece can
+ * leave the board without being clipped. */
 .board-frame {
   flex-shrink: 0;
   display: inline-block;
   box-sizing: border-box;
-  border: 4px solid var(--board-frame, #2a261e);
-  border-radius: 6px;
+  border-radius: var(--radius, 8px);
   box-shadow:
-    inset 0 0 0 1px rgba(0, 0, 0, 0.2),
-    0 4px 14px rgba(0, 0, 0, 0.35);
+    0 0 0 1px oklch(14% 0.02 256 / 0.55),
+    0 6px 22px oklch(14% 0.02 256 / 0.45);
   overflow: visible;
 }
 
@@ -36,51 +42,13 @@
   height: 100%;
 }
 
-.board-coordinates-ranks {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  z-index: 15;
-}
+/* ── Board surface + Merida pieces ───────────────────────────────────────── */
 
-.board-files-strip {
-  display: grid;
-  grid-template-columns: repeat(8, 1fr);
-  align-items: center;
-  justify-items: center;
-  min-height: 22px;
-  padding: 2px 0 4px;
-  background: linear-gradient(180deg, #5c3d20 0%, #6b4423 100%);
-  border-top: 1px solid rgba(0, 0, 0, 0.2);
-  box-sizing: border-box;
-}
-
-.board-coord {
-  color: #f4efe6;
-  font-weight: 700;
-  font-family: system-ui, sans-serif;
-  text-shadow:
-    0 0 3px rgba(0, 0, 0, 1),
-    0 1px 4px rgba(0, 0, 0, 0.95);
-}
-
-.board-coordinates-ranks .board-coord-rank {
-  position: absolute;
-}
-
-.board-files-strip .board-coord-file {
-  position: static;
-  display: block;
-  width: 100%;
-  text-align: center;
-  letter-spacing: 0.02em;
-}
-
-/* Board image + Merida pieces */
 .cr-board-inner cg-board,
 .board-wrapper cg-board {
   background-image: url('/board/blue2.jpg');
   background-size: cover;
+  border-radius: var(--radius, 8px);
 }
 
 .board-wrapper piece.pawn.white   { background-image: url('/piece/merida/wP.svg'); }
@@ -100,63 +68,149 @@
   background-size: cover;
 }
 
-/* Legal move dots + selection — same language as Game Review */
+/* ── Square states (lichess values, chessground.brown.css) ───────────────── */
+
 .board-wrapper cg-board square.selected {
-  background-color: rgba(255, 255, 0, 0.4);
+  background-color: rgb(20 85 30 / 0.5);
 }
 
 .board-wrapper cg-board square.move-dest {
-  background: radial-gradient(rgba(0, 0, 0, 0.25) 19%, transparent 20%);
+  background: radial-gradient(
+    rgb(20 85 30 / 0.5) 22%,
+    #208530 0,
+    rgb(0 0 0 / 0.3) 0,
+    rgb(0 0 0 / 0) 0
+  );
   pointer-events: auto;
 }
 
+/* `oc` = occupied: a capture. A ring around the piece, not a dot under it. */
 .board-wrapper cg-board square.oc.move-dest {
-  background: radial-gradient(transparent 51%, rgba(0, 0, 0, 0.3) 51%);
+  background: radial-gradient(transparent 0%, transparent 80%, rgb(20 85 0 / 0.3) 80%);
   pointer-events: auto;
 }
 
-.board-wrapper cg-board square.move-dest:hover {
-  background: radial-gradient(rgba(0, 0, 0, 0.35) 19%, transparent 20%);
+.board-wrapper cg-board square.move-dest:hover,
+.board-wrapper cg-board square.move-dest.hover {
+  background: rgb(20 85 30 / 0.3);
 }
 
-.board-wrapper cg-board square.oc.move-dest:hover {
-  background: radial-gradient(transparent 45%, rgba(0, 0, 0, 0.42) 51%);
+.board-wrapper cg-board square.oc.move-dest:hover,
+.board-wrapper cg-board square.oc.move-dest.hover {
+  background: rgb(20 85 30 / 0.3);
 }
 
 .board-wrapper cg-board square.last-move {
-  background-color: rgba(186, 202, 68, 0.42);
+  background-color: rgb(155 199 0 / 0.41);
 }
 
 .board-wrapper cg-board square.check {
   background: radial-gradient(
     ellipse at center,
-    rgba(220, 20, 20, 0.85) 0%,
-    rgba(169, 0, 0, 0.35) 45%,
-    transparent 72%
+    rgb(255 0 0 / 1) 0%,
+    rgb(231 0 0 / 1) 25%,
+    rgb(169 0 0 / 0) 89%,
+    rgb(158 0 0 / 0) 100%
   );
 }
 
-/* Promotion picker */
+/* ── Coordinates, inside the board ───────────────────────────────────────── */
+/* chessground's own base.css parks these *outside* the board (ranks at
+ * top:-20px, files at bottom:-4px), which is why this app used to draw its own
+ * overlay and a separate strip underneath. lichess puts them in the corners of
+ * the edge squares instead, alternating colour with the square beneath. */
+
+.board-wrapper coords {
+  position: absolute;
+  display: flex;
+  pointer-events: none;
+  user-select: none;
+  opacity: 1;
+  font-family: inherit;
+  font-weight: 700;
+  font-size: clamp(9px, calc(var(---cg-width, 560px) / 46), 14px);
+  text-shadow: 0 1px 2px rgb(0 0 0 / 0.7);
+}
+
+.board-wrapper coords.ranks {
+  inset: 1px 0 auto auto;
+  flex-flow: column-reverse;
+  height: 100%;
+  width: 0.9em;
+}
+
+.board-wrapper coords.ranks.black {
+  flex-flow: column;
+}
+
+.board-wrapper coords.files {
+  inset: auto auto 0 0;
+  flex-flow: row;
+  width: 100%;
+  height: 1.4em;
+  text-align: left;
+  text-transform: none;
+}
+
+.board-wrapper coords.files.black {
+  flex-flow: row-reverse;
+}
+
+.board-wrapper coords coord {
+  flex: 1 1 auto;
+}
+
+.board-wrapper coords.files coord {
+  padding-left: 4px;
+}
+
+.board-wrapper coords.ranks coord {
+  transform: none;
+}
+
+/* Alternating with the square underneath, per chessground.brown.css's mapping
+ * (which is correct for this DOM); only the two colours are retuned for blue2. */
+.board-wrapper .orientation-white .ranks :nth-child(odd),
+.board-wrapper .orientation-white .files :nth-child(even),
+.board-wrapper .orientation-black .ranks :nth-child(even),
+.board-wrapper .orientation-black .files :nth-child(odd) {
+  color: rgb(40 52 60 / 0.85);
+  text-shadow: 0 1px 1px rgb(255 255 255 / 0.25);
+}
+
+.board-wrapper .orientation-white .ranks :nth-child(even),
+.board-wrapper .orientation-white .files :nth-child(odd),
+.board-wrapper .orientation-black .ranks :nth-child(odd),
+.board-wrapper .orientation-black .files :nth-child(even) {
+  color: rgb(248 252 255 / 0.92);
+  text-shadow: 0 1px 2px rgb(0 0 0 / 0.6);
+}
+
+/* ── Promotion picker ────────────────────────────────────────────────────── */
+
 .promotion-overlay {
   position: absolute;
   inset: 0;
-  background: rgba(0, 0, 0, 0.6);
+  background: oklch(14% 0.02 256 / 0.66);
   display: flex;
   align-items: center;
   justify-content: center;
   z-index: 20;
+  border-radius: var(--radius, 8px);
 }
 
 .promotion-dialog {
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
+  box-shadow: var(--shadow);
   padding: 16px;
   text-align: center;
 }
 
 .promotion-title {
-  font-size: 14px;
+  font-size: 13px;
+  font-weight: 500;
   color: var(--muted);
   margin: 0 0 12px;
 }
@@ -169,7 +223,7 @@
 .promotion-piece {
   width: 56px;
   height: 56px;
-  font-size: 36px;
+  padding: 0;
   background: var(--surface-2);
   border: 2px solid var(--line);
   border-radius: var(--radius-xs);
@@ -177,10 +231,46 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: border-color 0.15s var(--ease), background 0.15s var(--ease);
+  transition:
+    border-color 0.15s ease,
+    background 0.15s ease,
+    transform 0.1s ease;
 }
 
 .promotion-piece:hover {
   border-color: var(--accent-line);
   background: var(--accent-soft);
+}
+
+.promotion-piece:active {
+  transform: scale(0.94);
+}
+
+/* The same sprites the board uses — a Unicode glyph here never matched the
+ * piece the player was about to get. */
+.promotion-sprite {
+  width: 46px;
+  height: 46px;
+  background-size: contain;
+  background-repeat: no-repeat;
+  background-position: center;
+}
+
+.promotion-sprite[data-piece='wq'] { background-image: url('/piece/merida/wQ.svg'); }
+.promotion-sprite[data-piece='wr'] { background-image: url('/piece/merida/wR.svg'); }
+.promotion-sprite[data-piece='wb'] { background-image: url('/piece/merida/wB.svg'); }
+.promotion-sprite[data-piece='wn'] { background-image: url('/piece/merida/wN.svg'); }
+.promotion-sprite[data-piece='bq'] { background-image: url('/piece/merida/bQ.svg'); }
+.promotion-sprite[data-piece='br'] { background-image: url('/piece/merida/bR.svg'); }
+.promotion-sprite[data-piece='bb'] { background-image: url('/piece/merida/bB.svg'); }
+.promotion-sprite[data-piece='bn'] { background-image: url('/piece/merida/bN.svg'); }
+
+@media (prefers-reduced-motion: reduce) {
+  .promotion-piece {
+    transition: none;
+  }
+
+  .promotion-piece:active {
+    transform: none;
+  }
 }

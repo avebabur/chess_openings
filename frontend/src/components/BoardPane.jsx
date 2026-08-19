@@ -1,5 +1,5 @@
-import { useRef, useEffect } from 'react'
-import { START_FEN } from '../domain/chessLine'
+import { useRef, useEffect, useMemo } from 'react'
+import { START_FEN, isCheckFen } from '../domain/chessLine'
 import Board from './Board/Chessground'
 
 export default function BoardPane({
@@ -27,6 +27,8 @@ export default function BoardPane({
   onCrumbClick,
 }) {
   const crumbsScrollRef = useRef(null)
+  const boardFen = display.fen || START_FEN
+  const inCheck = useMemo(() => isCheckFen(boardFen), [boardFen])
 
   const crumbsScrollKey = displayPath.join(' ')
 
@@ -46,9 +48,10 @@ export default function BoardPane({
       <Board
         boardSize={boardSize}
         layoutKey={inSession ? 'session' : 'browse'}
-        fen={display.fen || START_FEN}
+        fen={boardFen}
         orientation={orientation}
         lastMove={display.last}
+        check={inCheck}
         shapes={shapes}
         movableDests={movableDests}
         movableColor={movableColor}
@@ -112,6 +115,7 @@ export default function BoardPane({
             type="button"
             className="crumb crumb-nav"
             onClick={onFlip}
+            disabled={Boolean(pendingPromotion)}
             title="Flip board (F)"
             aria-label="Flip board"
           >

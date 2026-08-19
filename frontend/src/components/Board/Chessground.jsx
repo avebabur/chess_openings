@@ -1,11 +1,29 @@
 import { useCallback, useEffect, useRef } from 'react'
 import { Chessground } from 'chessground'
 import 'chessground/assets/chessground.base.css'
-import BoardCoordinates, { BoardFileStrip } from '../BoardCoordinates'
 import PromotionDialog from '../PromotionDialog'
 import './board.css'
 
 const EMPTY_DESTS = new Map()
+
+// Lichess's "Normal" move animation (Pref.scala animationMillis: 0/120/250/500).
+// Anything under 70ms makes chessground disable animation outright, which is how
+// the reduced-motion path below switches it off.
+const ANIM_MS = 250
+
+const prefersReducedMotion = () => (
+  typeof window !== 'undefined'
+  && typeof window.matchMedia === 'function'
+  && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+)
+
+// Safari drops the hover state on a square while a piece is being dragged over
+// it; chessground has a JS-driven fallback for exactly this, which lichess turns
+// on for Safari only (ui/analyse/src/ground.ts).
+const isSafari = () => (
+  typeof navigator !== 'undefined'
+  && /^((?!chrome|android).)*safari/i.test(navigator.userAgent)
+)
 
 /**
  * Chessground board for the openings app.
@@ -29,8 +47,9 @@ export default function Board({
   fen,
   orientation = 'white',
   lastMove = null,
+  check = false,
   shapes = [],
-  duration = 150,
+  duration = ANIM_MS,
   movableDests = null,
   movableColor = 'both',
   onMove = null,
@@ -47,6 +66,13 @@ export default function Board({
   const prevFenRef = useRef(fen)
   const prevLastMoveRef = useRef(lastMove)
   const prevResetKeyRef = useRef(resetKey)
+  const prevOrientationRef = useRef(orientation)
+  const prevAnimRef = useRef(null)
+  // Set whenever chessground rebuilt its DOM while frozen. redrawAll() rebinds
+  // the pointer listeners through events.bindBoard, which early-returns on
+  // viewOnly — so a rebuild during a promotion dialog leaves the board dead and
+  // nothing rebinds it later. We remember and rebind once it is live again.
+  const needsRebindRef = useRef(false)
 
   useEffect(() => {
     onMoveRef.current = onMove
@@ -65,6 +91,7 @@ export default function Board({
   // desyncs it from `movable.color` and freezes every piece. Derive it from the
   // FEN and set it explicitly on every position change so that never happens.
   const turnColor = fen?.split(' ')[1] === 'b' ? 'black' : 'white'
+  const animMs = prefersReducedMotion() ? 0 : duration
 
   // ── 1. Create the board once ──────────────────────────────────────────────
   useEffect(() => {
@@ -76,10 +103,19 @@ export default function Board({
       // time). Interactivity is toggled afterwards through the `manipulable`
       // class that `set({ viewOnly })` flips.
       viewOnly: !canInteract,
-      coordinates: false,
-      animation: { enabled: true, duration },
+      coordinates: true,
+      // Publishes ---cg-width / ---cg-height, so anything that wants to match
+      // the board's exact pixel height (the eval bar) can read them.
+      addDimensionsCssVarsTo: document.body,
+      // Without this chessground never calls preventDefault on contextmenu (it
+      // only does so for disableContextMenu or an enabled drawable), so
+      // right-clicking the board popped the native browser menu.
+      disableContextMenu: true,
+      jsHover: isSafari(),
+      animation: { enabled: true, duration: animMs },
       highlight: { lastMove: true, check: true },
       lastMove: lastMove || undefined,
+      check,
       drawable: { enabled: false, visible: true, autoShapes: shapes },
       selectable: { enabled: true },
       draggable: {
@@ -99,6 +135,7 @@ export default function Board({
     })
     prevFenRef.current = fen
     prevLastMoveRef.current = lastMove
+    prevAnimRef.current = animMs
     return () => {
       cgRef.current?.destroy()
       cgRef.current = null
@@ -111,10 +148,13 @@ export default function Board({
     const cg = cgRef.current
     if (!cg) return
     if (fen === prevFenRef.current && lastMove === prevLastMoveRef.current) return
-    cg.set({ fen, turnColor, lastMove: lastMove || undefined })
+    // `check` must be passed on every position change, not only when true:
+    // configure() reads it as `config.check || false`, so omitting the key
+    // leaves the previous king square lit.
+    cg.set({ fen, turnColor, lastMove: lastMove || undefined, check })
     prevFenRef.current = fen
     prevLastMoveRef.current = lastMove
-  }, [fen, turnColor, lastMove])
+  }, [fen, turnColor, lastMove, check])
 
   // Re-apply the current FEN when the parent rejects a legal-looking move.
   // Chessground has already moved the piece internally by the time `after`
@@ -123,18 +163,21 @@ export default function Board({
   useEffect(() => {
     const cg = cgRef.current
     if (!cg || resetKey === prevResetKeyRef.current) return
-    cg.set({ fen, turnColor, lastMove: lastMove || undefined })
+    cg.set({ fen, turnColor, lastMove: lastMove || undefined, check })
     prevFenRef.current = fen
     prevLastMoveRef.current = lastMove
     prevResetKeyRef.current = resetKey
-  }, [resetKey, fen, turnColor, lastMove])
+  }, [resetKey, fen, turnColor, lastMove, check])
 
   // ── 3. Interaction: orientation, movability, view-only freeze ──────────────
   useEffect(() => {
     const cg = cgRef.current
     if (!cg) return
+    // viewOnly first, orientation second, deliberately. api.set() runs
+    // toggleOrientation() *before* configure() applies the rest of the config,
+    // and toggleOrientation wipes and rebuilds the board DOM. Clearing viewOnly
+    // in its own call means that rebuild happens on an already-live board.
     cg.set({
-      orientation,
       viewOnly: !interactive,
       movable: {
         free: false,
@@ -144,7 +187,27 @@ export default function Board({
         events: { after: handleCgMove },
       },
     })
+    if (prevOrientationRef.current !== orientation) {
+      prevOrientationRef.current = orientation
+      cg.set({ orientation })
+      if (!interactive) needsRebindRef.current = true
+    }
+    if (interactive && needsRebindRef.current) {
+      needsRebindRef.current = false
+      cg.redrawAll()
+    }
   }, [orientation, movableColor, movableDests, interactive, handleCgMove])
+
+  // ── 3b. Animation speed, if the OS motion preference changes mid-session ───
+  useEffect(() => {
+    // Skip the first run: creation already applied this duration.
+    if (prevAnimRef.current === null || prevAnimRef.current === animMs) {
+      prevAnimRef.current = animMs
+      return
+    }
+    prevAnimRef.current = animMs
+    cgRef.current?.set({ animation: { enabled: animMs >= 70, duration: animMs } })
+  }, [animMs])
 
   // ── 4. Arrows: pure redraw, never touches pieces or the user's selection ───
   useEffect(() => {
@@ -161,8 +224,14 @@ export default function Board({
   useEffect(() => {
     const cg = cgRef.current
     if (!cg) return undefined
-    const raf = requestAnimationFrame(() => cgRef.current?.redrawAll())
+    const raf = requestAnimationFrame(() => {
+      cgRef.current?.redrawAll()
+      // Same trap as the flip above: this rebuild binds no pointer listeners
+      // while the board is frozen, so remember to rebind when it wakes up.
+      if (!interactive) needsRebindRef.current = true
+    })
     return () => cancelAnimationFrame(raf)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- layout moves only
   }, [layoutKey])
 
   return (
@@ -175,7 +244,6 @@ export default function Board({
           <div className="board-layer-pieces">
             <div className="cr-board-inner" ref={elRef} />
           </div>
-          <BoardCoordinates boardSize={boardSize} orientation={orientation} />
           {promotion && (
             <PromotionDialog
               color={promotion.color}
@@ -184,7 +252,6 @@ export default function Board({
             />
           )}
         </div>
-        <BoardFileStrip boardSize={boardSize} orientation={orientation} />
       </div>
     </div>
   )

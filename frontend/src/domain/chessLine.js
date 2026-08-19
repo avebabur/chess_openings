@@ -55,6 +55,21 @@ export function boardFromPath(path) {
   return { fen: game.fen(), last, accepted }
 }
 
+/** Is the side to move in check? Drives chessground's `check` highlight.
+ *
+ * Chessground will not derive this itself: `highlight.check` only decides
+ * whether to paint `state.check`, which stays undefined until a `check` value
+ * is passed in. Cheap enough to recompute per position (one Chess parse).
+ */
+export function isCheckFen(fen) {
+  if (!fen) return false
+  try {
+    return new Chess(fen).isCheck()
+  } catch {
+    return false
+  }
+}
+
 export function legalDests(fen) {
   const game = new Chess(fen)
   const dests = new Map()

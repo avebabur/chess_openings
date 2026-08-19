@@ -7,13 +7,6 @@ const PIECES = [
   { piece: 'n', label: 'Knight' },
 ]
 
-const PIECE_CHARS = {
-  q: { w: '♕', b: '♛' },
-  r: { w: '♖', b: '♜' },
-  b: { w: '♗', b: '♝' },
-  n: { w: '♘', b: '♞' },
-}
-
 export default function PromotionDialog({ color, onSelect, onCancel }) {
   const dialogRef = useDialogFocusTrap(onCancel)
   return (
@@ -38,7 +31,7 @@ export default function PromotionDialog({ color, onSelect, onCancel }) {
               title={label}
               aria-label={`Promote to ${label}`}
             >
-              {PIECE_CHARS[piece][color]}
+              <span className="promotion-sprite" data-piece={`${color}${piece}`} />
             </button>
           ))}
         </div>
