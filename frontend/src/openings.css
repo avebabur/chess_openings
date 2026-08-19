@@ -12,7 +12,6 @@
 }
 
 .openings-workspace {
-  --board-frame: color-mix(in oklch, var(--md-sys-color-outline, rgb(111 121 120)), var(--surface) 55%);
   --wdl-text: var(--text);
   min-width: 0;
 }
@@ -62,7 +61,7 @@
 .op-opening-title {
   margin: 0;
   font-size: 22px;
-  font-weight: 740;
+  font-weight: var(--weight-bold);
   letter-spacing: 0;
   line-height: 27px;
   color: var(--text);
@@ -85,7 +84,7 @@
 
 .op-user {
   color: var(--accent-2);
-  font-weight: 650;
+  font-weight: var(--weight-medium);
 }
 
 .op-toolbar-controls {
@@ -293,8 +292,8 @@
   background: transparent;
   color: var(--muted);
   font: inherit;
-  font-size: 12.5px;
-  font-weight: 620;
+  font-size: 12px;
+  font-weight: var(--weight-medium);
   font-variant-numeric: tabular-nums;
   padding: 6px 9px;
   border-radius: var(--radius-xs);
@@ -354,7 +353,7 @@
   background: transparent;
   color: inherit;
   font: inherit;
-  font-weight: 650;
+  font-weight: var(--weight-medium);
   padding: 0 1px;
   margin: 0;
   cursor: pointer;
@@ -416,12 +415,12 @@
 .op-engine-side {
   color: var(--muted);
   font-size: 12px;
-  font-weight: 640;
+  font-weight: var(--weight-medium);
 }
 
 .op-engine-score {
   font-size: 21px;
-  font-weight: 770;
+  font-weight: var(--weight-bold);
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.01em;
   color: var(--text);
@@ -477,7 +476,7 @@
   min-width: 0;
   color: var(--accent);
   font-size: 10px;
-  font-weight: 780;
+  font-weight: var(--weight-bold);
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
@@ -493,7 +492,7 @@
   padding: 5px 8px;
   border-radius: var(--radius-xs);
   background: var(--surface-2);
-  font-size: 12.5px;
+  font-size: 12px;
   line-height: 1.5;
 }
 
@@ -501,7 +500,7 @@
 
 .op-line-eval {
   color: var(--accent);
-  font-weight: 750;
+  font-weight: var(--weight-bold);
   font-variant-numeric: tabular-nums;
 }
 
@@ -521,8 +520,8 @@
 
 .op-line-depth {
   color: var(--muted);
-  font-size: 10.5px;
-  font-weight: 760;
+  font-size: 10px;
+  font-weight: var(--weight-bold);
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.02em;
   text-transform: uppercase;
@@ -553,8 +552,8 @@
   background: var(--accent-soft);
   color: var(--accent-2);
   font: inherit;
-  font-size: 10.5px;
-  font-weight: 720;
+  font-size: 10px;
+  font-weight: var(--weight-bold);
   line-height: 1;
   min-width: 20px;
   padding: 3px 7px;
@@ -571,8 +570,8 @@
   border-radius: 999px;
   background: color-mix(in oklch, var(--ok, var(--accent-2)) 22%, transparent);
   color: var(--ok, var(--accent-2));
-  font-size: 9.5px;
-  font-weight: 760;
+  font-size: 10px;
+  font-weight: var(--weight-bold);
   letter-spacing: 0.02em;
   text-transform: none;
   white-space: nowrap;
@@ -605,8 +604,8 @@
   background: var(--surface-2);
   color: var(--muted);
   font: inherit;
-  font-size: 10.5px;
-  font-weight: 700;
+  font-size: 10px;
+  font-weight: var(--weight-bold);
   letter-spacing: 0.01em;
   padding: 2px 8px;
   cursor: pointer;
@@ -642,7 +641,7 @@
 .op-explorer-filter-label {
   color: var(--faint);
   font-size: 10px;
-  font-weight: 720;
+  font-weight: var(--weight-bold);
   letter-spacing: 0.05em;
   text-transform: uppercase;
 }
@@ -658,7 +657,7 @@
 .op-explorer-chips .chip {
   height: 21px;
   padding: 0 7px;
-  font-size: 10.5px;
+  font-size: 10px;
 }
 
 .op-explorer-months {
@@ -687,7 +686,7 @@
   background: var(--surface);
   color: var(--text);
   font: inherit;
-  font-size: 11.5px;
+  font-size: 12px;
   padding: 3px 6px;
 }
 
@@ -705,7 +704,7 @@
   color: var(--accent-2);
   font: inherit;
   font-size: 11px;
-  font-weight: 700;
+  font-weight: var(--weight-bold);
   padding: 0;
   cursor: pointer;
 }
@@ -725,7 +724,7 @@
   background: var(--surface-2);
   color: var(--text);
   font: inherit;
-  font-size: 12.5px;
+  font-size: 12px;
   text-align: left;
   cursor: pointer;
   transition: background 0.13s var(--ease);
@@ -735,7 +734,7 @@
 
 .oe-san {
   font-size: 13px;
-  font-weight: 740;
+  font-weight: var(--weight-bold);
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.01em;
 }
@@ -757,7 +756,7 @@
   justify-content: flex-end;
   gap: 4px;
   color: var(--muted);
-  font-size: 10.5px;
+  font-size: 10px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -783,8 +782,8 @@
   display: flex;
   justify-content: space-between;
   gap: 12px;
-  font-size: 12.5px;
-  font-weight: 650;
+  font-size: 12px;
+  font-weight: var(--weight-medium);
   color: var(--text);
   margin-bottom: 8px;
 }
@@ -814,6 +813,13 @@
 
 .workspace-tabs button {
   flex: 1;
+  /* Flex row, not inline text: the due-count badge used to wrap onto a second
+   * line, making the Review tab taller than its neighbours. */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  white-space: nowrap;
   appearance: none;
   border: 0;
   border-right: 1px solid var(--line);
@@ -821,7 +827,7 @@
   color: var(--muted);
   font: inherit;
   font-size: 13px;
-  font-weight: 650;
+  font-weight: var(--weight-medium);
   padding: 11px 10px;
   cursor: pointer;
   transition: color 0.15s var(--ease), background 0.15s var(--ease);
@@ -864,8 +870,8 @@
   border-radius: 999px;
   background: var(--accent-soft);
   color: var(--accent-2);
-  font-size: 10.5px;
-  font-weight: 760;
+  font-size: 10px;
+  font-weight: var(--weight-bold);
 }
 
 .tab-pane {
@@ -886,7 +892,7 @@
   margin: 0 0 3px;
   color: var(--text);
   font-size: 18px;
-  font-weight: 770;
+  font-weight: var(--weight-bold);
   letter-spacing: -0.01em;
   line-height: 1.2;
 }
@@ -894,7 +900,7 @@
 .op-pane-head p {
   margin: 0;
   color: var(--muted);
-  font-size: 12.5px;
+  font-size: 12px;
   line-height: 1.45;
   max-width: 52ch;
 }
@@ -927,8 +933,8 @@
 .op-statline .op-stat-label {
   order: 2;
   color: var(--faint);
-  font-size: 10.5px;
-  font-weight: 700;
+  font-size: 10px;
+  font-weight: var(--weight-bold);
   letter-spacing: 0.03em;
   text-transform: none;
 }
@@ -936,7 +942,7 @@
 .op-stat-num {
   color: var(--text);
   font-size: 20px;
-  font-weight: 770;
+  font-weight: var(--weight-bold);
   font-variant-numeric: tabular-nums;
   line-height: 1;
 }
@@ -949,7 +955,7 @@
 .op-statline .op-stat-sub {
   order: 3;
   color: var(--faint);
-  font-size: 10.5px;
+  font-size: 10px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -969,8 +975,8 @@
   border-radius: var(--radius-sm);
   background: var(--surface-2);
   color: var(--muted);
-  font-size: 11.5px;
-  font-weight: 650;
+  font-size: 12px;
+  font-weight: var(--weight-medium);
   cursor: pointer;
 }
 
@@ -1047,8 +1053,8 @@
   border-radius: var(--radius-sm);
   background: color-mix(in srgb, var(--loss) 10%, transparent);
   color: var(--text);
-  font-size: 11.5px;
-  font-weight: 650;
+  font-size: 12px;
+  font-weight: var(--weight-medium);
   text-align: left;
   cursor: pointer;
 }
@@ -1121,8 +1127,8 @@
   gap: 14px;
   margin-top: 6px;
   color: var(--muted);
-  font-size: 11.5px;
-  font-weight: 600;
+  font-size: 12px;
+  font-weight: var(--weight-medium);
 }
 
 .op-wdl-legend .dot {
@@ -1148,7 +1154,7 @@
   background: var(--surface-3);
   color: var(--wdl-text);
   font-size: 10px;
-  font-weight: 760;
+  font-weight: var(--weight-bold);
 }
 
 .wdl-bar.compact {
@@ -1211,7 +1217,7 @@
   border-bottom: 1px solid var(--line);
   color: var(--faint);
   font-size: 10px;
-  font-weight: 760;
+  font-weight: var(--weight-bold);
   letter-spacing: 0.07em;
   text-transform: uppercase;
   background: var(--surface-2);
@@ -1242,13 +1248,13 @@
 .mr-rank {
   color: var(--faint);
   font-size: 12px;
-  font-weight: 650;
+  font-weight: var(--weight-medium);
   font-variant-numeric: tabular-nums;
 }
 
 .mr-san {
   font-size: 15px;
-  font-weight: 760;
+  font-weight: var(--weight-bold);
   font-variant-numeric: tabular-nums;
 }
 
@@ -1297,7 +1303,7 @@
 .mr-score {
   text-align: right;
   color: var(--muted);
-  font-weight: 740;
+  font-weight: var(--weight-bold);
   font-variant-numeric: tabular-nums;
   font-size: 13px;
 }
@@ -1313,8 +1319,8 @@
   appearance: none;
   border-radius: var(--radius-xs);
   font: inherit;
-  font-size: 12.5px;
-  font-weight: 680;
+  font-size: 12px;
+  font-weight: var(--weight-medium);
   padding: 8px 14px;
   cursor: pointer;
   transition: background 0.15s var(--ease), border-color 0.15s var(--ease), color 0.15s var(--ease);
@@ -1376,7 +1382,7 @@
   background: color-mix(in oklch, var(--win), transparent 88%);
   color: var(--text);
   font-size: 13px;
-  font-weight: 620;
+  font-weight: var(--weight-medium);
 }
 
 /* ── Repertoire cards & forms ── */
@@ -1385,7 +1391,7 @@
   display: block;
   color: var(--faint);
   font-size: 10px;
-  font-weight: 760;
+  font-weight: var(--weight-bold);
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
@@ -1418,8 +1424,8 @@
 
 .field > span {
   color: var(--faint);
-  font-size: 10.5px;
-  font-weight: 700;
+  font-size: 10px;
+  font-weight: var(--weight-bold);
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
@@ -1483,14 +1489,14 @@
 .section-head h2 {
   margin: 0;
   font-size: 14px;
-  font-weight: 720;
+  font-weight: var(--weight-bold);
   color: var(--text);
 }
 
 .section-count {
   color: var(--muted);
   font-size: 12px;
-  font-weight: 650;
+  font-weight: var(--weight-medium);
   font-variant-numeric: tabular-nums;
 }
 
@@ -1501,13 +1507,13 @@
 .pane-intro h2 {
   margin: 0 0 6px;
   font-size: 16px;
-  font-weight: 720;
+  font-weight: var(--weight-bold);
 }
 
 .pane-intro p {
   margin: 0;
   color: var(--muted);
-  font-size: 13.5px;
+  font-size: 14px;
   line-height: 1.45;
 }
 
@@ -1547,13 +1553,13 @@
 
 .item-move {
   font-size: 15px;
-  font-weight: 760;
+  font-weight: var(--weight-bold);
   font-variant-numeric: tabular-nums;
 }
 
 .item-detail {
   color: var(--muted);
-  font-size: 12.5px;
+  font-size: 12px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1561,7 +1567,7 @@
 
 .item-meta {
   color: var(--faint);
-  font-size: 11.5px;
+  font-size: 12px;
   white-space: nowrap;
 }
 
@@ -1595,7 +1601,7 @@
   color: color-mix(in oklch, var(--info), var(--text) 14%);
   font: inherit;
   font-size: 13px;
-  font-weight: 680;
+  font-weight: var(--weight-medium);
   cursor: pointer;
   transition: border-color 0.15s var(--ease), background 0.15s var(--ease);
 }
@@ -1614,7 +1620,7 @@
 .op-list-title {
   color: var(--faint);
   font-size: 10px;
-  font-weight: 760;
+  font-weight: var(--weight-bold);
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
@@ -1622,7 +1628,7 @@
 .op-list-count {
   color: var(--faint);
   font-size: 11px;
-  font-weight: 700;
+  font-weight: var(--weight-bold);
   font-variant-numeric: tabular-nums;
 }
 
@@ -1702,7 +1708,7 @@
 .op-folder-name {
   min-width: 0;
   font-size: 14px;
-  font-weight: 700;
+  font-weight: var(--weight-bold);
   letter-spacing: -0.005em;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1712,7 +1718,7 @@
 .op-folder-meta {
   margin-left: auto;
   color: var(--faint);
-  font-size: 11.5px;
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
   flex-shrink: 0;
@@ -1727,7 +1733,7 @@
   color: var(--text);
   font: inherit;
   font-size: 14px;
-  font-weight: 600;
+  font-weight: var(--weight-medium);
   padding: 6px 9px;
   outline: none;
 }
@@ -1783,8 +1789,8 @@
 .op-family.open .op-family-head .chev { transform: rotate(90deg); }
 .op-family-name {
   min-width: 0;
-  font-size: 14.5px;
-  font-weight: 800;
+  font-size: 14px;
+  font-weight: var(--weight-bold);
   letter-spacing: -0.01em;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1793,7 +1799,7 @@
 .op-family-meta {
   margin-left: auto;
   color: var(--faint);
-  font-size: 11.5px;
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
   flex-shrink: 0;
@@ -1843,7 +1849,7 @@
 .op-var-name {
   min-width: 0;
   font-size: 13px;
-  font-weight: 600;
+  font-weight: var(--weight-medium);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1852,7 +1858,7 @@
 .op-var-meta {
   margin-left: auto;
   color: var(--faint);
-  font-size: 11.5px;
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
   flex-shrink: 0;
@@ -1867,8 +1873,8 @@
   border: 1px solid var(--line);
   background: var(--surface);
   color: var(--muted);
-  font-size: 10.5px;
-  font-weight: 780;
+  font-size: 10px;
+  font-weight: var(--weight-bold);
   text-align: center;
   font-variant-numeric: tabular-nums;
 }
@@ -1888,7 +1894,7 @@
 .inline-confirm-label {
   color: var(--loss);
   font-size: 11px;
-  font-weight: 700;
+  font-weight: var(--weight-bold);
   padding: 0 4px;
   white-space: nowrap;
 }
@@ -1932,8 +1938,8 @@
   background: transparent;
   color: var(--text);
   font: inherit;
-  font-size: 12.5px;
-  font-weight: 600;
+  font-size: 12px;
+  font-weight: var(--weight-medium);
   text-align: left;
   padding: 6px 9px;
   border-radius: var(--radius-xs);
@@ -1952,8 +1958,8 @@
   background: var(--accent-soft);
   border: 1px solid var(--accent-line);
   color: var(--accent-2);
-  font-size: 11.5px;
-  font-weight: 700;
+  font-size: 12px;
+  font-weight: var(--weight-bold);
   width: fit-content;
 }
 .op-activefilter button {
@@ -1994,7 +2000,7 @@
   flex: 1;
   min-width: 0;
   font-size: 14px;
-  font-weight: 680;
+  font-weight: var(--weight-medium);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2004,7 +2010,7 @@
 .op-pick-meta {
   margin-left: auto;
   color: var(--faint);
-  font-size: 11.5px;
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
   flex-shrink: 0;
@@ -2059,7 +2065,7 @@
 .practice-card p {
   margin: 0;
   color: var(--muted);
-  font-size: 13.5px;
+  font-size: 14px;
   line-height: 1.45;
 }
 
@@ -2076,7 +2082,7 @@
   color: var(--accent-2);
   padding: 6px 12px;
   font-size: 13px;
-  font-weight: 720;
+  font-weight: var(--weight-bold);
 }
 
 /* ── Empty states ── */
@@ -2085,7 +2091,7 @@
   padding: 32px 20px;
   text-align: center;
   color: var(--muted);
-  font-size: 13.5px;
+  font-size: 14px;
   line-height: 1.5;
 }
 
@@ -2148,8 +2154,8 @@
   background: var(--accent-soft);
   color: var(--accent-2);
   border: 1px solid var(--accent-line);
-  font-size: 10.5px;
-  font-weight: 700;
+  font-size: 10px;
+  font-weight: var(--weight-bold);
   white-space: nowrap;
 }
 
@@ -2204,7 +2210,7 @@
 
 /* ── Compact item rows ── */
 
-.item-meta.miss { color: var(--loss); font-weight: 720; }
+.item-meta.miss { color: var(--loss); font-weight: var(--weight-bold); }
 
 /* ── Review session ── */
 
@@ -2220,8 +2226,8 @@
 .review-scoreline {
   display: flex;
   gap: 18px;
-  font-size: 12.5px;
-  font-weight: 700;
+  font-size: 12px;
+  font-weight: var(--weight-bold);
   font-variant-numeric: tabular-nums;
 }
 
@@ -2235,7 +2241,7 @@
   gap: 10px;
   margin-top: 12px;
   color: var(--loss);
-  font-size: 12.5px;
+  font-size: 12px;
 }
 
 .review-write-error .btn-secondary { flex-shrink: 0; }
@@ -2293,7 +2299,7 @@
   display: block;
   margin-bottom: 2px;
   font-size: 11px;
-  font-weight: 720;
+  font-weight: var(--weight-bold);
   letter-spacing: 0.01em;
   color: var(--muted);
 }
@@ -2305,7 +2311,7 @@
   display: block;
   color: var(--text);
   font-size: 14px;
-  font-weight: 700;
+  font-weight: var(--weight-bold);
   font-variant-numeric: tabular-nums;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2332,7 +2338,7 @@
 .op-continue-label {
   color: var(--faint);
   font-size: 10px;
-  font-weight: 760;
+  font-weight: var(--weight-bold);
   letter-spacing: 0.07em;
   text-transform: uppercase;
 }
@@ -2343,8 +2349,8 @@
   background: var(--surface);
   color: var(--accent-2);
   font: inherit;
-  font-size: 12.5px;
-  font-weight: 700;
+  font-size: 12px;
+  font-weight: var(--weight-bold);
   font-variant-numeric: tabular-nums;
   padding: 4px 11px;
   border-radius: 999px;
@@ -2379,8 +2385,8 @@
   background: var(--surface);
   color: var(--muted);
   font: inherit;
-  font-size: 12.5px;
-  font-weight: 660;
+  font-size: 12px;
+  font-weight: var(--weight-medium);
   padding: 6px 12px 6px 9px;
   border-radius: var(--radius-xs);
   cursor: pointer;
@@ -2397,8 +2403,8 @@
 
 .op-editor-kind {
   color: var(--faint);
-  font-size: 10.5px;
-  font-weight: 760;
+  font-size: 10px;
+  font-weight: var(--weight-bold);
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
@@ -2425,13 +2431,13 @@
   color: var(--text);
   font: inherit;
   font-size: 19px;
-  font-weight: 760;
+  font-weight: var(--weight-bold);
   letter-spacing: -0.01em;
   padding: 2px 0;
   outline: none;
   transition: border-color 0.15s var(--ease);
 }
-.op-editor-name::placeholder { color: var(--faint); font-weight: 600; }
+.op-editor-name::placeholder { color: var(--faint); font-weight: var(--weight-medium); }
 .op-editor-name:focus { border-bottom-color: var(--accent-line); }
 .op-editor-name:disabled { opacity: 0.5; }
 
@@ -2446,7 +2452,7 @@
 .op-move-num {
   color: var(--faint);
   font-size: 12px;
-  font-weight: 760;
+  font-weight: var(--weight-bold);
   margin-left: 6px;
 }
 .op-move-num:first-child { margin-left: 0; }
@@ -2458,7 +2464,7 @@
   color: var(--muted);
   font: inherit;
   font-size: 13px;
-  font-weight: 640;
+  font-weight: var(--weight-medium);
   padding: 1px 5px;
   border-radius: var(--radius-xs);
   cursor: pointer;
@@ -2485,11 +2491,11 @@
   border-radius: var(--radius-xs);
   background: color-mix(in oklch, var(--info), transparent 91%);
   color: var(--text);
-  font-size: 12.5px;
+  font-size: 12px;
   line-height: 1.4;
 }
 
-.op-notice b { font-weight: 720; }
+.op-notice b { font-weight: var(--weight-bold); }
 .op-notice .btn-ghost { flex-shrink: 0; }
 
 .op-editor-actions {
@@ -2513,7 +2519,7 @@
   gap: 8px;
   flex-wrap: wrap;
   font-size: 13px;
-  font-weight: 620;
+  font-weight: var(--weight-medium);
   color: var(--text);
 }
 
@@ -2717,8 +2723,8 @@
   background: var(--surface);
   color: var(--text);
   font: inherit;
-  font-size: 12.5px;
-  font-weight: 600;
+  font-size: 12px;
+  font-weight: var(--weight-medium);
   padding: 6px 26px 6px 12px;
   border-radius: 999px;
   cursor: pointer;
@@ -2780,7 +2786,7 @@
   top: 0;
   background: var(--surface);
 }
-.op-modal-head h2 { margin: 0; font-size: 16px; font-weight: 700; }
+.op-modal-head h2 { margin: 0; font-size: 16px; font-weight: var(--weight-bold); }
 .op-modal-close {
   appearance: none;
   border: 0;
@@ -2813,8 +2819,8 @@
 .op-account-info { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .op-account-badge {
   align-self: flex-start;
-  font-size: 10.5px;
-  font-weight: 700;
+  font-size: 10px;
+  font-weight: var(--weight-bold);
   letter-spacing: 0.02em;
   text-transform: uppercase;
   padding: 1px 7px;
@@ -2824,7 +2830,7 @@
 }
 .op-account-badge.lichess { color: var(--info); background: color-mix(in oklch, var(--info), transparent 88%); }
 .op-account-badge.chesscom { color: var(--win); background: color-mix(in oklch, var(--win), transparent 86%); }
-.op-account-name { font-weight: 650; font-size: 14px; }
+.op-account-name { font-weight: var(--weight-medium); font-size: 14px; }
 .op-account-sub { color: var(--muted); font-size: 12px; }
 .op-account-actions { display: flex; gap: 6px; flex-shrink: 0; }
 
@@ -2848,13 +2854,13 @@
 .op-account-add input:focus-visible,
 .op-account-add select:focus-visible { outline: none; box-shadow: var(--ring); border-color: var(--accent-line); }
 
-.op-account-error { margin: 8px 0 0; color: var(--loss); font-size: 12.5px; }
+.op-account-error { margin: 8px 0 0; color: var(--loss); font-size: 12px; }
 
 .op-token-section { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line); }
-.op-token-section h3 { margin: 0 0 6px; font-size: 13.5px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+.op-token-section h3 { margin: 0 0 6px; font-size: 14px; font-weight: var(--weight-bold); display: flex; align-items: center; gap: 8px; }
 .op-token-ok {
-  font-size: 10.5px;
-  font-weight: 700;
+  font-size: 10px;
+  font-weight: var(--weight-bold);
   text-transform: uppercase;
   letter-spacing: 0.02em;
   color: var(--win);
@@ -2862,8 +2868,8 @@
   padding: 1px 7px;
   border-radius: 999px;
 }
-.op-token-help { margin: 0 0 10px; color: var(--muted); font-size: 12.5px; line-height: 1.5; }
-.op-token-help a { color: var(--accent-2); font-weight: 600; }
+.op-token-help { margin: 0 0 10px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.op-token-help a { color: var(--accent-2); font-weight: var(--weight-medium); }
 .op-token-form { display: flex; gap: 8px; }
 .op-token-form input {
   flex: 1;
@@ -2877,7 +2883,7 @@
   color: var(--text);
 }
 .op-token-form input:focus-visible { outline: none; box-shadow: var(--ring); border-color: var(--accent-line); }
-.op-token-msg { margin: 8px 0 0; color: var(--accent-2); font-size: 12.5px; }
+.op-token-msg { margin: 8px 0 0; color: var(--accent-2); font-size: 12px; }
 
 /* Explorer "Lichess players" auth prompt */
 .op-explorer-auth {
@@ -2894,8 +2900,8 @@
   background: var(--accent-soft);
   color: var(--accent-2);
   font: inherit;
-  font-size: 11.5px;
-  font-weight: 650;
+  font-size: 12px;
+  font-weight: var(--weight-medium);
   padding: 4px 10px;
   border-radius: 999px;
   cursor: pointer;
@@ -2919,8 +2925,8 @@
   background: var(--accent-soft);
   color: var(--accent-2);
   font: inherit;
-  font-size: 11.5px;
-  font-weight: 650;
+  font-size: 12px;
+  font-weight: var(--weight-medium);
   padding: 4px 10px;
   border-radius: 999px;
   cursor: pointer;
@@ -2931,7 +2937,7 @@
 /* Best-move arrow legend — colours mirror the chessground board brushes
    (green = Stockfish, blue = Lichess cloud, yellow = Lichess players). */
 .op-arrow-key {
-  font-weight: 900;
+  font-weight: var(--weight-bold);
   font-size: 13px;
   line-height: 1;
   margin-right: 5px;
@@ -2959,7 +2965,7 @@
   padding: 0 6px;
   border-radius: var(--radius-xs);
   font-size: 12px;
-  font-weight: 760;
+  font-weight: var(--weight-bold);
   font-variant-numeric: tabular-nums;
   color: var(--bg);
 }
@@ -2974,8 +2980,8 @@
   display: flex;
   align-items: center;
   gap: 7px;
-  font-size: 13.5px;
-  font-weight: 640;
+  font-size: 14px;
+  font-weight: var(--weight-medium);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2996,7 +3002,7 @@
   align-items: center;
   gap: 10px;
   color: var(--faint);
-  font-size: 11.5px;
+  font-size: 12px;
   white-space: nowrap;
 }
 .game-tc { text-transform: capitalize; color: var(--muted); }
@@ -3012,7 +3018,7 @@
   gap: 6px;
   font-size: 15px;
 }
-.game-review-players .vs-sep { color: var(--faint); font-weight: 500; font-size: 12.5px; }
+.game-review-players .vs-sep { color: var(--faint); font-weight: var(--weight-medium); font-size: 12px; }
 .game-review-players .me { color: var(--accent-2); }
 
 .game-review-result {
@@ -3048,8 +3054,8 @@
   background: transparent;
   color: var(--text);
   font: inherit;
-  font-size: 13.5px;
-  font-weight: 600;
+  font-size: 14px;
+  font-weight: var(--weight-medium);
   text-align: left;
   padding: 4px 8px;
   border-radius: var(--radius-xs);
@@ -3063,4 +3069,148 @@
   background: var(--accent-soft);
   border-color: var(--accent-line);
   color: var(--accent-2);
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Interaction layer
+ *
+ * Appended as one block rather than edited into ~30 rules above, so the
+ * existing selectors and their specificity are untouched. Three things were
+ * missing across the whole app and are what made it feel unresponsive next to
+ * lichess:
+ *
+ *   1. no `:active` state anywhere — every control was dead under the finger;
+ *   2. hovers that changed instantly, with no transition to settle into;
+ *   3. a handful of clickable things with no hover feedback at all.
+ *
+ * Timings follow lichess: 150ms ease for colour, faster for the press.
+ * ══════════════════════════════════════════════════════════════════════════ */
+
+/* ── 1. Press feedback ──────────────────────────────────────────────────── */
+
+.openings-workspace .btn-primary:not(:disabled):active,
+.openings-workspace .btn-secondary:not(:disabled):active,
+.openings-workspace .btn-ghost:not(:disabled):active,
+.openings-workspace .op-depth-btn:not(:disabled):active,
+.openings-workspace .op-back:active,
+.openings-workspace .op-move-btn:not(:disabled):active,
+.openings-workspace .op-continue-move:not(:disabled):active,
+.openings-workspace .op-icon-btn:not(:disabled):active,
+.openings-workspace .icon-btn:not(:disabled):active,
+.openings-workspace .crumb:not(:disabled):active,
+.openings-workspace .op-pv-move:not(:disabled):active,
+.openings-workspace .op-explorer-filter-btn:not(:disabled):active,
+.openings-workspace .op-explorer-filter-reset:not(:disabled):active,
+.openings-workspace .op-cloud-load-btn:not(:disabled):active,
+.openings-workspace .op-explorer-token-btn:not(:disabled):active {
+  transform: scale(0.96);
+}
+
+/* Rows are wide, so scaling them looks wrong — they darken instead. */
+.openings-workspace .move-row:active,
+.openings-workspace .op-explorer-row:active,
+.openings-workspace .item-row:active,
+.openings-workspace .op-pick:active,
+.openings-workspace .op-var-row:active,
+.openings-workspace .op-folder-head:active,
+.openings-workspace .op-family-head:active,
+.openings-workspace .workspace-tabs button:active {
+  background: color-mix(in oklch, var(--accent), var(--surface) 78%);
+}
+
+/* ── 2. Transitions on hovers that had none ─────────────────────────────── */
+
+.op-folder-head,
+.op-family-head,
+.op-var-row,
+.op-transpositions-toggle,
+.op-transposition-list button,
+.op-tagfilter-menu button,
+.rep-conflict-list button,
+.rep-conflicts-toggle,
+.op-modal-close,
+.op-activefilter button,
+.op-explorer-filter-reset,
+.tag-chip-x,
+.op-icon-btn,
+.icon-btn {
+  transition:
+    color var(--dur) var(--ease),
+    background var(--dur) var(--ease),
+    border-color var(--dur) var(--ease),
+    opacity var(--dur) var(--ease),
+    transform var(--dur-fast) var(--ease);
+}
+
+/* ── 3. Clickables that had no hover feedback at all ────────────────────── */
+
+.rep-conflicts-toggle:hover,
+.op-explorer-filter-reset:not(:disabled):hover,
+.op-activefilter button:hover {
+  color: var(--text);
+  background: var(--surface-3);
+}
+
+/* ── 4. Data bars animate to their new value instead of jumping ─────────── */
+
+.wdl,
+.mr-games b {
+  transition: width 0.4s var(--ease);
+}
+
+/* ── 5. Row actions: invisible must also mean unclickable ───────────────── */
+/* `opacity: 0` alone left the rename/delete/drill buttons hit-testable and in
+ * the tab order while they could not be seen. */
+.op-row-actions {
+  visibility: hidden;
+  pointer-events: none;
+  /* visibility flips only after the fade-out, so the buttons still animate. */
+  transition: opacity 0.13s var(--ease), visibility 0s linear 0.13s;
+}
+
+.op-folder-head:hover .op-row-actions,
+.op-folder-head:focus-within .op-row-actions,
+.op-family-head:hover .op-row-actions,
+.op-family-head:focus-within .op-row-actions,
+.op-var-row:hover .op-row-actions,
+.op-var-row:focus-within .op-row-actions,
+.op-row-actions:hover,
+.op-row-actions:focus-within {
+  /* .op-family-head never had an opacity rule of its own, so its actions were
+   * invisible even on hover. */
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transition-delay: 0s;
+}
+
+/* ── 6. Focus ring: text fields and the header were never covered ───────── */
+
+.openings-workspace input:focus-visible,
+.openings-workspace select:focus-visible,
+.openings-workspace textarea:focus-visible,
+.nav2 a:focus-visible,
+.nav2 button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ── 7. Engine sections keep their height while results stream in ───────── */
+/* Only `.players` was height-locked. Stockfish and the cloud both grow from a
+ * placeholder to several PV rows on every position, shoving the explorer below
+ * them down mid-read. */
+.op-engine-section.sf {
+  min-height: 96px;
+}
+
+.op-engine-section.cloud {
+  min-height: 74px;
+}
+
+/* ── 8. Motion preference ───────────────────────────────────────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  .openings-workspace *:active {
+    transform: none !important;
+  }
 }

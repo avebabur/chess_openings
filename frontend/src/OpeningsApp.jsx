@@ -1,12 +1,11 @@
 import ErrorBoundary from './components/ErrorBoundary'
 import OpeningsExplorer from './OpeningsExplorer'
-import './styles/light.css'
 import './styles/shell.css'
 import './openings.css'
 
 export default function OpeningsApp() {
   return (
-    <div className="app light">
+    <div className="app">
       <div className="cr2 openings-app">
         <nav className="nav2">
           <a href="/" className="nav2-brand">

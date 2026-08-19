@@ -1,6 +1,59 @@
 /* Chess Review — design system (v2).
  * Scoped under `.cr2` so it can live alongside the legacy App.css during the
- * incremental rewrite. New screens render inside a `.cr2` wrapper. */
+ * incremental rewrite. New screens render inside a `.cr2` wrapper.
+ *
+ * Ubuntu is self-hosted (public/font, latin subset, ~81 KB): the app is meant to
+ * run with no network at all, so no webfont CDN. Licence in that directory.
+ * Motion durations follow lichess's $transition-duration: 150ms ease. */
+
+@font-face {
+  font-family: 'Ubuntu';
+  font-style: normal;
+  font-weight: 300;
+  font-display: swap;
+  src: url('/font/Ubuntu-300.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Ubuntu';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/font/Ubuntu-400.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Ubuntu';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('/font/Ubuntu-500.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Ubuntu';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('/font/Ubuntu-700.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Ubuntu Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/font/UbuntuMono-400.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Ubuntu Mono';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('/font/UbuntuMono-700.woff2') format('woff2');
+}
+
 .cr2 {
   color-scheme: dark;
 
@@ -25,17 +78,52 @@
   --draw: oklch(62% 0.02 256);
   --loss: oklch(67% 0.17 25);
   --info: oklch(68% 0.13 252);
+  /* Referenced as var(--ok, …) / var(--warning, …) in several places but never
+   * defined, so the fallback always won and a "saved" badge read as plain accent. */
+  --ok: oklch(72% 0.15 150);
+  --warning: oklch(78% 0.14 85);
+
+  /* Spacing scale. Every integer from 1 to 24px used to appear as a padding
+   * somewhere; these are the only steps now. */
+  --space-1: 2px;
+  --space-2: 4px;
+  --space-3: 6px;
+  --space-4: 8px;
+  --space-5: 12px;
+  --space-6: 16px;
+  --space-7: 22px;
+  --space-8: 32px;
+
+  /* Type scale. Sizes used to run 9.5→22px in half-pixel steps. */
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-md: 13px;
+  --text-base: 14px;
+  --text-lg: 16px;
+  --text-xl: 20px;
+
+  /* Three weights, not fifteen. Ubuntu has real 300/400/500/700 faces, so these
+   * are actual cuts rather than the synthetic steps the system stack collapsed
+   * to four buckets on anything other than macOS. */
+  --weight-light: 300;
+  --weight-normal: 400;
+  --weight-medium: 500;
+  --weight-bold: 700;
 
   --radius: 8px;
   --radius-sm: 7px;
   --radius-xs: 5px;
+  --radius-pill: 999px;
   --shadow: 0 16px 40px oklch(14% 0.02 256 / 0.55);
   --shadow-sm: 0 1px 4px oklch(14% 0.02 256 / 0.5);
   --ring: 0 0 0 2px var(--accent-line);
 
   --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --dur: 150ms; /* lichess $transition-duration */
+  --dur-fast: 100ms;
 
-  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  font-family: Ubuntu, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  font-weight: var(--weight-normal);
   color: var(--text);
   -webkit-font-smoothing: antialiased;
 }
@@ -46,11 +134,36 @@
 
 .cr2 ::selection { background: var(--accent-soft); }
 
+/* ── Scrollbars ─────────────────────────────────────────────────────────────
+ * Ported from lila's ui/lib/css/base/_scrollbar.scss. Every scroller in the app
+ * except the breadcrumb strip used to render the browser default. */
+.cr2 ::-webkit-scrollbar,
+.cr2 ::-webkit-scrollbar-corner {
+  width: 0.5rem;
+  height: 0.5rem;
+  background: var(--bg);
+}
+
+.cr2 ::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border-radius: var(--radius-pill);
+}
+
+.cr2 ::-webkit-scrollbar-thumb:hover,
+.cr2 ::-webkit-scrollbar-thumb:active {
+  background: var(--muted);
+}
+
+.cr2 * {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) var(--bg);
+}
+
 /* Buttons / chips shared primitives */
 .cr2 .seg {
   display: inline-flex;
   padding: 3px;
-  gap: 2px;
+  gap: var(--space-1);
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
@@ -61,14 +174,18 @@
   background: transparent;
   color: var(--muted);
   font: inherit;
-  font-weight: 600;
-  font-size: 13px;
-  padding: 7px 16px;
+  font-weight: var(--weight-medium);
+  font-size: var(--text-md);
+  padding: 7px var(--space-6);
   border-radius: var(--radius-xs);
   cursor: pointer;
-  transition: color 0.15s var(--ease), background 0.15s var(--ease);
+  transition:
+    color var(--dur) var(--ease),
+    background var(--dur) var(--ease),
+    transform var(--dur-fast) var(--ease);
 }
 .cr2 .seg button:hover { color: var(--text); }
+.cr2 .seg button:active { transform: scale(0.97); }
 .cr2 .seg button.on {
   color: var(--on-accent);
   background: var(--accent-2);
@@ -81,14 +198,19 @@
   background: var(--surface);
   color: var(--muted);
   font: inherit;
-  font-size: 12.5px;
-  font-weight: 600;
-  padding: 6px 13px;
-  border-radius: 999px;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  padding: var(--space-3) var(--space-5);
+  border-radius: var(--radius-pill);
   cursor: pointer;
-  transition: all 0.15s var(--ease);
+  transition:
+    color var(--dur) var(--ease),
+    background var(--dur) var(--ease),
+    border-color var(--dur) var(--ease),
+    transform var(--dur-fast) var(--ease);
 }
 .cr2 .chip:hover { color: var(--text); border-color: var(--line-strong); }
+.cr2 .chip:active { transform: scale(0.97); }
 .cr2 .chip.on {
   color: var(--accent-2);
   border-color: var(--accent-line);
@@ -99,4 +221,26 @@
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--radius);
+}
+
+/* Numbers that sit in columns read as columns. */
+.cr2 .tnum,
+.cr2 [data-tnum] {
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cr2 *,
+  .cr2 *::before,
+  .cr2 *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  .cr2 .seg button:active,
+  .cr2 .chip:active {
+    transform: none;
+  }
 }

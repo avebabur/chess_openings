@@ -1,4 +1,4 @@
-/* App shell — Material light theme. Loaded after light.css. */
+/* App shell. */
 html {
   /* Reserve the scrollbar gutter so a vertical scrollbar toggling on/off (e.g. when
    * the columns stack below 1181px) never changes the layout width and shifts the
@@ -7,7 +7,12 @@ html {
 }
 body {
   margin: 0;
-  color-scheme: light;
+  /* This app is dark. It used to declare `light` here and again in a
+   * `.app.light .cr2` rule, which beat the `.cr2 { color-scheme: dark }` token
+   * on specificity — so every native control (panel scrollbars, the account
+   * <select> popup, the month pickers in the explorer filters) rendered as a
+   * light widget on a dark surface. */
+  color-scheme: dark;
   background: var(--bg, oklch(20.5% 0.014 256));
 }
 
@@ -15,10 +20,6 @@ body {
   min-height: 100vh;
   display: flex;
   flex-direction: column;
-}
-
-.app.light {
-  background: var(--bg, oklch(20.5% 0.014 256));
 }
 
 .openings-app {

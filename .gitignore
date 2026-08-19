@@ -28,3 +28,4 @@ frontend/.vite/
 .claude/settings.local.json
 .vscode/
 .idea/
+frontend/playwright.chrome.config.js

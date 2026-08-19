@@ -341,9 +341,11 @@ test('mobile viewport smoke test', async ({ page }) => {
   await expect(page.locator('.op-panel')).toBeVisible()
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
   expect(overflow).toBeLessThanOrEqual(1)
+  // Native controls (scrollbars, <select> popups, date pickers) must match the
+  // dark surfaces they sit on.
   expect(await page.locator('.openings-workspace').evaluate(
     element => getComputedStyle(element).colorScheme,
-  )).toBe('light')
+  )).toBe('dark')
 })
 
 test('depth shortcuts persist across positions and stay suspended in the accounts dialog', async ({ page }) => {
