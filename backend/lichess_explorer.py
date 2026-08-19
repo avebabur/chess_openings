@@ -18,6 +18,7 @@ from datetime import datetime, timedelta
 import httpx
 
 import database as db
+from position_key import key_from_fen
 
 log = logging.getLogger("lichess_explorer")
 
@@ -29,6 +30,15 @@ _TIMEOUT = httpx.Timeout(8.0)
 _MOVES_LIMIT = 12            # top N replies — enough for the narrow analysis rail
 _COOLDOWN = 60.0            # fallback backoff after a 429 when no Retry-After is sent
 _MAX_COOLDOWN = 300.0       # never sit out longer than this, even if Lichess asks
+
+# --- Filters ---
+# Lichess narrows the aggregate by time control, rating band and date range. These
+# are the *only* values it accepts (see lila-openingexplorer's Speed/RatingGroup and
+# lila's own explorerConfig.ts) — `ratings` are band LOWER BOUNDS, not free numbers,
+# so 1500 is rejected while 1400 selects the 1400-1600 band.
+SPEEDS = ("ultraBullet", "bullet", "blitz", "rapid", "classical", "correspondence")
+RATING_GROUPS = (400, 1000, 1200, 1400, 1600, 1800, 2000, 2200, 2500)
+MIN_YEAR = 1952             # Lichess's earliest indexed month
 
 _throttle_lock = threading.Lock()
 _last_call = [0.0]
@@ -99,6 +109,56 @@ def _empty(fen):
             "black": 0, "total": 0, "opening": None, "moves": []}
 
 
+def _clean(filters):
+    """Drop empty/absent filter entries so 'no filter' is a single canonical shape."""
+    if not filters:
+        return {}
+    out = {}
+    for key in ("speeds", "ratings"):
+        values = filters.get(key)
+        if values:
+            out[key] = sorted(values, key=str)
+    for key in ("since", "until"):
+        value = (filters.get(key) or "").strip()
+        if value:
+            out[key] = value
+    return out
+
+
+def _filter_params(filters):
+    """Filters → Lichess query params. An unset filter is omitted entirely, so an
+    unfiltered request sends exactly what it always did."""
+    clean = _clean(filters)
+    params = {}
+    for key in ("speeds", "ratings"):
+        if key in clean:
+            params[key] = ",".join(str(v) for v in clean[key])
+    for key in ("since", "until"):
+        if key in clean:
+            params[key] = clean[key]
+    return params
+
+
+def _cache_key(fen, filters):
+    """Cache key for a (position, filters) pair.
+
+    The position half is the position key, not the FEN, so the same position
+    reached by another move order is one cache row rather than two (the explorer
+    aggregate depends only on the position). Filtered requests get a canonical,
+    order-independent suffix so a blitz-only aggregate can never be served as the
+    overall one, or vice versa.
+    """
+    epd = key_from_fen(fen)
+    clean = _clean(filters)
+    if not clean:
+        return epd
+    sig = "&".join(
+        f"{key}={','.join(str(v) for v in clean[key]) if isinstance(clean[key], list) else clean[key]}"
+        for key in sorted(clean)
+    )
+    return f"{epd}|{sig}"
+
+
 def _normalize(data, fen):
     """Lichess explorer JSON → the shape EnginePanel consumes. Counts absolute."""
     white = data.get("white", 0) or 0
@@ -129,17 +189,22 @@ def _normalize(data, fen):
     }
 
 
-def get_opening_explorer(fen, allow_network=True, client=None):
-    """Return normalized explorer stats.
+def get_opening_explorer(fen, allow_network=True, client=None, filters=None):
+    """Return normalized explorer stats, optionally narrowed by `filters`
+    ({speeds, ratings, since, until} — see SPEEDS / RATING_GROUPS).
 
     Sources: lichess | ratelimited | auth_required | error. Lichess locked the
     explorer behind login (anonymous calls 401), so we send the user's configured
     personal API token as a Bearer header; `auth_required` tells the UI to add one.
     """
-    cached = db.get_explorer_cached(fen)
+    key = _cache_key(fen, filters)
+    cached = db.get_explorer_cached(key)
     if cached:
         if cached["source"] == "lichess":
-            return cached["payload"]
+            # One cache row now serves every move order into this position, so the
+            # stored payload's `fen` is whichever order filled it. Echo the FEN
+            # that was actually asked about.
+            return {**cached["payload"], "fen": fen}
         if cached["source"] == "miss" and _miss_fresh(cached["fetched_at"]):
             return _empty(fen)
 
@@ -162,7 +227,8 @@ def get_opening_explorer(fen, allow_network=True, client=None):
         request_client = client or _shared_client()
         r = request_client.get(
             EXPLORER_URL,
-            params={"fen": fen, "moves": _MOVES_LIMIT, "topGames": 0, "recentGames": 0},
+            params={"fen": fen, "moves": _MOVES_LIMIT, "topGames": 0, "recentGames": 0,
+                    **_filter_params(filters)},
             headers=headers,
             timeout=_TIMEOUT,
         )
@@ -181,13 +247,14 @@ def get_opening_explorer(fen, allow_network=True, client=None):
             return {"source": "error", "fen": fen, "detail": "bad json"}
         norm = _normalize(data, fen)
         if norm["moves"]:
-            db.put_explorer(fen, norm, "lichess")
+            db.put_explorer(key, norm, "lichess")
         else:
-            # Legal position nobody has reached yet — soft-cache so it re-checks.
-            db.put_explorer(fen, {"source": "miss"}, "miss")
+            # Legal position nobody has reached yet (or none matching the filters) —
+            # soft-cache so it re-checks.
+            db.put_explorer(key, {"source": "miss"}, "miss")
         return norm
     if r.status_code == 404:
-        db.put_explorer(fen, {"source": "miss"}, "miss")
+        db.put_explorer(key, {"source": "miss"}, "miss")
         return _empty(fen)
     if r.status_code == 429:
         wait = _retry_after(r.headers, _COOLDOWN)

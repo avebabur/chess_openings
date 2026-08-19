@@ -9,6 +9,7 @@ import { useOpenings } from './hooks/useOpenings'
 import { useGames } from './hooks/useGames'
 import { usePositionEval } from './hooks/usePositionEval'
 import { useOpeningExplorer } from './hooks/useOpeningExplorer'
+import { useExplorerFilters } from './hooks/useExplorerFilters'
 import { useRepertoire } from './hooks/useRepertoire'
 import { useAccountManager } from './hooks/useAccountManager'
 import { useOpeningNavigation } from './hooks/useOpeningNavigation'
@@ -20,12 +21,16 @@ import {
   boardFromPath,
   findNodeByPath,
   isExpectedMove,
+  matchExpectedMove,
   legalDests,
   makeMove,
   needsPromotion,
   pieceAt,
   sansFromPgn,
   splitSanLine,
+  indexNodesByEpdBefore,
+  positionKeyFromFen,
+  repliesAtPosition,
 } from './domain/chessLine'
 import {
   TRAINER_STATUS,
@@ -40,6 +45,7 @@ import {
 } from './domain/reviewSession'
 import BoardPane from './components/BoardPane'
 import EnginePanel from './components/EnginePanel'
+import SessionRail from './components/SessionRail'
 import AccountSwitcher from './components/AccountSwitcher'
 import AccountsModal from './components/AccountsModal'
 import ExploreTab from './components/tabs/ExploreTab'
@@ -91,7 +97,9 @@ export default function OpeningsExplorer() {
   const [reviewGame, setReviewGame] = useState(null)
   const [pendingPromotion, setPendingPromotion] = useState(null)
   const [boardResetKey, setBoardResetKey] = useState(0)
+  const [explorerFiltersOpen, setExplorerFiltersOpen] = useState(false)
   const shellRef = useRef(null)
+  const boardColumnRef = useRef(null)
   const { repertoire, error: repertoireError, reload: loadRepertoire } = useRepertoire(color)
   const {
     trainer, trainerPath, dispatchTrainer, drillWrite,
@@ -159,14 +167,17 @@ export default function OpeningsExplorer() {
   }, [reviewItem, review])
 
   const inSession = isTraining || isReviewing
-  const boardSize = useBoardSize(shellRef, !inSession)
+  const boardSize = useBoardSize(shellRef, boardColumnRef)
   const display = isReviewing ? reviewBoard : isTraining ? trainerBoard : exploreBoard
   const displayPath = isReviewing ? reviewPriorPath : isTraining ? trainerPath : path
   const {
     localEval, cloud, target, actionError: evalActionError, fetchCloud,
     deepen, shallow, goInfinite, resetDepth, freeze, saveEval, clearSaved,
   } = usePositionEval(inSession ? null : display.fen)
-  const { explorer, reload: reloadExplorer } = useOpeningExplorer(inSession ? null : display.fen)
+  const explorerFilters = useExplorerFilters()
+  const { explorer, reload: reloadExplorer } = useOpeningExplorer(
+    inSession ? null : display.fen, explorerFilters.filters, explorerFilters.filterKey,
+  )
   const handleAccountDataChanged = useCallback(() => {
     reloadTree()
     reloadGames()
@@ -243,9 +254,23 @@ export default function OpeningsExplorer() {
   const moves = tree?.moves || []
   const branches = useMemo(() => repertoire?.branches || [], [repertoire?.branches])
   const dueNodes = useMemo(() => repertoire?.due || [], [repertoire?.due])
-  const currentChildren = currentNode
-    ? currentNode.children
-    : (path.length ? [] : repertoire?.root?.children || [])
+  // Repertoire replies are looked up by the position on the board, not by the
+  // move order that reached it, so a transposed line offers the same
+  // continuations instead of looking empty.
+  const nodesByEpdBefore = useMemo(
+    () => indexNodesByEpdBefore(repertoire?.root),
+    [repertoire?.root],
+  )
+  const currentEpd = positionKeyFromFen(display.fen)
+  const currentChildren = useMemo(() => {
+    const replies = repliesAtPosition(nodesByEpdBefore, currentEpd)
+    if (replies.length) return replies
+    // Nothing saved at this position: fall back to the literal tree walk, which
+    // still covers the empty-root case.
+    return currentNode
+      ? currentNode.children
+      : (path.length ? [] : repertoire?.root?.children || [])
+  }, [nodesByEpdBefore, currentEpd, currentNode, path.length, repertoire?.root])
   const openingTitle = reviewGame
     ? (reviewGame.opening || '')
     : (classifiedOpening?.name || tree?.summary?.opening || tree?.moves?.[0]?.opening || '')
@@ -255,7 +280,19 @@ export default function OpeningsExplorer() {
   const headerIsPlaceholder = !path.length
   const suggestedName = openingTitle || shortMoves(activeLineKey, 5)
 
-  const savedBranchForLine = branches.find(branch => branch.moves_san === activeLineKey) || null
+  // Match the exact move order first, then any branch ending on this same
+  // position. Matching on the SAN string alone is what let the user save the
+  // same line again under a different order, over and over.
+  const savedBranchForLine = useMemo(() => {
+    const exact = branches.find(branch => branch.moves_san === activeLineKey)
+    if (exact || !path.length) return exact || null
+    const epd = positionKeyFromFen(exploreBoard.fen)
+    return branches.find(branch => branch.terminal_epd && branch.terminal_epd === epd) || null
+  }, [branches, activeLineKey, exploreBoard.fen, path.length])
+  // True when the position is saved but under a different sequence of moves.
+  const savedAsTransposition = Boolean(
+    savedBranchForLine && savedBranchForLine.moves_san !== activeLineKey,
+  )
   const editingBranch = path.length
     ? (branches.find(branch => branch.id === editingBranchId) || null)
     : null
@@ -325,12 +362,22 @@ export default function OpeningsExplorer() {
     // The recognizer names the exact current line most precisely (full variation),
     // so prefer it; fall back to a saved parent's opening, then the family title.
     if (classifiedOpening?.name) return classifiedOpening.name
+    // Prefix-matching the SAN text misses a parent saved under another move
+    // order, so also accept a branch whose terminal position this line passes
+    // through. Deepest match wins either way.
+    const passesThrough = new Set(
+      splitSanLine(activeLineKey).reduce((keys, _san, i) => {
+        keys.push(positionKeyFromFen(boardFromPath(splitSanLine(activeLineKey).slice(0, i + 1)).fen))
+        return keys
+      }, [positionKeyFromFen(START_FEN)]),
+    )
     let best = null
     for (const b of branches) {
       if (!b.opening) continue
-      if (activeLineKey === b.moves_san || activeLineKey.startsWith(`${b.moves_san} `)) {
-        if (!best || b.moves_san.length > best.moves_san.length) best = b
-      }
+      const matches = activeLineKey === b.moves_san
+        || activeLineKey.startsWith(`${b.moves_san} `)
+        || (b.terminal_epd && passesThrough.has(b.terminal_epd))
+      if (matches && (!best || b.moves_san.length > best.moves_san.length)) best = b
     }
     return best ? best.opening : openingFamily(openingTitle)
   }, [branches, activeLineKey, openingTitle, classifiedOpening])
@@ -672,9 +719,29 @@ export default function OpeningsExplorer() {
         node: findNodeByPath(repertoire?.root, child.path),
       }))
       const hit = resolved.find(({ child, node }) =>
-        isExpectedMove(result, { san: child.san, fen_after: node?.fen_after }))
+        isExpectedMove(result, {
+          san: child.san, fen_after: node?.fen_after, epd_after: node?.epd_after,
+        }))
 
       if (!hit) {
+        // Before calling it a miss: the drill tree walks saved *move orders*, so
+        // a move that is genuinely in the repertoire at this position — just
+        // reached another way — would otherwise be marked wrong. Knowing the
+        // transposition should not cost you the card.
+        const transposed = matchExpectedMove(
+          result, repliesAtPosition(nodesByEpdBefore, positionKeyFromFen(fen)),
+        )
+        if (transposed) {
+          playStepSound(result.san)
+          // Continue in the drill tree if this move exists there; otherwise the
+          // walk has left the saved line and the run ends here rather than
+          // pretending to know what comes next.
+          const continues = resolved.find(({ node }) => node?.epd_after === transposed.epd_after)
+          dispatchTrainer(continues
+            ? { type: 'userMove', childPath: continues.child.path, san: result.san }
+            : { type: 'userMove', childPath: splitSanLine(transposed.path_san), san: result.san })
+          return
+        }
         playIllegalSound()
         resetBoardPosition()
         const expected = resolved[0]
@@ -717,7 +784,7 @@ export default function OpeningsExplorer() {
       return
     }
     finishMove(result)
-  }, [trainer, trainerPath, display.fen, pendingPromotion, repertoire, drillWrite, queuePromotion, resetBoardPosition, dispatchTrainer])
+  }, [trainer, trainerPath, display.fen, pendingPromotion, repertoire, drillWrite, queuePromotion, resetBoardPosition, dispatchTrainer, nodesByEpdBefore])
 
   const startReview = useCallback(() => {
     if (!dueNodes.length) return
@@ -742,10 +809,12 @@ export default function OpeningsExplorer() {
     const fen = reviewBoard.fen
 
     const grade = (result) => {
-      const correct = isExpectedMove(result, reviewItem)
-      if (correct) {
+      // Any reply saved at this position counts: the card is one question with
+      // possibly several right answers, including transposed ones.
+      const matched = matchExpectedMove(result, reviewItem.accepted)
+      if (matched) {
         playStepSound(result.san)
-        recordReview(reviewItem, true, result.san)
+        recordReview(reviewItem, true, result.san, undefined, matched)
         dispatchReview({ type: 'userMoveResult', correct: true, playedSan: result.san })
       } else {
         playIllegalSound()
@@ -850,9 +919,21 @@ export default function OpeningsExplorer() {
         </div>
       </header>
 
-      <div className={`op-shell${inSession ? ' session' : ''}`} ref={shellRef}>
-        {!inSession && (
-          <aside className="op-analysis-rail" aria-label="Engine analysis">
+      <div className="op-shell" ref={shellRef}>
+        <aside
+          className="op-analysis-rail"
+          aria-label={inSession ? 'Session progress' : 'Engine analysis'}
+        >
+          {inSession ? (
+            <SessionRail
+              isTraining={isTraining}
+              trainerStrip={trainerStrip}
+              isReviewing={isReviewing}
+              review={review}
+              reviewItem={reviewItem}
+              reviewCompleted={reviewCompleted}
+            />
+          ) : (
             <EnginePanel
               fen={display.fen}
               stockfish={profile?.stockfish}
@@ -862,6 +943,9 @@ export default function OpeningsExplorer() {
               sideToMove={sideToMove}
               target={target}
               actionError={evalActionError}
+              explorerFilters={explorerFilters}
+              filtersOpen={explorerFiltersOpen}
+              onToggleFilters={() => setExplorerFiltersOpen(open => !open)}
               onLineSelect={playAnalysisLine}
               onConfigureToken={() => setAccountsModalOpen(true)}
               onFetchCloud={fetchCloud}
@@ -873,11 +957,12 @@ export default function OpeningsExplorer() {
               onSaveEval={saveEval}
               onClearSaved={clearSaved}
             />
-          </aside>
-        )}
+          )}
+        </aside>
 
         <BoardPane
           boardSize={boardSize}
+          columnRef={boardColumnRef}
           inSession={inSession}
           display={display}
           displayPath={displayPath}
@@ -891,12 +976,6 @@ export default function OpeningsExplorer() {
           onPromotionSelect={handlePromotionSelect}
           onPromotionCancel={() => setPendingPromotion(null)}
           boardResetKey={boardResetKey}
-          isTraining={isTraining}
-          trainerStrip={trainerStrip}
-          isReviewing={isReviewing}
-          review={review}
-          reviewItem={reviewItem}
-          reviewCompleted={reviewCompleted}
           onExitSession={exitSession}
           onGoStart={goStart}
           onGoBack={goBack}
@@ -952,8 +1031,11 @@ export default function OpeningsExplorer() {
                 loading={loading}
                 error={error}
                 moves={moves}
+                directGames={tree?.direct_games || 0}
+                transpositions={tree?.transpositions || []}
                 onSave={saveCurrentBranch}
                 onPlayMove={playMove}
+                onJumpToPath={jumpToPath}
                 onReload={reloadTree}
               />
             )}
@@ -977,10 +1059,14 @@ export default function OpeningsExplorer() {
                 allTags={allTags}
                 tagFilter={tagFilter}
                 dueNodes={dueNodes}
+                dueCount={repertoire?.stats?.due || 0}
+                transpositions={repertoire?.transpositions || []}
                 repertoire={repertoire}
                 openings={openings}
                 activeLineKey={activeLineKey}
                 currentChildren={currentChildren}
+                onPlayMove={playMove}
+                savedAsTransposition={savedAsTransposition}
                 openingOptions={openingOptions}
                 onCreateOpening={createOpening}
                 onRenameOpening={renameOpening}

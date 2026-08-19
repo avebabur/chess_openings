@@ -382,3 +382,50 @@ test('no console errors during explore workflow', async ({ page }) => {
 
   expect(errors).toEqual([])
 })
+
+test('a line saved under one move order is recognized when reached by another', async ({ page, request }) => {
+  await saveBranch(request, {
+    color: 'white',
+    name: 'Queens Gambit Declined',
+    moves_san: 'd4 d5 c4 e6',
+    opening: 'Queens Gambit',
+    label: 'main',
+    note: '',
+  })
+
+  await page.goto('/')
+  // The same position by the other order — 1.d4 e6 2.c4 d5 — which was never
+  // saved. Before positions became the identity this offered a duplicate save.
+  await playMove(page, 'd2', 'd4')
+  await playMove(page, 'e7', 'e6')
+  await playMove(page, 'c2', 'c4')
+  await playMove(page, 'd7', 'd5')
+
+  await page.getByRole('tab', { name: 'Repertoire' }).click()
+
+  const strip = page.locator('.op-saveline')
+  await expect(strip).toContainText('In your repertoire')
+  await expect(strip).not.toContainText('not saved')
+  // ...and it names the move order the line is actually stored under.
+  await expect(strip.locator('.op-saveline-transposed')).toContainText('d4 d5 c4 e6')
+})
+
+test('transposed game stats are pooled, not split by move order', async ({ page }) => {
+  await page.goto('/')
+  await page.getByRole('tab', { name: 'Explore' }).click()
+
+  // With no imported games in the e2e database every count is zero, so assert
+  // the wiring instead: the same position by two orders reports one figure.
+  await playMove(page, 'd2', 'd4')
+  await playMove(page, 'g8', 'f6')
+  await playMove(page, 'c2', 'c4')
+  const viaD4 = await page.locator('.op-statline .op-stat-num').first().textContent()
+
+  await page.getByRole('button', { name: 'Return to start (↑ / Home)' }).click()
+  await playMove(page, 'c2', 'c4')
+  await playMove(page, 'g8', 'f6')
+  await playMove(page, 'd2', 'd4')
+  const viaC4 = await page.locator('.op-statline .op-stat-num').first().textContent()
+
+  expect(viaC4).toBe(viaD4)
+})

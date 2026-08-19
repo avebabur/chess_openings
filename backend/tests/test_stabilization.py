@@ -107,7 +107,13 @@ class StabilizationTests(unittest.TestCase):
 
         self.db._run_schema_migrations()
 
-        backups = sorted((self.db_path.parent / "backups").glob("*.db"))
+        # Match this migration's own snapshot by label. Globbing every backup and
+        # taking the alphabetically-last one silently depended on this being the
+        # newest-named migration in SCHEMA_MIGRATIONS.
+        backups = sorted(
+            (self.db_path.parent / "backups")
+            .glob("chess-openings-pre-drill_history_foreign_keys_v2-*.db"),
+        )
         self.assertTrue(backups)
         backup = sqlite3.connect(backups[-1])
         self.assertEqual(

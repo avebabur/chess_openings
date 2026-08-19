@@ -4,6 +4,7 @@ import uuid
 
 import eco_openings
 from database import get_db
+from position_key import position_key
 
 REPERTOIRE_LABELS = {"main", "alternative", "trap", "sideline"}
 
@@ -60,6 +61,19 @@ def _row_get(row, key, default=None):
     return val if val is not None else default
 
 
+# A branch plus the opening name it resolves to and the position its last move
+# reaches. `terminal_epd` is what lets the UI recognize "you already have this
+# line, saved under a different move order" instead of offering a duplicate save.
+_BRANCH_COLUMNS = """
+    b.*, o.name AS resolved_opening, t.epd_after AS terminal_epd
+"""
+_BRANCH_JOINS = """
+    FROM repertoire_branches b
+    LEFT JOIN repertoire_openings o ON o.id = b.opening_id
+    LEFT JOIN repertoire_nodes t ON t.id = b.terminal_node_id
+"""
+
+
 def _branch_row_to_dict(row):
     if row is None:
         return None
@@ -101,8 +115,10 @@ def _ensure_repertoire_nodes(conn, color, moves_san, label="main", note=""):
         san = board.san(move)
         uci = move.uci()
         fen_before = board.fen()
+        epd_before = position_key(board)
         board.push(move)
         fen_after = board.fen()
+        epd_after = position_key(board)
         path.append(san)
         path_san = " ".join(path)
 
@@ -115,18 +131,29 @@ def _ensure_repertoire_nodes(conn, color, moves_san, label="main", note=""):
             conn.execute(
                 """UPDATE repertoire_nodes
                    SET parent_id = ?, ply = ?, san = ?, uci = ?,
-                       fen_before = ?, fen_after = ?, updated_at = datetime('now')
+                       fen_before = ?, fen_after = ?, epd_before = ?, epd_after = ?,
+                       updated_at = datetime('now')
                    WHERE id = ?""",
-                (parent_id, ply, san, uci, fen_before, fen_after, terminal_node_id),
+                (parent_id, ply, san, uci, fen_before, fen_after,
+                 epd_before, epd_after, terminal_node_id),
             )
         else:
             cur = conn.execute(
                 """INSERT INTO repertoire_nodes
-                   (color, parent_id, ply, san, uci, fen_before, fen_after, path_san)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                (color, parent_id, ply, san, uci, fen_before, fen_after, path_san),
+                   (color, parent_id, ply, san, uci, fen_before, fen_after,
+                    epd_before, epd_after, path_san)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (color, parent_id, ply, san, uci, fen_before, fen_after,
+                 epd_before, epd_after, path_san),
             )
             terminal_node_id = cur.lastrowid
+        # The card this node drills. Opponent plies get a row too — harmless,
+        # since the due query filters on drill_count — and it keeps every read a
+        # plain join instead of a pile of COALESCEs.
+        conn.execute(
+            "INSERT OR IGNORE INTO repertoire_positions (color, epd, san) VALUES (?, ?, ?)",
+            (color, epd_before, san),
+        )
         parent_id = terminal_node_id
 
     normalized_moves = " ".join(path)
@@ -137,6 +164,62 @@ def _ensure_repertoire_nodes(conn, color, moves_san, label="main", note=""):
         (branch_label, note, terminal_node_id),
     )
     return normalized_moves, terminal_node_id
+
+
+def _transposition_warnings(conn, color, moves_san):
+    """Where this line meets others already in the repertoire.
+
+    Two saved lines can pass through the same position by different move orders.
+    That is either harmless (both prescribe the same move — they now share one
+    review card) or a genuine problem (they prescribe *different* moves, so the
+    repertoire says two things about one position). Both are worth telling the
+    user; only the second is a conflict.
+    """
+    prefixes = []
+    moves = moves_san.split()
+    for i in range(len(moves)):
+        prefixes.append(" ".join(moves[:i + 1]))
+    if not prefixes:
+        return []
+
+    placeholders = ",".join("?" * len(prefixes))
+    rows = conn.execute(
+        f"""SELECT mine.path_san AS my_path, mine.san AS my_san,
+                   mine.epd_before AS epd,
+                   other.path_san AS other_path, other.san AS other_san,
+                   other.label AS other_label
+            FROM repertoire_nodes mine
+            JOIN repertoire_nodes other
+              ON other.color = mine.color
+             AND other.epd_before = mine.epd_before
+             AND other.id != mine.id
+            WHERE mine.color = ? AND mine.path_san IN ({placeholders})
+            ORDER BY mine.ply, other.path_san""",
+        (color, *prefixes),
+    ).fetchall()
+
+    warnings = []
+    for row in rows:
+        # Reached the same position a different way (benign — they now share one
+        # review card), or genuinely prescribe different moves there. The latter
+        # only counts on your own turn: several saved answers to an *opponent*
+        # move is coverage, not a contradiction.
+        if _prior_path(row["other_path"]) == _prior_path(row["my_path"]):
+            continue  # sibling replies from the same line, not a transposition
+        same_move = row["other_san"] == row["my_san"]
+        warnings.append({
+            "kind": "transposition" if same_move else (
+                "conflict" if _is_user_turn(color, row["epd"]) else "coverage"
+            ),
+            "path_san": row["my_path"],
+            "san": row["my_san"],
+            "other_path_san": row["other_path"],
+            "other_san": row["other_san"],
+            "other_label": row["other_label"],
+        })
+    # Conflicts first: they need a decision, transpositions are just information.
+    warnings.sort(key=lambda w: (w["kind"] != "conflict", w["path_san"]))
+    return warnings
 
 
 def save_repertoire_branch(color, name, moves_san, label="main", note="",
@@ -194,6 +277,10 @@ def save_repertoire_branch(color, name, moves_san, label="main", note="",
                  "", resolved_opening_id, tags_str),
             )
             branch_id = cur.lastrowid
+        warnings = _transposition_warnings(conn, color, normalized_moves)
+        terminal_epd = conn.execute(
+            "SELECT epd_after FROM repertoire_nodes WHERE id = ?", (terminal_node_id,),
+        ).fetchone()
         conn.commit()
         return {
             "id": branch_id,
@@ -201,11 +288,13 @@ def save_repertoire_branch(color, name, moves_san, label="main", note="",
             "name": name,
             "moves_san": normalized_moves,
             "terminal_node_id": terminal_node_id,
+            "terminal_epd": terminal_epd["epd_after"] if terminal_epd else None,
             "label": branch_label,
             "note": note,
             "opening": opening,
             "opening_id": resolved_opening_id,
             "tags": _tags_to_list(tags_str),
+            "warnings": warnings,
         }
     finally:
         conn.close()
@@ -298,16 +387,15 @@ def update_repertoire_branch(branch_id, color=None, name=None, moves_san=None,
         )
         if old_terminal_node_id and old_terminal_node_id != terminal_node_id:
             _prune_orphan_repertoire_nodes(conn, old_terminal_node_id)
+        warnings = _transposition_warnings(conn, next_color, normalized_moves)
         conn.commit()
         if cur.rowcount == 0:
             return None
         result = _branch_row_to_dict(conn.execute(
-            """SELECT b.*, o.name AS resolved_opening
-               FROM repertoire_branches b
-               LEFT JOIN repertoire_openings o ON o.id = b.opening_id
-               WHERE b.id = ?""", (branch_id,),
+            f"""SELECT {_BRANCH_COLUMNS} {_BRANCH_JOINS} WHERE b.id = ?""", (branch_id,),
         ).fetchone())
         result["training_reset"] = training_reset
+        result["warnings"] = warnings
         return result
     finally:
         conn.close()
@@ -523,9 +611,8 @@ def get_repertoire_branches(color=None):
             where = "WHERE b.color = ?"
             params.append(color)
         rows = conn.execute(
-            f"""SELECT b.*, o.name AS resolved_opening
-                FROM repertoire_branches b
-                LEFT JOIN repertoire_openings o ON o.id = b.opening_id {where}
+            f"""SELECT {_BRANCH_COLUMNS}
+                {_BRANCH_JOINS} {where}
                 ORDER BY
                   CASE WHEN COALESCE(o.name, '') = '' THEN 1 ELSE 0 END,
                   o.name COLLATE NOCASE,
@@ -542,10 +629,7 @@ def get_repertoire_branch(branch_id):
     conn = get_db()
     try:
         return _branch_row_to_dict(conn.execute(
-            """SELECT b.*, o.name AS resolved_opening
-               FROM repertoire_branches b
-               LEFT JOIN repertoire_openings o ON o.id = b.opening_id
-               WHERE b.id = ?""", (branch_id,),
+            f"""SELECT {_BRANCH_COLUMNS} {_BRANCH_JOINS} WHERE b.id = ?""", (branch_id,),
         ).fetchone())
     finally:
         conn.close()
@@ -627,12 +711,22 @@ def update_repertoire_node(node_id, label=None, note=None):
         conn.close()
 
 
+def _node_with_position(conn, node_id):
+    """A node plus its live spaced-repetition counters, on an open connection."""
+    return _row_to_dict(conn.execute(
+        f"""SELECT {_NODE_COLUMNS}
+            FROM repertoire_nodes n
+            LEFT JOIN repertoire_positions p
+                   ON p.color = n.color AND p.epd = n.epd_before AND p.san = n.san
+            WHERE n.id = ?""",
+        (node_id,),
+    ).fetchone())
+
+
 def get_repertoire_node(node_id):
     conn = get_db()
     try:
-        return _row_to_dict(conn.execute(
-            "SELECT * FROM repertoire_nodes WHERE id = ?", (node_id,),
-        ).fetchone())
+        return _node_with_position(conn, node_id)
     finally:
         conn.close()
 
@@ -687,6 +781,12 @@ def _insert_repertoire_drill_attempt(
 
 
 def record_repertoire_node_drill(node_id, solved, attempt=None, event_key=None):
+    """Record one drill result against the node's *position card*.
+
+    Callers still identify the node (that is what the UI has), but the schedule
+    lives on the ``(color, position, move)`` card, so answering a line one way
+    also advances the transposed spelling of the same line.
+    """
     conn = get_db()
     try:
         event_key = event_key or str(uuid.uuid4())
@@ -695,22 +795,33 @@ def record_repertoire_node_drill(node_id, solved, attempt=None, event_key=None):
             "SELECT id FROM repertoire_drill_attempts WHERE event_key = ?", (event_key,),
         ).fetchone()
         if duplicate:
-            row = conn.execute(
-                "SELECT * FROM repertoire_nodes WHERE id = ?", (node_id,),
-            ).fetchone()
-            result = _row_to_dict(row)
+            # Must return the same shape as the success path below. Reading the
+            # node alone would hand back the frozen legacy columns, so a retried
+            # POST would report drill_count 0.
+            result = _node_with_position(conn, node_id)
             conn.rollback()
             return {**result, "duplicate": True} if result else None
         row = conn.execute(
-            "SELECT interval_days, color, path_san, san FROM repertoire_nodes WHERE id = ?", (node_id,),
+            "SELECT color, path_san, san, epd_before FROM repertoire_nodes WHERE id = ?",
+            (node_id,),
         ).fetchone()
-        if not row:
+        if not row or not row["epd_before"]:
             conn.rollback()
             return None
         attempt = attempt or {}
-        interval, offset = _next_review_offset(bool(solved), row["interval_days"])
+        card = (row["color"], row["epd_before"], row["san"])
+        conn.execute(
+            "INSERT OR IGNORE INTO repertoire_positions (color, epd, san) VALUES (?, ?, ?)",
+            card,
+        )
+        position = conn.execute(
+            "SELECT id, interval_days FROM repertoire_positions "
+            "WHERE color = ? AND epd = ? AND san = ?",
+            card,
+        ).fetchone()
+        interval, offset = _next_review_offset(bool(solved), position["interval_days"])
         cur = conn.execute(
-            """UPDATE repertoire_nodes
+            """UPDATE repertoire_positions
                SET drill_count = drill_count + 1,
                    drill_solved = drill_solved + ?,
                    drill_missed = drill_missed + ?,
@@ -719,7 +830,7 @@ def record_repertoire_node_drill(node_id, solved, attempt=None, event_key=None):
                    last_drilled_at = datetime('now'),
                    updated_at = datetime('now')
                WHERE id = ?""",
-            (1 if solved else 0, 0 if solved else 1, interval, offset, node_id),
+            (1 if solved else 0, 0 if solved else 1, interval, offset, position["id"]),
         )
         _insert_repertoire_drill_attempt(
             conn,
@@ -727,16 +838,19 @@ def record_repertoire_node_drill(node_id, solved, attempt=None, event_key=None):
             node_id=node_id,
             branch_id=attempt.get("branch_id"),
             color=row["color"],
+            # History stays per-path: which move order you were drilling is real
+            # information even though the schedule no longer forks on it.
             path_san=attempt.get("path_san") or row["path_san"],
             expected_san=attempt.get("expected_san") or row["san"],
             played_san=attempt.get("played_san") or "",
             solved=solved,
             event_key=event_key,
         )
-        conn.commit()
         if cur.rowcount == 0:
+            conn.rollback()
             return None
-        result = get_repertoire_node(node_id)
+        result = _node_with_position(conn, node_id)
+        conn.commit()
         return {**result, "duplicate": False} if result else None
     finally:
         conn.close()
@@ -752,10 +866,7 @@ def record_repertoire_branch_drill(branch_id, solved, attempt=None, event_key=No
         ).fetchone()
         if duplicate:
             row = conn.execute(
-                """SELECT b.*, o.name AS resolved_opening
-                   FROM repertoire_branches b
-                   LEFT JOIN repertoire_openings o ON o.id = b.opening_id
-                   WHERE b.id = ?""",
+                f"""SELECT {_BRANCH_COLUMNS} {_BRANCH_JOINS} WHERE b.id = ?""",
                 (branch_id,),
             ).fetchone()
             result = _branch_row_to_dict(row)
@@ -829,6 +940,110 @@ def get_repertoire_drill_attempts(limit=100):
         conn.close()
 
 
+# Every node column, then the live spaced-repetition counters from the position
+# card. Enumerated on purpose: with `SELECT n.*, ... AS drill_count`, sqlite3.Row
+# returns the FIRST column of a duplicated name, so the join would silently keep
+# serving the frozen legacy node columns — and every test would still pass.
+_NODE_COLUMNS = """
+    n.id, n.color, n.parent_id, n.ply, n.san, n.uci,
+    n.fen_before, n.fen_after, n.epd_before, n.epd_after,
+    n.path_san, n.label, n.note, n.created_at, n.updated_at,
+    p.id AS position_id,
+    COALESCE(p.drill_count, 0)   AS drill_count,
+    COALESCE(p.drill_solved, 0)  AS drill_solved,
+    COALESCE(p.drill_missed, 0)  AS drill_missed,
+    COALESCE(p.interval_days, 1) AS interval_days,
+    p.next_review_at, p.last_drilled_at
+"""
+
+# One row per due *position*, not per node: a position saved under several move
+# orders must not be queued twice. ROW_NUMBER picks the representative node, and
+# the inner JOIN keeps orphaned cards (whose line was deleted) out of the queue.
+#
+# Only positions actually drilled at least once can fall due — new cards seed
+# next_review_at = now, so without the drill_count guard every freshly-saved move
+# would flood the queue.
+_DUE_QUERY = f"""
+    SELECT * FROM (
+        SELECT {_NODE_COLUMNS},
+               ROW_NUMBER() OVER (
+                 PARTITION BY n.color, n.epd_before
+                 ORDER BY p.next_review_at ASC, p.drill_missed DESC,
+                          n.ply ASC, n.path_san ASC
+               ) AS queue_rank
+        FROM repertoire_positions p
+        JOIN repertoire_nodes n
+          ON n.color = p.color AND n.epd_before = p.epd AND n.san = p.san
+        WHERE p.color = ? AND p.drill_count > 0
+          AND p.next_review_at <= datetime('now')
+    )
+    WHERE queue_rank = 1
+    ORDER BY next_review_at ASC, drill_missed DESC, ply, path_san
+    LIMIT 200
+"""
+
+
+def _is_user_turn(color, epd):
+    """Is it the repertoire owner's move in this position?
+
+    The EPD's second field is the side to move. This is the difference between a
+    real conflict and ordinary coverage: several saved replies to *your* move is
+    the repertoire contradicting itself, but several saved replies to the
+    *opponent's* move is exactly what a repertoire is for.
+    """
+    fields = (epd or "").split()
+    if len(fields) < 2:
+        return False
+    return ("white" if fields[1] == "w" else "black") == color
+
+
+def _prior_path(path_san):
+    """The move order that led up to this node's own move."""
+    return " ".join(path_san.split()[:-1])
+
+
+def _transposition_report(conn, color):
+    """Positions this repertoire reaches by more than one move order.
+
+    A position is a transposition when several *different prior move orders*
+    arrive at it — not merely when several nodes share it, since every branching
+    point does that. ``conflict`` narrows it further to the cases that need a
+    decision: your own turn, with the orders prescribing different moves.
+    """
+    rows = conn.execute(
+        """SELECT epd_before, san, path_san, label FROM repertoire_nodes
+           WHERE color = ? AND epd_before IS NOT NULL
+           ORDER BY ply, path_san""",
+        (color,),
+    ).fetchall()
+
+    grouped = {}
+    for row in rows:
+        grouped.setdefault(row["epd_before"], []).append({
+            "san": row["san"],
+            "path_san": row["path_san"],
+            "prior_path_san": _prior_path(row["path_san"]),
+            "label": row["label"],
+        })
+
+    report = []
+    for epd, entries in grouped.items():
+        if len({entry["prior_path_san"] for entry in entries}) < 2:
+            continue  # one way in: a plain branching point, not a transposition
+        report.append({
+            "epd": epd,
+            "orders": sorted({entry["prior_path_san"] for entry in entries}),
+            "conflict": (
+                _is_user_turn(color, epd)
+                and len({entry["san"] for entry in entries}) > 1
+            ),
+            "moves": entries,
+        })
+    # Conflicts first — they are the ones asking the user to decide something.
+    report.sort(key=lambda item: (not item["conflict"], item["moves"][0]["path_san"]))
+    return report
+
+
 def get_repertoire_tree(color):
     color = (color or "white").lower()
     if color not in ("white", "black"):
@@ -836,30 +1051,30 @@ def get_repertoire_tree(color):
     conn = get_db()
     try:
         rows = conn.execute(
-            """SELECT * FROM repertoire_nodes
-               WHERE color = ?
-               ORDER BY ply, path_san""",
+            f"""SELECT {_NODE_COLUMNS}
+                FROM repertoire_nodes n
+                LEFT JOIN repertoire_positions p
+                       ON p.color = n.color AND p.epd = n.epd_before AND p.san = n.san
+                WHERE n.color = ?
+                ORDER BY n.ply, n.path_san""",
             (color,),
         ).fetchall()
-        # Only positions you've actually drilled at least once can fall "due".
-        # New nodes seed next_review_at = now, so without the drill_count guard
-        # every freshly-saved move would flood the Review queue.
-        due_rows = conn.execute(
-            """SELECT * FROM repertoire_nodes
-               WHERE color = ? AND drill_count > 0
-                 AND next_review_at <= datetime('now')
-               ORDER BY next_review_at ASC, drill_missed DESC, ply, path_san
-               LIMIT 200""",
-            (color,),
-        ).fetchall()
+        due_rows = conn.execute(_DUE_QUERY, (color,)).fetchall()
         # True backlog size, independent of the capped `due` preview list below —
-        # the Review badge must show the real total, not min(real, 50).
+        # the Review badge must show the real total, not min(real, 50). Counts
+        # positions, not nodes, so a position saved under two move orders is one
+        # item, and only positions that still have a node are counted (a card
+        # outlives the line that created it so re-saving restores its schedule).
         due_total = conn.execute(
-            """SELECT COUNT(*) FROM repertoire_nodes
-               WHERE color = ? AND drill_count > 0
-                 AND next_review_at <= datetime('now')""",
+            """SELECT COUNT(DISTINCT p.epd) FROM repertoire_positions p
+               WHERE p.color = ? AND p.drill_count > 0
+                 AND p.next_review_at <= datetime('now')
+                 AND EXISTS (SELECT 1 FROM repertoire_nodes n
+                             WHERE n.color = p.color AND n.epd_before = p.epd
+                               AND n.san = p.san)""",
             (color,),
         ).fetchone()[0]
+        transpositions = _transposition_report(conn, color)
     finally:
         conn.close()
 
@@ -880,7 +1095,27 @@ def get_repertoire_tree(color):
         else:
             root_children.append(node)
 
-    due = [dict(row) for row in due_rows[:50]]
+    # Collapsing transpositions into one queue item would grade a legitimate
+    # alternative reply wrong, so each item carries every saved reply at its
+    # position and the review UI accepts any of them.
+    replies = {}
+    for node in nodes:
+        replies.setdefault((node["color"], node["epd_before"]), {}).setdefault(
+            node["san"],
+            {"node_id": node["id"], "san": node["san"], "label": node["label"],
+             "fen_after": node["fen_after"], "epd_after": node["epd_after"],
+             "path_san": node["path_san"]},
+        )
+
+    due = []
+    for row in due_rows[:50]:
+        item = dict(row)
+        item.pop("queue_rank", None)
+        item["accepted"] = list(
+            replies.get((item["color"], item["epd_before"]), {}).values(),
+        )
+        due.append(item)
+
     return {
         "color": color,
         "root": {
@@ -893,9 +1128,12 @@ def get_repertoire_tree(color):
         },
         "branches": branches,
         "due": due,
+        "transpositions": transpositions,
         "stats": {
             "nodes": len(nodes),
             "branches": len(branches),
             "due": due_total,
+            "transpositions": len(transpositions),
+            "conflicts": sum(1 for t in transpositions if t["conflict"]),
         },
     }

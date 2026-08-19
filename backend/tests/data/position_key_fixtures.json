@@ -1,0 +1,84 @@
+[
+  {
+    "name": "start position",
+    "line": "",
+    "key": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -"
+  },
+  {
+    "name": "transposition A: 1.e4 e5 2.Nf3 Nc6",
+    "line": "e4 e5 Nf3 Nc6",
+    "key": "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq -"
+  },
+  {
+    "name": "transposition B: same position via 1.Nf3 Nc6 2.e4 e5 (halfmove clock differs)",
+    "line": "Nf3 Nc6 e4 e5",
+    "key": "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq -"
+  },
+  {
+    "name": "London System, d4 and Nf3 before Bf4",
+    "line": "d4 d5 Nf3 Nc6 Bf4 Nf6",
+    "key": "r1bqkb1r/ppp1pppp/2n2n2/3p4/3P1B2/5N2/PPP1PPPP/RN1QKB1R w KQkq -"
+  },
+  {
+    "name": "London System, same position with Bf4 played earlier",
+    "line": "d4 d5 Bf4 Nf6 Nf3 Nc6",
+    "key": "r1bqkb1r/ppp1pppp/2n2n2/3p4/3P1B2/5N2/PPP1PPPP/RN1QKB1R w KQkq -"
+  },
+  {
+    "name": "knights out: castling rights all intact",
+    "line": "Nf3 Nf6",
+    "key": "rnbqkb1r/pppppppp/5n2/8/8/5N2/PPPPPPPP/RNBQKB1R w KQkq -"
+  },
+  {
+    "name": "same placement, both kingside castling rights lost to a rook shuffle",
+    "line": "Nf3 Nf6 Rg1 Rg8 Rh1 Rh8",
+    "key": "rnbqkb1r/pppppppp/5n2/8/8/5N2/PPPPPPPP/RNBQKB1R w Qq -"
+  },
+  {
+    "name": "same placement as the start, but Black to move",
+    "line": "Nf3 Nf6 Ng1",
+    "key": "rnbqkb1r/pppppppp/5n2/8/8/8/PPPPPPPP/RNBQKBNR b KQkq -"
+  },
+  {
+    "name": "same placement, White to move: a true repetition of the start",
+    "line": "Nf3 Nf6 Ng1 Ng8",
+    "key": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -"
+  },
+  {
+    "name": "bishops out: castling rights intact",
+    "line": "e4 e5 Nf3 Nc6 Bc4 Bc5",
+    "key": "r1bqk1nr/pppp1ppp/2n5/2b1p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq -"
+  },
+  {
+    "name": "same placement, all castling rights lost to a king shuffle",
+    "line": "e4 e5 Nf3 Nc6 Bc4 Bc5 Ke2 Ke7 Ke1 Ke8",
+    "key": "r1bqk1nr/pppp1ppp/2n5/2b1p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w - -"
+  },
+  {
+    "name": "double pawn push with no capturer: no en-passant square",
+    "line": "e4 d5",
+    "key": "rnbqkbnr/ppp1pppp/8/3p4/4P3/8/PPPP1PPP/RNBQKBNR w KQkq -"
+  },
+  {
+    "name": "double pawn push with a legal capturer: en-passant square recorded",
+    "line": "e4 Nf6 e5 d5",
+    "key": "rnbqkb1r/ppp1pppp/5n2/3pP3/8/8/PPPP1PPP/RNBQKBNR w KQkq d6"
+  },
+  {
+    "name": "en passant available",
+    "fen": "8/2p5/8/1P5r/1K6/8/8/7k b - - 0 1",
+    "line": "c5",
+    "key": "8/8/8/1Pp4r/1K6/8/8/7k w - c6"
+  },
+  {
+    "name": "same push, but the capture would expose the king: no en-passant square",
+    "fen": "8/2p5/8/KP5r/8/8/8/7k b - - 0 1",
+    "line": "c5",
+    "key": "8/8/8/KPp4r/8/8/8/7k w - -"
+  },
+  {
+    "name": "promotion: canonical SAN and the resulting position",
+    "line": "e4 d5 exd5 c6 dxc6 Nf6 cxb7 Ng4 bxa8=Q",
+    "key": "Qnbqkb1r/p3pppp/8/8/6n1/8/PPPP1PPP/RNBQKBNR b KQk -"
+  }
+]

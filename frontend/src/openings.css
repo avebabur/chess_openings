@@ -235,25 +235,11 @@
   }
 }
 
-/* Drill / review (session) — no engine rail, so center the board instead of
- * leaving it jammed against the left edge with a wide empty panel. A spacer that
- * mirrors the panel width keeps the board itself centered. */
-@media (min-width: 1181px) {
-  .op-shell.session {
-    justify-content: center;
-    gap: 24px;
-  }
-  .op-shell.session::before {
-    content: '';
-    flex: 0 1 340px;
-    min-width: 0;
-    align-self: stretch;
-  }
-  .op-shell.session .op-panel {
-    flex: 0 0 340px;
-    max-width: 340px;
-  }
-}
+/* Drill / review (session): the shell geometry is deliberately IDENTICAL to browsing.
+ * An earlier version unmounted the rail and re-centred the board with a ::before
+ * spacer, which made the board jump size and position and opened a ~350px hole on the
+ * left the moment a run started. The rail now stays and shows the run's progress
+ * (SessionRail.jsx) — nothing below needs a `.session` override. */
 
 /* ── Move breadcrumbs ── */
 
@@ -459,6 +445,15 @@
   gap: 3px;
 }
 
+/* Opening the filter panel is a deliberate user action, not the per-move churn the
+ * fixed height above guards against — so let the section grow to fit it and give the
+ * moves list whatever's left. */
+.op-engine-section.players.filters-open {
+  flex: 1 1 auto;
+  height: auto;
+  min-height: 340px;
+}
+
 .op-engine-section.players .op-explorer-moves {
   flex: 1 1 auto;
   min-height: 0;
@@ -593,6 +588,130 @@
   gap: 2px;
 }
 
+/* ── Explorer filters (time control / rating / date) ── */
+
+.op-explorer-head-tail {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.op-explorer-filter-btn {
+  appearance: none;
+  flex-shrink: 0;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--muted);
+  font: inherit;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  padding: 2px 8px;
+  cursor: pointer;
+  transition: color 0.13s var(--ease), border-color 0.13s var(--ease), background 0.13s var(--ease);
+}
+
+.op-explorer-filter-btn:hover { color: var(--text); border-color: var(--accent-line); }
+
+.op-explorer-filter-btn.on,
+.op-explorer-filter-btn.active {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--accent-2);
+}
+
+.op-explorer-filters {
+  flex: 0 0 auto;
+  display: grid;
+  gap: 9px;
+  margin: 4px 0 6px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xs);
+  background: var(--surface-2);
+}
+
+.op-explorer-filter-group {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.op-explorer-filter-label {
+  color: var(--faint);
+  font-size: 10px;
+  font-weight: 720;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+/* Nine rating bands and six speeds in a 300px rail: shrink the shared .chip a notch
+ * and let them wrap rather than introducing a second control style. */
+.op-explorer-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.op-explorer-chips .chip {
+  height: 21px;
+  padding: 0 7px;
+  font-size: 10.5px;
+}
+
+.op-explorer-months {
+  display: grid;
+  gap: 4px;
+}
+
+.op-explorer-months label {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+}
+
+.op-explorer-months label > span {
+  color: var(--faint);
+  font-size: 11px;
+}
+
+.op-explorer-months input {
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xs);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 11.5px;
+  padding: 3px 6px;
+}
+
+.op-explorer-months input:focus-visible {
+  outline: none;
+  border-color: var(--accent-line);
+  box-shadow: var(--ring);
+}
+
+.op-explorer-filter-reset {
+  justify-self: start;
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--accent-2);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 0;
+  cursor: pointer;
+}
+
+.op-explorer-filter-reset:disabled { color: var(--faint); cursor: default; }
+
 .op-explorer-row {
   display: grid;
   grid-template-columns: 30px 48px minmax(0, 1fr) 34px;
@@ -651,10 +770,9 @@
   flex: none;
 }
 
-/* ── Practice strip (board column) ── */
+/* ── Practice strip (session rail) ── */
 
 .op-practice-strip {
-  margin-top: 12px;
   padding: 12px 14px;
   border: 1px solid var(--accent-line);
   border-radius: var(--radius-sm);
@@ -826,6 +944,174 @@
 .op-stat-num.good { color: var(--win); }
 .op-stat-num.bad { color: var(--loss); }
 
+/* "12 direct · 18 transposed" under the games count. Sits below the label,
+   which the flex `order` above pushes to the bottom of the stat. */
+.op-statline .op-stat-sub {
+  order: 3;
+  color: var(--faint);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* The other move orders that reach this same position. */
+.op-transpositions {
+  margin-bottom: 14px;
+}
+
+.op-transpositions-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 11.5px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.op-transpositions-toggle:hover {
+  color: var(--text);
+  border-color: var(--line-strong, var(--line));
+}
+
+.op-caret {
+  width: 0;
+  height: 0;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  border-left: 5px solid currentColor;
+  transition: transform 120ms ease;
+}
+
+.op-caret.open {
+  transform: rotate(90deg);
+}
+
+.op-transposition-list {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+}
+
+.op-transposition-list button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 5px 9px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.op-transposition-list button:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.op-transposition-moves {
+  overflow: hidden;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.op-transposition-games {
+  flex: none;
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Positions your repertoire answers two different ways. */
+.rep-conflicts {
+  margin-bottom: 10px;
+}
+
+.rep-conflicts-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid var(--loss);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--loss) 10%, transparent);
+  color: var(--text);
+  font-size: 11.5px;
+  font-weight: 650;
+  text-align: left;
+  cursor: pointer;
+}
+
+.rep-conflict-list {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+}
+
+.rep-conflict-list li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 5px 0;
+  border-top: 1px solid var(--line);
+}
+
+.rep-conflict-list button {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.rep-conflict-list button:hover {
+  color: var(--text);
+  background: var(--surface-3);
+}
+
+.rep-conflict-list button b {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+/* "saved as d4 d5 c4 e6" — this position is in the repertoire under a
+   different move order. */
+.op-saveline-transposed {
+  color: var(--faint);
+  font-size: 11px;
+}
+
+.op-saveline-transposed button {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.op-saveline-transposed button:hover {
+  text-decoration: underline;
+}
+
 .op-wdl-summary {
   margin-bottom: 16px;
 }
@@ -995,6 +1281,13 @@
   font-variant-numeric: tabular-nums;
   min-width: 24px;
   text-align: right;
+}
+
+/* Total after transpositions, when it beats the count for this move order. */
+.mr-games em.mr-games-total {
+  color: var(--faint);
+  font-size: 11px;
+  min-width: 0;
 }
 
 .mr-results {

@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { pct } from '../../utils/formatUtils'
 import ResultBar from '../shared/ResultBar'
 
@@ -10,10 +11,18 @@ export default function ExploreTab({
   loading,
   error,
   moves,
+  directGames = 0,
+  transpositions = [],
   onSave,
   onPlayMove,
+  onJumpToPath,
   onReload,
 }) {
+  const [ordersOpen, setOrdersOpen] = useState(false)
+  // Games that got here by a move order other than the one on the board. The
+  // whole point of keying the tree on positions rather than move paths.
+  const transposedGames = Math.max(0, (summary?.games || 0) - directGames)
+
   return (
     <div className="tab-pane" role="tabpanel">
       <div className="op-pane-head">
@@ -36,6 +45,9 @@ export default function ExploreTab({
         <div className="op-stat">
           <span className="op-stat-label">Games here</span>
           <span className="op-stat-num">{summary ? summary.games.toLocaleString() : loading ? '…' : '0'}</span>
+          {transposedGames > 0 && (
+            <span className="op-stat-sub">{directGames} direct · {transposedGames} transposed</span>
+          )}
         </div>
         <div className="op-stat">
           <span className="op-stat-label">Your score</span>
@@ -60,6 +72,32 @@ export default function ExploreTab({
         </div>
       )}
 
+      {transpositions.length > 0 && (
+        <div className="op-transpositions">
+          <button
+            type="button"
+            className="op-transpositions-toggle"
+            aria-expanded={ordersOpen}
+            onClick={() => setOrdersOpen(open => !open)}
+          >
+            <span className={`op-caret${ordersOpen ? ' open' : ''}`} aria-hidden="true" />
+            Also reached via {transpositions.length} other move order{transpositions.length === 1 ? '' : 's'}
+          </button>
+          {ordersOpen && (
+            <ul className="op-transposition-list">
+              {transpositions.map(order => (
+                <li key={order.path_san}>
+                  <button type="button" onClick={() => onJumpToPath(order.path)}>
+                    <span className="op-transposition-moves">{order.path_san}</span>
+                    <span className="op-transposition-games">{order.games}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+
       {error ? (
         <div className="op-empty">
           <strong>Could not load this position</strong>
@@ -78,12 +116,28 @@ export default function ExploreTab({
             <span>Score</span>
           </div>
           {moves.map((m, i) => (
-            <button key={m.san} type="button" className="move-row" onClick={() => onPlayMove(m.san)}>
+            <button
+              key={m.san}
+              type="button"
+              className="move-row"
+              title={`Play ${m.san} — ${m.games} game${m.games === 1 ? '' : 's'}${
+                m.transposed_games > 0 ? `, ${m.total_games} counting transpositions` : ''
+              }`}
+              onClick={() => onPlayMove(m.san)}
+            >
               <span className="mr-rank">{i + 1}</span>
               <span className="mr-san">{m.san}</span>
               <span className="mr-games">
                 <i><b style={{ width: `${m.share}%` }} /></i>
                 <em>{m.games}</em>
+                {m.transposed_games > 0 && (
+                  <em
+                    className="mr-games-total"
+                    title={`${m.total_games} games reached this position, ${m.transposed_games} by another move order`}
+                  >
+                    →{m.total_games}
+                  </em>
+                )}
               </span>
               <span className="mr-results">
                 <ResultBar win={m.win} draw={m.draw} loss={m.loss} games={m.games} compact />

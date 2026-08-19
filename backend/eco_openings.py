@@ -7,8 +7,8 @@ a SAN move sequence into the most specific named opening it reaches.
 Data: `data/eco/{a,b,c,d,e}.tsv` (vendored from github.com/lichess-org/chess-openings,
 public domain). Each row is `eco<TAB>name<TAB>pgn`, e.g. `B12  Caro-Kann Defense:
 Advance Variation  1. e4 c6 2. d4 d5 3. e5`. We replay each row's moves once and
-index it by board EPD (FEN without the move clocks), so transpositions map to the
-same opening regardless of move order.
+index it by position key (see [[position_key]] — the FEN without the move clocks),
+so transpositions map to the same opening regardless of move order.
 
 `classify()` walks the caller's line, and of every position it passes through
 returns the deepest one that is a known named opening — the longest prefix match,
@@ -19,30 +19,28 @@ import threading
 
 import chess
 
+from position_key import key_from_san_path, position_key
+
 _DATA_DIR = os.path.join(os.path.dirname(__file__), "data", "eco")
 _FILES = ("a.tsv", "b.tsv", "c.tsv", "d.tsv", "e.tsv")
 
-# epd -> {"eco", "name"}. Built once, lazily, behind a lock (the API serves
-# classify() from a threadpool, so concurrent first-hits must not race).
+# position key -> {"eco", "name"}. Built once, lazily, behind a lock (the API
+# serves classify() from a threadpool, so concurrent first-hits must not race).
 _index = None
 _index_lock = threading.Lock()
 
 
-def _epd_for_pgn(movetext):
-    """Replay a movetext column ("1. e4 c6 2. d4") and return its board EPD.
+def _key_for_pgn(movetext):
+    """Replay a movetext column ("1. e4 c6 2. d4") and return its position key.
 
     The pgn cells are bare SAN with move numbers; we drop the numbers and push
     each move. Returns None if a token doesn't parse (shouldn't happen for the
     vendored data, but we never want one bad row to break the whole index)."""
-    board = chess.Board()
-    for token in movetext.split():
-        if token[0].isdigit():  # "1." / "12." move numbers, and "1-0" etc.
-            continue
-        try:
-            board.push_san(token)
-        except ValueError:
-            return None
-    return board.epd()
+    moves = [
+        token for token in movetext.split()
+        if not token[0].isdigit()  # "1." / "12." move numbers, and "1-0" etc.
+    ]
+    return key_from_san_path(moves)
 
 
 def _load():
@@ -57,12 +55,12 @@ def _load():
                     if len(parts) < 3:
                         continue
                     eco, name, pgn = parts[0], parts[1], parts[2]
-                    epd = _epd_for_pgn(pgn)
-                    if epd:
-                        # Later, more-specific rows can share a prefix EPD with an
-                        # earlier base row only via transposition; first write wins
-                        # and is fine since the name is identical for a given EPD.
-                        index.setdefault(epd, {"eco": eco, "name": name})
+                    key = _key_for_pgn(pgn)
+                    if key:
+                        # Two rows can land on one position by transposition. We
+                        # keep the first, which means file order (a.tsv…e.tsv)
+                        # decides on the rare collision where the names differ.
+                        index.setdefault(key, {"eco": eco, "name": name})
         except FileNotFoundError:
             continue
     return index
@@ -94,7 +92,7 @@ def classify(moves_san):
             board.push_san(token)
         except ValueError:
             break
-        hit = index.get(board.epd())
+        hit = index.get(position_key(board))
         if hit:
             best = hit
     if not best:

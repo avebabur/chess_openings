@@ -4,6 +4,7 @@ import Board from './Board/Chessground'
 
 export default function BoardPane({
   boardSize,
+  columnRef,
   inSession,
   display,
   displayPath,
@@ -17,12 +18,6 @@ export default function BoardPane({
   onPromotionSelect,
   onPromotionCancel,
   boardResetKey,
-  isTraining,
-  trainerStrip,
-  isReviewing,
-  review,
-  reviewItem,
-  reviewCompleted,
   onExitSession,
   onGoStart,
   onGoBack,
@@ -45,6 +40,7 @@ export default function BoardPane({
     <section
       className="op-board-column"
       aria-label="Board"
+      ref={columnRef}
       style={{ '--board-col-w': `${boardSize + 8}px` }}
     >
       <Board
@@ -123,33 +119,6 @@ export default function BoardPane({
           </button>
         </div>
       </nav>
-
-      {isTraining && trainerStrip && (
-        <div className="op-practice-strip">
-          <div className="op-practice-strip-head">
-            <span>Drilling: {trainerStrip.label}</span>
-            <span>{trainerStrip.done}/{trainerStrip.total} lines</span>
-          </div>
-          <div className="op-practice-progress">
-            <div className="op-practice-progress-fill" style={{ width: `${trainerStrip.progress}%` }} />
-          </div>
-        </div>
-      )}
-
-      {isReviewing && (
-        <div className="op-practice-strip review">
-          <div className="op-practice-strip-head">
-            <span>Reviewing · find the move for {reviewItem.color === 'white' ? 'White' : 'Black'}</span>
-            <span>{review.idx + 1}/{review.queue.length}</span>
-          </div>
-          <div className="op-practice-progress">
-            <div
-              className="op-practice-progress-fill"
-              style={{ width: `${Math.round((reviewCompleted / review.queue.length) * 100)}%` }}
-            />
-          </div>
-        </div>
-      )}
     </section>
   )
 }

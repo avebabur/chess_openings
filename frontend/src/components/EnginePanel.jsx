@@ -13,6 +13,7 @@ import {
   pct,
   stockfishDepthLabel,
 } from '../utils/formatUtils'
+import ExplorerFilters from './ExplorerFilters'
 import ClickableMoveLine from './shared/ClickableMoveLine'
 import ResultBar from './shared/ResultBar'
 
@@ -57,14 +58,18 @@ function cloudFetchLabel(cloud) {
   return 'Not loaded'
 }
 
-/** Honest copy for each explorer state — mirrors cloudPlaceholder. */
-function explorerPlaceholder(explorer) {
+/** Honest copy for each explorer state — mirrors cloudPlaceholder. With filters on,
+ *  an empty result usually means the filters are too narrow, not that the position is
+ *  unplayed; saying so is the difference between "dead end" and "widen your filters". */
+function explorerPlaceholder(explorer, filtersActive) {
   if (!explorer) return 'Loading…'
   switch (explorer.source) {
     case 'ratelimited': return rateLimitedText(explorer)
     case 'auth_required': return 'Lichess requires a token'
     case 'error': return 'Explorer unavailable'
-    default: return 'No games in this position'
+    default: return filtersActive
+      ? 'No games match these filters'
+      : 'No games in this position'
   }
 }
 
@@ -96,6 +101,7 @@ export default function EnginePanel({
   fen, localEval, cloud, explorer, sideToMove, target: targetProp,
   stockfish,
   actionError,
+  explorerFilters, filtersOpen, onToggleFilters,
   onLineSelect, onConfigureToken, onFetchCloud,
   onDeepen, onShallow, onGoInfinite, onResetDepth, onFreeze, onSaveEval, onClearSaved,
 }) {
@@ -129,6 +135,7 @@ export default function EnginePanel({
 
   const explorerLines = explorer?.source === 'lichess' ? (explorer.moves || []) : []
   const explorerTotal = explorer?.total || 0
+  const filtersActive = Boolean(explorerFilters && !explorerFilters.isDefault)
   const stockfishUnavailable = stockfish?.available === false
 
   return (
@@ -238,18 +245,42 @@ export default function EnginePanel({
         )}
       </div>
 
-      <div className="op-engine-section players">
+      <div className={`op-engine-section players${filtersOpen ? ' filters-open' : ''}`}>
         <div className="op-engine-section-head">
           <span className="op-engine-source explorer">
             {explorerLines.length ? <span className="op-arrow-key explorer" aria-hidden="true">→</span> : null}
             Lichess players
           </span>
-          {explorerTotal > 0
-            ? <span className="op-line-depth explorer">
-              {compactNum(explorerTotal)} games{explorer?.stale_error ? ' · offline data' : ''}
-            </span>
-            : null}
+          <span className="op-explorer-head-tail">
+            {explorerTotal > 0
+              ? <span className="op-line-depth explorer">
+                {compactNum(explorerTotal)} games{explorer?.stale_error ? ' · offline data' : ''}
+              </span>
+              : null}
+            {explorerFilters && (
+              <button
+                type="button"
+                className={`op-explorer-filter-btn${filtersOpen ? ' on' : ''}${filtersActive ? ' active' : ''}`}
+                onClick={onToggleFilters}
+                aria-expanded={Boolean(filtersOpen)}
+                title={filtersActive ? 'Filters active — time control, rating, date' : 'Filter by time control, rating, date'}
+              >
+                Filters{filtersActive ? ' •' : ''}
+              </button>
+            )}
+          </span>
         </div>
+        {filtersOpen && explorerFilters && (
+          <ExplorerFilters
+            filters={explorerFilters.filters}
+            isDefault={explorerFilters.isDefault}
+            onToggleSpeed={explorerFilters.toggleSpeed}
+            onToggleRating={explorerFilters.toggleRating}
+            onSetSince={explorerFilters.setSince}
+            onSetUntil={explorerFilters.setUntil}
+            onReset={explorerFilters.reset}
+          />
+        )}
         {explorerLines.length ? (
           <div className="op-explorer-moves">
             {explorerLines.map((m) => {
@@ -297,7 +328,7 @@ export default function EnginePanel({
         ) : (
           <div className="op-line static">
             <span className="op-line-eval muted">…</span>
-            <span className="op-line-moves muted">{explorerPlaceholder(explorer)}</span>
+            <span className="op-line-moves muted">{explorerPlaceholder(explorer, filtersActive)}</span>
           </div>
         )}
       </div>

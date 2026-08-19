@@ -2,6 +2,22 @@ import { Chess } from 'chess.js'
 
 export const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1'
 
+// The backend's definition of "the same position" (backend/position_key.py):
+// the FEN's first four fields — placement, side to move, castling rights, and
+// the en-passant square — dropping the two move clocks, which are the only
+// fields a transposition changes. chess.js and python-chess both write an
+// en-passant square only when the capture is actually legal, so slicing is
+// enough; backend/tests/data/position_key_fixtures.json is asserted by this
+// suite and by pytest so the two can't drift apart unnoticed.
+export function positionKeyFromFen(fen) {
+  const fields = (fen || '').split(' ')
+  return fields.length < 4 ? '' : fields.slice(0, 4).join(' ')
+}
+
+export function sideToMove(fen) {
+  return positionKeyFromFen(fen).split(' ')[1] === 'b' ? 'black' : 'white'
+}
+
 export function splitSanLine(line) {
   if (Array.isArray(line)) return line.filter(Boolean)
   return (line || '').split(/\s+/).filter(Boolean)
@@ -81,6 +97,45 @@ export function findNodeByPath(root, path) {
   return node?.id ? node : null
 }
 
+// Every repertoire node grouped by the position it is played FROM, so replies
+// can be looked up by where you are rather than by how you got there.
+export function indexNodesByEpdBefore(root) {
+  const index = new Map()
+  const walk = (node) => {
+    for (const child of node?.children || []) {
+      if (child.epd_before) {
+        const bucket = index.get(child.epd_before)
+        if (bucket) bucket.push(child)
+        else index.set(child.epd_before, [child])
+      }
+      walk(child)
+    }
+  }
+  walk(root)
+  return index
+}
+
+// The saved replies at a position, de-duplicated by move — the same reply saved
+// under two move orders is one option. 'main' lines sort first, then by how much
+// they've been drilled, so the most established reply leads.
+const LABEL_RANK = { main: 0, alternative: 1, trap: 2, sideline: 3 }
+
+export function repliesAtPosition(index, epd) {
+  if (!index || !epd) return []
+  const bySan = new Map()
+  for (const node of index.get(epd) || []) {
+    const existing = bySan.get(node.san)
+    if (!existing || (node.drill_count || 0) > (existing.drill_count || 0)) {
+      bySan.set(node.san, node)
+    }
+  }
+  return [...bySan.values()].sort((a, b) => (
+    (LABEL_RANK[a.label] ?? 9) - (LABEL_RANK[b.label] ?? 9)
+    || (b.drill_count || 0) - (a.drill_count || 0)
+    || a.san.localeCompare(b.san)
+  ))
+}
+
 export function needsPromotion(fen, orig, dest) {
   const game = new Chess(fen)
   const piece = game.get(orig)
@@ -112,16 +167,34 @@ export function tryMove(fen, orig, dest, promotion = 'q') {
   return makeMove(fen, orig, dest, promotion)?.move || null
 }
 
+// Which of the saved replies the player just made, or null for none of them.
+// `expected` is one reply or a list — a review card collapses every move order
+// into a single question, so several answers can be right.
+//
+// Matching is by position, not FEN string: two replies can reach one position by
+// different move orders, and only the move clocks would differ.
+export function matchExpectedMove(moveResult, expected) {
+  if (!moveResult || !expected) return null
+  const candidates = Array.isArray(expected) ? expected : [expected]
+  const playedKey = positionKeyFromFen(moveResult.fenAfter)
+  return candidates.find(reply => reply && (
+    reply.san === moveResult.san
+    || (reply.epd_after && reply.epd_after === playedKey)
+    || (reply.fen_after && positionKeyFromFen(reply.fen_after) === playedKey)
+  )) || null
+}
+
 export function isExpectedMove(moveResult, expected) {
-  if (!moveResult || !expected) return false
-  return moveResult.san === expected.san || (
-    Boolean(expected.fen_after) && moveResult.fenAfter === expected.fen_after
-  )
+  return matchExpectedMove(moveResult, expected) !== null
 }
 
 export function normalizeReviewNode(node) {
   const path = splitSanLine(node?.path_san)
   if (!node?.id || !path.length) return null
+  // `accepted` comes from the server: every reply saved at this position, so a
+  // transposed-but-saved answer isn't graded wrong. Older payloads without it
+  // fall back to this node's own move.
+  const accepted = (node.accepted || []).filter(reply => reply?.node_id)
   return {
     id: node.id,
     path,
@@ -129,6 +202,15 @@ export function normalizeReviewNode(node) {
     san: node.san,
     color: node.color,
     fen_after: node.fen_after,
+    epd_before: node.epd_before || null,
+    epd_after: node.epd_after || null,
+    accepted: accepted.length ? accepted : [{
+      node_id: node.id,
+      san: node.san,
+      fen_after: node.fen_after,
+      epd_after: node.epd_after || null,
+      path_san: node.path_san,
+    }],
   }
 }
 

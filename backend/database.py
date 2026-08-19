@@ -34,6 +34,9 @@ SCHEMA_MIGRATIONS = (
     "account_sync_jobs_v1",
     "active_query_indexes_v1",
     "drill_history_foreign_keys_v2",
+    "position_keyed_eval_caches_v1",
+    "repertoire_node_position_keys_v1",
+    "repertoire_position_srs_v1",
 )
 
 
@@ -291,6 +294,165 @@ def _run_integrity_migrations():
         conn.close()
 
 
+def _rekey_eval_caches_by_position(conn):
+    """Re-key the three eval/explorer caches from FEN to position key.
+
+    Keyed on a full FEN, the same position reached by two move orders occupied
+    two rows — the move clocks differ even though the evaluation cannot. Collapse
+    them, newest row winning, and rebuild each table with the honest key.
+
+    Rebuilt rather than renamed because the primary key itself changes and rows
+    have to merge. Cheapest migration to get wrong: the worst case is a cache
+    miss that refetches.
+    """
+    from position_key import key_from_fen
+
+    def _rekeyed(rows, key_column):
+        """One row per position key, the newest of any duplicates winning.
+
+        Rows arrive oldest-first, so a later write simply overwrites an earlier
+        one. An unparseable key is dropped: nothing could ever look it up again.
+        """
+        out = {}
+        for row in rows:
+            raw = row[key_column]
+            # explorer_cache keys are "<fen>|<filter signature>"; only the FEN
+            # half is re-keyed, and the suffix rides along untouched.
+            fen, separator, filters = raw.partition("|")
+            try:
+                key = key_from_fen(fen) + separator + filters
+            except ValueError:
+                continue
+            out[key] = (key, *tuple(row)[1:])
+        return list(out.values())
+
+    if "epd" not in _column_names(conn, "cloud_eval_cache"):
+        rows = conn.execute(
+            "SELECT fen, payload, source, fetched_at FROM cloud_eval_cache "
+            "ORDER BY fetched_at",
+        ).fetchall()
+        conn.execute("DROP TABLE cloud_eval_cache")
+        conn.execute("""
+            CREATE TABLE cloud_eval_cache (
+                epd TEXT PRIMARY KEY,
+                payload JSON NOT NULL,
+                source TEXT,
+                fetched_at TEXT DEFAULT (datetime('now'))
+            )
+        """)
+        conn.executemany(
+            "INSERT INTO cloud_eval_cache (epd, payload, source, fetched_at) "
+            "VALUES (?, ?, ?, ?)",
+            _rekeyed(rows, "fen"),
+        )
+
+    if "epd" not in _column_names(conn, "saved_eval"):
+        rows = conn.execute(
+            "SELECT fen, payload, depth, saved_at FROM saved_eval ORDER BY saved_at",
+        ).fetchall()
+        conn.execute("DROP TABLE saved_eval")
+        conn.execute("""
+            CREATE TABLE saved_eval (
+                epd TEXT PRIMARY KEY,
+                payload JSON NOT NULL,
+                depth INTEGER,
+                saved_at TEXT DEFAULT (datetime('now'))
+            )
+        """)
+        conn.executemany(
+            "INSERT INTO saved_eval (epd, payload, depth, saved_at) VALUES (?, ?, ?, ?)",
+            _rekeyed(rows, "fen"),
+        )
+
+    # explorer_cache keeps its `cache_key` column — only the FEN half of the key
+    # changes — so rewrite every row in place rather than rebuilding the table.
+    rows = conn.execute(
+        "SELECT cache_key, payload, source, fetched_at FROM explorer_cache "
+        "ORDER BY fetched_at",
+    ).fetchall()
+    conn.execute("DELETE FROM explorer_cache")
+    conn.executemany(
+        "INSERT INTO explorer_cache (cache_key, payload, source, fetched_at) "
+        "VALUES (?, ?, ?, ?)",
+        _rekeyed(rows, "cache_key"),
+    )
+
+
+def _backfill_repertoire_position_keys(conn):
+    """Derive epd_before/epd_after for every node from the FENs already stored.
+
+    Purely additive: nothing reads these columns yet. Doing it as its own
+    migration means the keys can be inspected before the spaced-repetition fold
+    that depends on them runs against them.
+    """
+    from position_key import key_from_fen
+
+    rows = conn.execute(
+        "SELECT id, fen_before, fen_after FROM repertoire_nodes "
+        "WHERE epd_before IS NULL OR epd_after IS NULL",
+    ).fetchall()
+    updates = []
+    for row in rows:
+        try:
+            updates.append((
+                key_from_fen(row["fen_before"]), key_from_fen(row["fen_after"]), row["id"],
+            ))
+        except ValueError:
+            # A node whose FEN can't be parsed keeps NULL keys and simply stays
+            # out of every position-keyed query rather than corrupting one.
+            continue
+    conn.executemany(
+        "UPDATE repertoire_nodes SET epd_before = ?, epd_after = ? WHERE id = ?",
+        updates,
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_repertoire_nodes_epd_before "
+        "ON repertoire_nodes(color, epd_before)",
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_repertoire_nodes_epd_after "
+        "ON repertoire_nodes(color, epd_after)",
+    )
+
+
+def _fold_drill_history_into_positions(conn):
+    """Move spaced repetition from per-move-order nodes to per-position cards.
+
+    A position saved under two move orders had two independent nodes with two
+    independent schedules, so the user re-learned what they already knew and the
+    review queue could serve the same position twice in a session. Group the
+    nodes by what they actually teach — ``(color, position, move)`` — and merge:
+
+      counts          SUM     historical totals; the only lossless choice.
+      interval_days   MAX     over drilled rows. The split was our bug; the user
+                              did the work, so keep the longest interval earned.
+      next_review_at  MIN     over drilled rows. Due-ness is a floor: if any copy
+                              says it's due, it's due. Paired with MAX(interval) a
+                              merged card surfaces once, then one correct answer
+                              pushes it straight back out.
+      last_drilled_at MAX     (SQLite MIN/MAX skip NULLs, which the CASE relies on)
+
+    The node columns are left in place as a read-only shadow so this is auditable
+    and reversible; nothing reads them after this point.
+    """
+    conn.execute("""
+        INSERT OR IGNORE INTO repertoire_positions
+            (color, epd, san, drill_count, drill_solved, drill_missed,
+             interval_days, next_review_at, last_drilled_at)
+        SELECT color, epd_before, san,
+               SUM(drill_count), SUM(drill_solved), SUM(drill_missed),
+               COALESCE(MAX(CASE WHEN drill_count > 0 THEN interval_days  END), 1),
+               COALESCE(MIN(CASE WHEN drill_count > 0 THEN next_review_at END),
+                        MIN(next_review_at)),
+               MAX(last_drilled_at)
+        FROM repertoire_nodes
+        WHERE epd_before IS NOT NULL
+        GROUP BY color, epd_before, san
+    """)
+    # The node-level due index has nothing left to serve.
+    conn.execute("DROP INDEX IF EXISTS idx_repertoire_nodes_due")
+
+
 def _run_schema_migrations():
     conn = get_db()
     try:
@@ -453,6 +615,18 @@ def _run_schema_migrations():
                 "ON repertoire_drill_attempts(branch_id, created_at DESC)",
             )
             _mark_migration_applied(conn, "drill_history_foreign_keys_v2")
+
+        if not _migration_applied(conn, "position_keyed_eval_caches_v1"):
+            _rekey_eval_caches_by_position(conn)
+            _mark_migration_applied(conn, "position_keyed_eval_caches_v1")
+
+        if not _migration_applied(conn, "repertoire_node_position_keys_v1"):
+            _backfill_repertoire_position_keys(conn)
+            _mark_migration_applied(conn, "repertoire_node_position_keys_v1")
+
+        if not _migration_applied(conn, "repertoire_position_srs_v1"):
+            _fold_drill_history_into_positions(conn)
+            _mark_migration_applied(conn, "repertoire_position_srs_v1")
         conn.commit()
     except Exception:
         conn.rollback()
@@ -566,9 +740,18 @@ def init_db():
             uci TEXT NOT NULL,
             fen_before TEXT NOT NULL,
             fen_after TEXT NOT NULL,
+            -- Position keys for the boards either side of this move. `epd_before`
+            -- is the position you're asked about when drilling; `epd_after` links
+            -- transposing lines to each other. See [[position_key]].
+            epd_before TEXT,
+            epd_after TEXT,
             path_san TEXT NOT NULL,
             label TEXT DEFAULT 'sideline',
             note TEXT DEFAULT '',
+            -- LEGACY, no longer read or written: spaced repetition moved to
+            -- repertoire_positions, keyed by position rather than move order, so
+            -- a line learned two ways is one card. Kept as a read-only shadow of
+            -- the pre-fold numbers; see repertoire_position_srs_v1.
             drill_count INTEGER DEFAULT 0,
             drill_solved INTEGER DEFAULT 0,
             drill_missed INTEGER DEFAULT 0,
@@ -579,6 +762,31 @@ def init_db():
             updated_at TEXT DEFAULT (datetime('now')),
             UNIQUE(color, path_san)
         );
+        -- What you are actually learning: "in THIS position, play THIS move".
+        -- One row per prescription, so the same position saved under two move
+        -- orders is a single card with a single review schedule.
+        --
+        -- Keyed on the position *before* the move plus the move itself, not on
+        -- the position after it: two different moves from two different
+        -- positions can land on the same board, and those are different
+        -- questions that must not merge.
+        CREATE TABLE IF NOT EXISTS repertoire_positions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            color TEXT NOT NULL,
+            epd TEXT NOT NULL,
+            san TEXT NOT NULL,
+            drill_count INTEGER NOT NULL DEFAULT 0,
+            drill_solved INTEGER NOT NULL DEFAULT 0,
+            drill_missed INTEGER NOT NULL DEFAULT 0,
+            interval_days INTEGER NOT NULL DEFAULT 1,
+            next_review_at TEXT DEFAULT (datetime('now')),
+            last_drilled_at TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(color, epd, san)
+        );
+        CREATE INDEX IF NOT EXISTS idx_repertoire_positions_due
+            ON repertoire_positions(color, next_review_at) WHERE drill_count > 0;
         CREATE TABLE IF NOT EXISTS repertoire_openings (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             color TEXT NOT NULL,
@@ -631,20 +839,26 @@ def init_db():
             key TEXT PRIMARY KEY,
             value TEXT
         );
+        -- Evals are keyed by position, not FEN: the move clocks a transposition
+        -- changes must not split one position's eval across two rows. See
+        -- [[position_key]]; evaluation_repository normalizes on the way in.
         CREATE TABLE IF NOT EXISTS cloud_eval_cache (
-            fen TEXT PRIMARY KEY,
+            epd TEXT PRIMARY KEY,
             payload JSON NOT NULL,
             source TEXT,
             fetched_at TEXT DEFAULT (datetime('now'))
         );
         CREATE TABLE IF NOT EXISTS saved_eval (
-            fen TEXT PRIMARY KEY,
+            epd TEXT PRIMARY KEY,
             payload JSON NOT NULL,
             depth INTEGER,
             saved_at TEXT DEFAULT (datetime('now'))
         );
+        -- cache_key is a position key for an unfiltered lookup, or
+        -- "<position key>|<filter signature>" when speeds/ratings/date filters
+        -- narrow it. Built by lichess_explorer._cache_key().
         CREATE TABLE IF NOT EXISTS explorer_cache (
-            fen TEXT PRIMARY KEY,
+            cache_key TEXT PRIMARY KEY,
             payload JSON NOT NULL,
             source TEXT,
             fetched_at TEXT DEFAULT (datetime('now'))
@@ -669,6 +883,15 @@ def init_db():
         # white/black + user_color by migrate_games_to_accounts().
         "ALTER TABLE games ADD COLUMN account_id INTEGER",
         "ALTER TABLE games ADD COLUMN merged_into_game_id INTEGER REFERENCES games(id)",
+        # Explorer results can now be narrowed by speed/rating/date, so the cache is
+        # keyed by "<fen>|<filters>" rather than a bare FEN. Renaming (rather than
+        # dropping) keeps every existing unfiltered row — their keys are still FENs.
+        "ALTER TABLE explorer_cache RENAME COLUMN fen TO cache_key",
+        # Position identity for repertoire nodes, so transposing lines can be
+        # recognized as the same position. Backfilled from the FEN columns by
+        # repertoire_node_position_keys_v1.
+        "ALTER TABLE repertoire_nodes ADD COLUMN epd_before TEXT",
+        "ALTER TABLE repertoire_nodes ADD COLUMN epd_after TEXT",
     ):
         try:
             conn.execute(ddl)

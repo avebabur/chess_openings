@@ -35,9 +35,9 @@ class ExternalApiClients:
             fen, multipv, allow_network, client=self.http,
         )
 
-    def opening_explorer(self, fen, allow_network=True):
+    def opening_explorer(self, fen, allow_network=True, filters=None):
         return lichess_explorer.get_opening_explorer(
-            fen, allow_network, client=self.http,
+            fen, allow_network, client=self.http, filters=filters,
         )
 
     @property

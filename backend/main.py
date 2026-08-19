@@ -4,6 +4,7 @@ Runs separately from the Game Review app on its own port (default :8001).
 Shares the chess_review.db file for imported games and repertoire data.
 """
 import os
+import re
 import sys
 import tempfile
 from datetime import datetime, timezone
@@ -30,6 +31,7 @@ os.environ.setdefault(
 
 import database as db  # noqa: E402
 import eco_openings  # noqa: E402  (offline move-sequence → opening-name recognizer)
+import lichess_explorer  # noqa: E402  (SPEEDS / RATING_GROUPS / MIN_YEAR allow-lists)
 import live_engine  # noqa: E402  (openings-local interactive eval engine)
 from sync_service import AccountSyncService  # noqa: E402
 from services import ExternalApiClients, SQLiteService  # noqa: E402
@@ -325,15 +327,54 @@ async def delete_saved_eval(fen: str = Query(min_length=4, max_length=128)):
     return {"deleted": True, "fen": fen}
 
 
+_MONTH_RE = re.compile(r"^(19|20)\d{2}-(0[1-9]|1[012])$")
+
+
+def _explorer_filters(speeds: str, ratings: str, since: str, until: str):
+    """Validate the Lichess explorer filters and shape them for lichess_explorer.
+
+    Lichess rejects anything outside its own enums, so we reject it here too rather
+    than forwarding junk and surfacing an opaque upstream error. Ratings are band
+    lower bounds, not free numbers.
+    """
+    wanted_speeds = [s for s in speeds.split(",") if s]
+    if any(s not in lichess_explorer.SPEEDS for s in wanted_speeds):
+        raise HTTPException(400, "Invalid speeds")
+
+    wanted_ratings = []
+    for raw in (r for r in ratings.split(",") if r):
+        if not raw.isdigit() or int(raw) not in lichess_explorer.RATING_GROUPS:
+            raise HTTPException(400, "Invalid ratings")
+        wanted_ratings.append(int(raw))
+
+    for label, month in (("since", since), ("until", until)):
+        if month and (not _MONTH_RE.match(month)
+                      or int(month[:4]) < lichess_explorer.MIN_YEAR):
+            raise HTTPException(400, f"Invalid {label} (expected YYYY-MM)")
+    if since and until and since > until:
+        raise HTTPException(400, "since must not be after until")
+
+    return {"speeds": wanted_speeds, "ratings": wanted_ratings,
+            "since": since, "until": until}
+
+
 @api.get("/opening-explorer")
-async def opening_explorer(request: Request, fen: str = Query(min_length=4, max_length=128)):
+async def opening_explorer(
+    request: Request,
+    fen: str = Query(min_length=4, max_length=128),
+    speeds: str = Query(default="", max_length=100),
+    ratings: str = Query(default="", max_length=100),
+    since: str = Query(default="", max_length=7),
+    until: str = Query(default="", max_length=7),
+):
     try:
         chess.Board(fen)
     except ValueError:
         raise HTTPException(400, "Invalid FEN")
+    filters = _explorer_filters(speeds, ratings, since, until)
     allow_network = os.environ.get("OPENINGS_DISABLE_EXTERNAL_NETWORK") != "1"
     return await run_in_threadpool(
-        request.app.state.external_clients.opening_explorer, fen, allow_network,
+        request.app.state.external_clients.opening_explorer, fen, allow_network, filters,
     )
 
 

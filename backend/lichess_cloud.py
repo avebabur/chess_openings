@@ -116,7 +116,10 @@ def get_cloud_eval(fen, multipv=1, allow_network=True, client=None):
     cached = db.get_cloud_eval_cached(fen)
     if cached:
         if cached["source"] == "lichess":
-            return cached["payload"]
+            # The row is shared by every move order into this position, and the
+            # stored `fen` is Lichess's echo from whichever one filled it. Answer
+            # with the FEN the caller asked about.
+            return {**cached["payload"], "fen": fen}
         if cached["source"] == "miss" and _miss_fresh(cached["fetched_at"]):
             return {"source": "miss", "fen": fen}
 

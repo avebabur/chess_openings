@@ -28,6 +28,8 @@ export default function RepertoireTab({
   allTags,
   tagFilter,
   dueNodes,
+  dueCount = 0,
+  transpositions = [],
   openings,
   activeLineKey,
   currentChildren,
@@ -52,9 +54,18 @@ export default function RepertoireTab({
   onSetEditorOpen,
   onSetTagFilter,
   onJumpToPath,
+  onPlayMove,
+  savedAsTransposition = false,
 }) {
   const [overrides, setOverrides] = useState({})
+  const [conflictsOpen, setConflictsOpen] = useState(false)
   const [showAdd, setShowAdd] = useState(false)
+  // Only the disagreements are worth interrupting for; plain transpositions are
+  // reported in the payload but need no action.
+  const conflicts = useMemo(
+    () => transpositions.filter(item => item.conflict),
+    [transpositions],
+  )
   const [newOpening, setNewOpening] = useState('')
   const [showTagMenu, setShowTagMenu] = useState(false)
 
@@ -166,9 +177,43 @@ export default function RepertoireTab({
       <div className="rep-sticky">
         {dueNodes.length > 0 && (
           <button type="button" className="rep-due" onClick={onStartReview}>
-            <span>{dueNodes.length} position{dueNodes.length === 1 ? '' : 's'} due for review</span>
+            {/* dueCount is the real backlog; dueNodes is capped at 50 by the API. */}
+            <span>{dueCount} position{dueCount === 1 ? '' : 's'} due for review</span>
             <span aria-hidden="true">→</span>
           </button>
+        )}
+
+        {conflicts.length > 0 && (
+          <div className="rep-conflicts">
+            <button
+              type="button"
+              className="rep-conflicts-toggle"
+              aria-expanded={conflictsOpen}
+              onClick={() => setConflictsOpen(open => !open)}
+            >
+              <span className={`op-caret${conflictsOpen ? ' open' : ''}`} aria-hidden="true" />
+              {conflicts.length} position{conflicts.length === 1 ? '' : 's'} where your
+              {' '}repertoire gives two different answers
+            </button>
+            {conflictsOpen && (
+              <ul className="rep-conflict-list">
+                {conflicts.map(item => (
+                  <li key={item.epd}>
+                    {item.moves.map(move => (
+                      <button
+                        key={move.path_san}
+                        type="button"
+                        onClick={() => onJumpToPath(move.path_san.split(' '))}
+                      >
+                        <b>{move.san}</b>
+                        <span>after {move.prior_path_san || 'the start'}</span>
+                      </button>
+                    ))}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
         )}
 
         {path.length > 0 && (
@@ -179,6 +224,16 @@ export default function RepertoireTab({
                   {lineChanged ? 'Unsaved changes' : saveTarget ? '✓ In your repertoire' : 'Current line · not saved'}
                 </span>
                 <span className="op-saveline-name">{saveTarget?.name || currentLineTitle}</span>
+                {savedAsTransposition && !lineChanged && (
+                  // Same position, different move order. Saying so — and naming
+                  // the stored order — stops this being saved a second time.
+                  <span className="op-saveline-transposed">
+                    saved as <button
+                      type="button"
+                      onClick={() => onJumpToPath(saveTarget.moves_san.split(' '))}
+                    >{saveTarget.moves_san}</button>
+                  </span>
+                )}
               </div>
               <div className="op-saveline-actions">
                 {conflictBranch ? (
@@ -211,7 +266,10 @@ export default function RepertoireTab({
                     key={child.id}
                     type="button"
                     className="op-continue-move"
-                    onClick={() => { playStepSound(child.san); onJumpToPath(child.path_san.split(' ')) }}
+                    /* Extend the move order on the board rather than jumping to
+                       this reply's own path — with replies gathered by position,
+                       the two can differ and jumping would rewrite history. */
+                    onClick={() => { playStepSound(child.san); onPlayMove(child.san) }}
                     title={child.drill_count ? `Drilled ${child.drill_solved}/${child.drill_count}` : 'Saved reply'}
                   >
                     {child.san}
