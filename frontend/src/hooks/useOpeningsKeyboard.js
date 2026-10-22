@@ -14,6 +14,9 @@ import { useEffect } from 'react'
  *   0            stop/freeze at the current depth (lets it finish, then it's saveable)
  *   Esc          dismiss a pending promotion
  *
+ * `paused` (a modal is open) silences every binding — including `f`, which
+ * otherwise flipped the board behind the Accounts dialog.
+ *
  * Modifier combos (Cmd/Ctrl/Alt) are ignored so the browser's own shortcuts —
  * find (⌘F), zoom (⌘=/⌘-), reload, etc. — keep working. Shift is allowed because
  * `+`/`_` are shifted `=`/`-`.
@@ -24,6 +27,7 @@ import { useEffect } from 'react'
  * the modal.
  */
 export function useOpeningsKeyboard({
+  paused = false,
   enabled = true,
   engineEnabled = false,
   pendingPromotion,
@@ -38,6 +42,7 @@ export function useOpeningsKeyboard({
   freeze,
 }) {
   useEffect(() => {
+    if (paused) return undefined
     const handleKey = (e) => {
       // Leave modifier combos to the browser (⌘F find, ⌘=/⌘- zoom, ⌘R reload, …).
       // Shift is fine: `+`/`_` are shifted `=`/`-`.
@@ -116,5 +121,5 @@ export function useOpeningsKeyboard({
 
     window.addEventListener('keydown', handleKey)
     return () => window.removeEventListener('keydown', handleKey)
-  }, [enabled, engineEnabled, pendingPromotion, cancelPromotion, goBack, goForward, goStart, goEnd, flip, deepen, shallow, freeze])
+  }, [paused, enabled, engineEnabled, pendingPromotion, cancelPromotion, goBack, goForward, goStart, goEnd, flip, deepen, shallow, freeze])
 }

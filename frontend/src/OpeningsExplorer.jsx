@@ -36,6 +36,7 @@ import {
 } from './domain/chessLine'
 import {
   TRAINER_STATUS,
+  nodeAtPath,
   trainerCurrentChildren,
   trainerExpectedChild,
 } from './domain/openingTrainer'
@@ -111,23 +112,33 @@ export default function OpeningsExplorer() {
   const shellRef = useRef(null)
   const boardColumnRef = useRef(null)
   const { repertoire, error: repertoireError, reload: loadRepertoire } = useRepertoire(color)
+  const { openings, error: openingsError, reload: loadOpenings } = useOpenings(color)
+  // A finished line updates its branch's drill totals, which the Train list's
+  // per-opening "trained / clean" counts are built from — refresh both.
+  const reloadAfterDrill = useCallback(() => {
+    loadOpenings()
+    return loadRepertoire()
+  }, [loadOpenings, loadRepertoire])
   const {
     trainer, trainerPath, dispatchTrainer, drillWrite,
     stopTrainer, clearTimer: clearTrainerTimer,
-  } = useTrainingSession({ activeTab, repertoire, reloadRepertoire: loadRepertoire })
+  } = useTrainingSession({ activeTab, repertoire, reloadRepertoire: reloadAfterDrill })
   const {
     review, reviewItem, reviewWrite, dispatchReview,
     recordReview, retryReviewWrite, resetReviewWrite,
   } = useReviewSession(loadRepertoire)
-  const { openings, error: openingsError, reload: loadOpenings } = useOpenings(color)
   const { tree, loading, error, reload: reloadTree } = useOpeningTree({
     color, pathKey: activeLineKey, timeClass, accountId: selectedAccountId,
     enabled: activeTab === 'Explore' && !trainer && !reviewItem,
   })
+  // The games list is fetched the first time the tab is opened, not on every
+  // page load; after that it stays loaded (and keeps any "Load more" pages).
+  const [gamesTabOpened, setGamesTabOpened] = useState(activeTab === 'Games')
+  if (activeTab === 'Games' && !gamesTabOpened) setGamesTabOpened(true)
   const {
     games: gameRows, total: gamesTotal, loading: gamesLoading, error: gamesError,
     hasMore: gamesHasMore, loadMore: loadMoreGames, reload: reloadGames,
-  } = useGames({ accountId: selectedAccountId, timeClass })
+  } = useGames({ accountId: selectedAccountId, timeClass, enabled: gamesTabOpened })
   const cancelPromotion = useCallback(() => setPendingPromotion(null), [])
   const resetBoardPosition = useCallback(() => setBoardResetKey((key) => key + 1), [])
 
@@ -288,10 +299,16 @@ export default function OpeningsExplorer() {
   const openingTitle = reviewGame
     ? (reviewGame.opening || '')
     : (classifiedOpening?.name || tree?.summary?.opening || tree?.moves?.[0]?.opening || '')
-  const headerTitle = !path.length
-    ? 'Starting position'
-    : (openingTitle || formatMoveLine(path, 10))
-  const headerIsPlaceholder = !path.length
+  // During a drill or review the board is not the explored line, so naming the
+  // explored line's opening up here contradicted the board.
+  const headerTitle = isTraining
+    ? `Training · ${trainer.scope?.label || 'Openings'}`
+    : isReviewing
+      ? 'Spaced review'
+      : !path.length
+        ? 'Starting position'
+        : (openingTitle || formatMoveLine(path, 10))
+  const headerIsPlaceholder = !inSession && !path.length
   const suggestedName = openingTitle || shortMoves(activeLineKey, 5)
 
   // Match the exact move order first, then any branch ending on this same
@@ -443,14 +460,13 @@ export default function OpeningsExplorer() {
     setLine({ path: [], future: [] })
   }, [clearTrainerTimer, color, dispatchReview, dispatchTrainer, path.length, review, reviewGame, setLine, trainer])
 
+  // Filters narrow the stats for the position you're on; they don't send you
+  // back to the start (lichess's explorer behaves the same way).
   const selectTimeClass = useCallback((nextTimeClass) => {
-    if (nextTimeClass === timeClass && !path.length && !reviewGame) return
+    if (nextTimeClass === timeClass) return
     setTimeClass(nextTimeClass)
     setReviewGame(null)
-    setLine({ path: [], future: [] })
-    setEditingBranchId(null)
-    setEditorOpen(false)
-  }, [path.length, reviewGame, setLine, timeClass])
+  }, [timeClass])
 
   const selectAccount = useCallback((id) => {
     clearTrainerTimer()
@@ -458,8 +474,7 @@ export default function OpeningsExplorer() {
     dispatchReview({ type: 'clear' })
     setReviewGame(null)
     setSelectedAccountId(id)
-    setLine({ path: [], future: [] })
-  }, [clearTrainerTimer, dispatchReview, dispatchTrainer, setLine])
+  }, [clearTrainerTimer, dispatchReview, dispatchTrainer])
 
   const addAccount = useCallback(async (platform, username) => {
     const res = await accountManager.add(platform, username)
@@ -618,7 +633,10 @@ export default function OpeningsExplorer() {
   const deleteBranch = async (branch) => {
     try {
       await api.delete(`/repertoire/tree/branches/${branch.id}`)
+      // Deleting from inside the editor must close it: left open, it fell back
+      // to a "New variation" form still showing the delete confirmation.
       if (editingBranchId === branch.id) setEditingBranchId(null)
+      setEditorOpen(false)
       setSaveFeedback(`Deleted “${branch.name}”`)
       await loadRepertoire()
       loadOpenings()
@@ -734,21 +752,21 @@ export default function OpeningsExplorer() {
 
       if (!hit) {
         // Before calling it a miss: the drill tree walks saved *move orders*, so
-        // a move that is genuinely in the repertoire at this position — just
+        // a move that is genuinely in the drilled lines at this position — just
         // reached another way — would otherwise be marked wrong. Knowing the
         // transposition should not cost you the card.
-        const transposed = matchExpectedMove(
-          result, repliesAtPosition(nodesByEpdBefore, positionKeyFromFen(fen)),
-        )
-        if (transposed) {
+        //
+        // Only replies inside the drill's own scope count. The position index
+        // spans the whole repertoire, so without this check 1.e4 passed as a
+        // "clean line" in a 1.d4-only drill because some *other* opening plays it.
+        const transposed = repliesAtPosition(nodesByEpdBefore, positionKeyFromFen(fen))
+          .filter(reply => nodeAtPath(trainer.tree, splitSanLine(reply.path_san)))
+        const match = matchExpectedMove(result, transposed)
+        if (match) {
           playStepSound(result.san)
-          // Continue in the drill tree if this move exists there; otherwise the
-          // walk has left the saved line and the run ends here rather than
-          // pretending to know what comes next.
-          const continues = resolved.find(({ node }) => node?.epd_after === transposed.epd_after)
-          dispatchTrainer(continues
-            ? { type: 'userMove', childPath: continues.child.path, san: result.san }
-            : { type: 'userMove', childPath: splitSanLine(transposed.path_san), san: result.san })
+          // Carry on down the drill tree from the other move order's node, which
+          // is the same position with the same continuations.
+          dispatchTrainer({ type: 'userMove', childPath: splitSanLine(match.path_san), san: result.san })
           return
         }
         playIllegalSound()
@@ -861,8 +879,9 @@ export default function OpeningsExplorer() {
     : baseOrientation
 
   useOpeningsKeyboard({
-    enabled: !inSession && !accountsModalOpen,
-    engineEnabled: !inSession && !accountsModalOpen,
+    paused: accountsModalOpen,
+    enabled: !inSession,
+    engineEnabled: !inSession,
     pendingPromotion,
     cancelPromotion,
     goBack,
@@ -892,7 +911,7 @@ export default function OpeningsExplorer() {
     <div className="cr2 openings-workspace">
       <header className="op-toolbar">
         <div className="op-toolbar-intro">
-          <h1 className={`op-opening-title${headerIsPlaceholder ? ' placeholder' : ''}`}>
+          <h1 className={`op-opening-title${headerIsPlaceholder ? ' placeholder' : ''}`} title={headerTitle}>
             {headerTitle}
           </h1>
           <p className="op-meta">
@@ -1030,7 +1049,26 @@ export default function OpeningsExplorer() {
                 </button>
               </div>
             )}
-            {activeTab === 'Explore' && (
+            {activeTab === 'Explore' && inSession && (
+              // The tree is not fetched mid-session (it would spoil the answer),
+              // so showing ExploreTab here meant stats for some earlier position.
+              <div className="tab-pane" role="tabpanel">
+                <div className="op-empty">
+                  <strong>{isTraining ? 'Drill in progress' : 'Review in progress'}</strong>
+                  <p>Your game stats would give away the answer, so Explore waits until you finish.</p>
+                  <div className="op-empty-actions">
+                    <button type="button" className="btn-primary" onClick={() => setActiveTab(isTraining ? 'Practice' : 'Review')}>
+                      {isTraining ? 'Back to drill' : 'Back to review'}
+                    </button>
+                    <button type="button" className="btn-secondary" onClick={exitSession}>
+                      {isTraining ? 'Exit drill' : 'End review'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {activeTab === 'Explore' && !inSession && (
               <ExploreTab
                 sideToMove={sideToMoveLabel}
                 path={path}
@@ -1127,6 +1165,7 @@ export default function OpeningsExplorer() {
                 reviewItem={reviewItem}
                 reviewPriorPath={reviewPriorPath}
                 dueNodes={dueNodes}
+                dueCount={repertoire?.stats?.due || 0}
                 duePreview={duePreview}
                 branches={branches}
                 trainedBranches={trainedBranches}

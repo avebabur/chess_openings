@@ -2,12 +2,32 @@ import { cleanup, fireEvent, render } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { useOpeningsKeyboard } from './useOpeningsKeyboard'
 
-function Harness({ engineEnabled = true, deepen, shallow, freeze, flip }) {
-  useOpeningsKeyboard({ engineEnabled, deepen, shallow, freeze, flip })
+function Harness({ paused = false, engineEnabled = true, deepen, shallow, freeze, flip, goBack }) {
+  useOpeningsKeyboard({ paused, engineEnabled, deepen, shallow, freeze, flip, goBack })
   return <input aria-label="Editor" />
 }
 
 afterEach(cleanup)
+
+describe('useOpeningsKeyboard while paused', () => {
+  it('ignores every binding, flip included, while a modal is open', () => {
+    const flip = vi.fn()
+    const deepen = vi.fn()
+    const goBack = vi.fn()
+    const { rerender } = render(<Harness paused flip={flip} deepen={deepen} goBack={goBack} />)
+
+    fireEvent.keyDown(window, { key: 'f' })
+    fireEvent.keyDown(window, { key: '=' })
+    fireEvent.keyDown(window, { key: 'ArrowLeft' })
+    expect(flip).not.toHaveBeenCalled()
+    expect(deepen).not.toHaveBeenCalled()
+    expect(goBack).not.toHaveBeenCalled()
+
+    rerender(<Harness flip={flip} deepen={deepen} goBack={goBack} />)
+    fireEvent.keyDown(window, { key: 'f' })
+    expect(flip).toHaveBeenCalledTimes(1)
+  })
+})
 
 describe('useOpeningsKeyboard depth bindings', () => {
   it('maps both shifted and unshifted depth keys', () => {

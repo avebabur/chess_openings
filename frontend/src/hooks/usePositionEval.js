@@ -95,6 +95,7 @@ export function usePositionEval(fen) {
   // state-reset pattern): show "searching", drop the previous position's cloud /
   // saved line. The target tier is kept so deepening/shallowing persists as you click
   // through a line.
+  const [trackedSearch, setTrackedSearch] = useState({ target, reloadKey })
   if (fen !== trackedFen) {
     setTrackedFen(fen)
     setLocalEval(fen
@@ -103,6 +104,16 @@ export function usePositionEval(fen) {
     setCloud(null)
     setSaved(null)
     setActionError('')
+    // A frozen target is a snapshot of how deep *this* position got. Carried to
+    // the next one it became a fixed-depth search everywhere (d28 on every
+    // move, and saved evals stopped auto-loading), so it ends with the position.
+    if (target.depth != null) setTarget(DEFAULT_TARGET)
+  } else if (trackedSearch.target !== target || trackedSearch.reloadKey !== reloadKey) {
+    // Same position, new budget: the finished result on screen belongs to the
+    // old search. Keep its lines visible, but don't present it as done (or
+    // saveable) under the new label while the next search spins up.
+    setTrackedSearch({ target, reloadKey })
+    setLocalEval((prev) => (prev ? { ...prev, searching: true, depth: 0, saved: false } : prev))
   }
 
   useEffect(() => {

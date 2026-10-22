@@ -88,20 +88,27 @@ export default function AccountsModal({ accounts, hasToken, onAdd, onSync, onCan
     }
   }
 
-  const saveToken = async (e) => {
-    e.preventDefault()
+  // Saving and removing are separate actions on purpose: an empty Save used to
+  // clear the stored token, so clicking Save on the "paste to replace" field
+  // silently broke the players explorer.
+  const writeToken = async (value) => {
     setTokenBusy(true)
     setTokenMsg('')
     try {
-      const trimmed = token.trim()
-      await onSaveToken(trimmed)
-      setTokenMsg(trimmed ? 'Token saved — the players explorer will work now.' : 'Token cleared.')
+      await onSaveToken(value)
+      setTokenMsg(value ? 'Token saved — the players explorer will work now.' : 'Token removed.')
       setToken('')
     } catch {
-      setTokenMsg('Could not save the token')
+      setTokenMsg(value ? 'Could not save the token' : 'Could not remove the token')
     } finally {
       setTokenBusy(false)
     }
+  }
+
+  const saveToken = (e) => {
+    e.preventDefault()
+    const trimmed = token.trim()
+    if (trimmed) writeToken(trimmed)
   }
 
   return (
@@ -213,9 +220,14 @@ export default function AccountsModal({ accounts, hasToken, onAdd, onSync, onCan
                 aria-label="Lichess API token"
                 autoComplete="off"
               />
-              <button type="submit" className="btn-primary" disabled={tokenBusy}>
+              <button type="submit" className="btn-primary" disabled={tokenBusy || !token.trim()}>
                 {tokenBusy ? 'Saving…' : 'Save'}
               </button>
+              {hasToken && (
+                <button type="button" className="btn-ghost danger" disabled={tokenBusy} onClick={() => writeToken('')}>
+                  Remove
+                </button>
+              )}
             </form>
             {tokenMsg && <p className="op-token-msg">{tokenMsg}</p>}
           </div>

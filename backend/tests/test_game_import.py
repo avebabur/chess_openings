@@ -63,6 +63,27 @@ class GameImportTests(unittest.TestCase):
         self.assertEqual([g["result"] for g in saved], ["1/2-1/2", "0-1"])
         self.assertEqual(result["seen"], 2)
 
+    def test_account_exists_distinguishes_missing_from_unreachable(self):
+        module = importlib.reload(game_import)
+
+        def client_for(status=None, error=None):
+            def handler(request):
+                if error:
+                    raise error
+                return httpx.Response(status)
+            return httpx.Client(transport=httpx.MockTransport(handler))
+
+        with client_for(200) as client:
+            self.assertIs(module.account_exists("chesscom", "real", client), True)
+        with client_for(404) as client:
+            self.assertIs(module.account_exists("lichess", "typo", client), False)
+        # Rate limits and outages are "couldn't check", never "doesn't exist".
+        with client_for(429) as client:
+            self.assertIsNone(module.account_exists("lichess", "someone", client))
+        request = httpx.Request("GET", "https://lichess.org")
+        with client_for(error=httpx.ConnectError("offline", request=request)) as client:
+            self.assertIsNone(module.account_exists("chesscom", "someone", client))
+
 
 if __name__ == "__main__":
     unittest.main()

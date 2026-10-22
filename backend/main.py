@@ -34,6 +34,7 @@ import database as db  # noqa: E402
 import eco_openings  # noqa: E402  (offline move-sequence → opening-name recognizer)
 import lichess_explorer  # noqa: E402  (SPEEDS / RATING_GROUPS / MIN_YEAR allow-lists)
 import live_engine  # noqa: E402  (openings-local interactive eval engine)
+import game_import  # noqa: E402
 from sync_service import AccountSyncService  # noqa: E402
 from services import ExternalApiClients, SQLiteService  # noqa: E402
 
@@ -182,6 +183,14 @@ def get_accounts():
 
 @api.post("/accounts", status_code=201)
 def add_account(input: AccountInput, request: Request):
+    if os.environ.get("OPENINGS_DISABLE_EXTERNAL_NETWORK") != "1":
+        exists = game_import.account_exists(
+            input.platform, input.username.strip(),
+            client=request.app.state.external_clients.http,
+        )
+        if exists is False:
+            site = "Chess.com" if input.platform == "chesscom" else "Lichess"
+            raise HTTPException(400, f"{site} has no user named “{input.username.strip()}”")
     try:
         account = db.create_account(input.platform, input.username, input.label)
     except ValueError as e:

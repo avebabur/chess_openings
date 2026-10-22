@@ -230,6 +230,37 @@ def import_lichess(username, account_id, progress=None, cancelled=None, client=N
     return {"imported": imported, "seen": seen, "warnings": []}
 
 
+_PROFILE_URLS = {
+    "chesscom": "https://api.chess.com/pub/player/{}",
+    "lichess": "https://lichess.org/api/user/{}",
+}
+_PROFILE_TIMEOUT = httpx.Timeout(8.0, connect=5.0)
+
+
+def account_exists(platform, username, client=None):
+    """Does ``username`` exist on ``platform``? True / False, or None when the
+    platform couldn't be asked (offline, rate-limited, 5xx) — callers should then
+    proceed rather than block on a check that never happened.
+
+    Adding an account used to create it unconditionally, so a typo became a dead
+    "0 games · never synced" account that the app then switched to.
+    """
+    url = _PROFILE_URLS.get(platform)
+    if not url:
+        return None
+    headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
+    try:
+        r = (client or httpx).get(url.format(username), headers=headers,
+                                  timeout=_PROFILE_TIMEOUT, follow_redirects=True)
+    except httpx.HTTPError:
+        return None
+    if r.status_code == 200:
+        return True
+    if r.status_code in (404, 410):
+        return False
+    return None
+
+
 def sync_account(account, progress=None, cancelled=None, client=None):
     """Import (or re-import) one account's games. Returns {imported, seen}."""
     platform = account["platform"]

@@ -32,8 +32,10 @@ export function useReviewSession(reloadRepertoire) {
         played_san: playedSan,
         path_san: matched?.path_san || item.path.join(' '),
       })
-      await reloadRepertoire()
+      // The answer is saved; unblock "Next" now. The refresh only updates the
+      // due badge and list, and used to hold every card for a full tree fetch.
       setReviewWrite(EMPTY_WRITE)
+      reloadRepertoire()
       return true
     } catch {
       setReviewWrite({

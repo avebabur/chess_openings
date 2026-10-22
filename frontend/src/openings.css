@@ -1574,6 +1574,9 @@
 /* ── Openings outline (folders → variation rows) ─────────────────────────── */
 
 .rep-pane { padding: 0; }
+/* The list view pads inside its sticky header and folders; the editor has no
+ * such wrapper, so without this its fields ran edge to edge of the panel. */
+.rep-pane.editor-pane { padding: 14px; }
 
 .rep-sticky {
   position: sticky;
@@ -2104,6 +2107,14 @@
 
 .op-empty p {
   margin: 0;
+}
+
+.op-empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--space-2);
+  margin-top: 14px;
 }
 
 .op-empty.compact {
@@ -2644,13 +2655,20 @@
     justify-content: flex-start;
   }
 
+  /* One scrollable row, not 2+2+1 wrapped rows: three stacked tab rows ate a
+   * tenth of a phone screen above every pane. */
   .workspace-tabs {
-    flex-wrap: wrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .workspace-tabs::-webkit-scrollbar {
+    display: none;
   }
 
   .workspace-tabs button {
-    flex: 1 1 45%;
-    border-bottom: 1px solid var(--line);
+    flex: 1 0 auto;
+    padding: 11px 7px;
   }
 
   .op-pane-head,

@@ -6,6 +6,7 @@ export default function ReviewTab({
   reviewItem,
   reviewPriorPath,
   dueNodes,
+  dueCount = dueNodes.length,
   duePreview,
   branches,
   trainedBranches,
@@ -94,8 +95,14 @@ export default function ReviewTab({
     <div className="tab-pane" role="tabpanel">
       <div className="op-pane-head">
         <div className="op-pane-head-text">
-          <h2>{dueNodes.length ? `${dueNodes.length} due position${dueNodes.length === 1 ? '' : 's'}` : 'Nothing due'}</h2>
-          <p>{dueNodes.length ? 'Recall the saved move from each position.' : 'Missed drill moves return here on a spaced schedule.'}</p>
+          {/* dueCount is the real backlog (it is what the tab badge shows); the
+            * API sends at most 50 of them, which is what one session reviews. */}
+          <h2>{dueNodes.length ? `${dueCount} due position${dueCount === 1 ? '' : 's'}` : 'Nothing due'}</h2>
+          <p>
+            {dueNodes.length
+              ? `Recall the saved move from each position.${dueCount > dueNodes.length ? ` This session covers the first ${dueNodes.length}.` : ''}`
+              : 'Missed drill moves return here on a spaced schedule.'}
+          </p>
         </div>
         {dueNodes.length > 0 ? (
           <button type="button" className="btn-primary" onClick={onStartReview}>
@@ -110,7 +117,7 @@ export default function ReviewTab({
       <div className="op-statline">
         <div className="op-stat">
           <span className="op-stat-label">Due now</span>
-          <span className={`op-stat-num${dueNodes.length ? ' bad' : ''}`}>{dueNodes.length}</span>
+          <span className={`op-stat-num${dueNodes.length ? ' bad' : ''}`}>{dueCount}</span>
         </div>
         <div className="op-stat">
           <span className="op-stat-label">Trained</span>

@@ -6,7 +6,8 @@ const PAGE_SIZE = 50
 
 // Paginated game metadata for the Games browser. Filters by account + time
 // control (both colors, newest first); `loadMore` appends the next page.
-export function useGames({ accountId, timeClass }) {
+// Nothing is fetched until `enabled` (the tab has been opened at least once).
+export function useGames({ accountId, timeClass, enabled = true }) {
   const [games, setGames] = useState([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
@@ -14,6 +15,7 @@ export function useGames({ accountId, timeClass }) {
   const reqId = useRef(0)
 
   const fetchPage = useCallback((offset) => {
+    if (!enabled) return Promise.resolve()
     const id = ++reqId.current
     setLoading(true)
     setError(false)
@@ -35,7 +37,7 @@ export function useGames({ accountId, timeClass }) {
         setError(true)
         setLoading(false)
       })
-  }, [accountId, timeClass])
+  }, [accountId, timeClass, enabled])
 
   const reload = useCallback(() => fetchPage(0), [fetchPage])
   const loadMore = useCallback(() => fetchPage(games.length), [fetchPage, games.length])

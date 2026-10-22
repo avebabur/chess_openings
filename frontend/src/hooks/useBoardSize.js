@@ -50,7 +50,12 @@ function computeFromShell(shellEl, columnEl, size) {
   const chrome = columnEl
     ? Math.max(0, columnEl.getBoundingClientRect().height - size)
     : CHROME_GUESS
-  const byHeight = window.innerHeight - rect.top - chrome - BOTTOM
+  // The shell's top in *document* coordinates. rect.top alone is relative to the
+  // viewport, so on the stacked (scrolling) layout the board grew whenever a
+  // resize landed mid-scroll — which mobile browsers fire as the address bar
+  // collapses — and overflowed the screen (464px fresh, 680px after a scroll).
+  const top = rect.top + window.scrollY
+  const byHeight = window.innerHeight - top - chrome - BOTTOM
   return snap(Math.min(byWidth, byHeight))
 }
 

@@ -144,6 +144,7 @@ export default function RepertoireTab({
     return (
       <div className="tab-pane rep-pane editor-pane" role="tabpanel">
         <LineEditor
+          key={saveTarget?.id ?? 'new'}
           saveTarget={saveTarget}
           currentLineTitle={currentLineTitle}
           lineChanged={lineChanged}

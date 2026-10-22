@@ -6,6 +6,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from unittest.mock import patch
+
 from fastapi.testclient import TestClient
 
 
@@ -35,6 +37,18 @@ class ApiContractTests(unittest.TestCase):
         else:
             os.environ["CHESS_DB_PATH"] = self.old_db_path
         self.temp_dir.cleanup()
+
+    def test_adding_an_account_that_does_not_exist_creates_nothing(self):
+        # A typo used to become a dead "0 games · never synced" account.
+        with patch.object(self.main.game_import, "account_exists", return_value=False), \
+                patch.object(self.main.app.state.sync_service, "enqueue") as enqueue:
+            response = self.client.post("/api/accounts", json={
+                "platform": "chesscom", "username": "no-such-player",
+            })
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("no-such-player", response.json()["detail"])
+        enqueue.assert_not_called()
+        self.assertEqual(self.client.get("/api/accounts").json(), [])
 
     def test_validated_branch_and_idempotent_drill_contract(self):
         invalid = self.client.post("/api/repertoire/tree/branches", json={

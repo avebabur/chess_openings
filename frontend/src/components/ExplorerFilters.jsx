@@ -6,6 +6,11 @@ import { RATING_BANDS, SPEEDS } from '../hooks/useExplorerFilters'
  * the reason the backend omits an empty filter from the upstream query entirely rather
  * than enumerating every value.
  */
+function currentMonth() {
+  const now = new Date()
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+}
+
 export default function ExplorerFilters({
   filters,
   isDefault,
@@ -15,6 +20,7 @@ export default function ExplorerFilters({
   onSetUntil,
   onReset,
 }) {
+  const latest = currentMonth()
   return (
     <div className="op-explorer-filters">
       <div className="op-explorer-filter-group" role="group" aria-label="Time control">
@@ -61,6 +67,7 @@ export default function ExplorerFilters({
             <input
               type="month"
               min="1952-01"
+              max={filters.until || latest}
               value={filters.since}
               onChange={(e) => onSetSince(e.target.value)}
             />
@@ -69,7 +76,8 @@ export default function ExplorerFilters({
             <span>To</span>
             <input
               type="month"
-              min="1952-01"
+              min={filters.since || '1952-01'}
+              max={latest}
               value={filters.until}
               onChange={(e) => onSetUntil(e.target.value)}
             />

@@ -40,12 +40,28 @@ function sanitize(raw) {
       ? value
       : ''
   )
+  const since = month(raw.since)
+  const until = month(raw.until)
+  const inverted = since && until && since > until
   return {
     speeds: (Array.isArray(raw.speeds) ? raw.speeds : []).filter(s => speedKeys.includes(s)),
     ratings: (Array.isArray(raw.ratings) ? raw.ratings : []).filter(r => BAND_BOUNDS.includes(r)),
-    since: month(raw.since),
-    until: month(raw.until),
+    // Lichess (and our backend) reject since > until; a stored inverted range
+    // would leave the explorer "unavailable" on every load until reset.
+    since: inverted ? '' : since,
+    until: inverted ? '' : until,
   }
+}
+
+/** Set one end of the month range, dragging the other end along rather than
+ *  ever producing since > until (YYYY-MM strings compare chronologically). */
+export function withMonth(filters, key, value) {
+  const next = { ...filters, [key]: value }
+  if (next.since && next.until && next.since > next.until) {
+    if (key === 'since') next.until = value
+    else next.since = value
+  }
+  return next
 }
 
 function load() {
@@ -71,9 +87,9 @@ function toggle(list, value) {
 export function useExplorerFilters() {
   const [filters, setFilters] = useState(load)
 
-  const update = useCallback((patch) => {
+  const setMonth = useCallback((key, value) => {
     setFilters((previous) => {
-      const next = { ...previous, ...patch }
+      const next = withMonth(previous, key, value)
       save(next)
       return next
     })
@@ -116,8 +132,8 @@ export function useExplorerFilters() {
     isDefault: filterKey === '|||',
     toggleSpeed,
     toggleRating,
-    setSince: (since) => update({ since }),
-    setUntil: (until) => update({ until }),
+    setSince: (since) => setMonth('since', since),
+    setUntil: (until) => setMonth('until', until),
     reset,
   }
 }

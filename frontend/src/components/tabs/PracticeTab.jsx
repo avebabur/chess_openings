@@ -125,8 +125,11 @@ export default function PracticeTab({
             <p>
               {status === TRAINER_STATUS.WRONG_MOVE_FEEDBACK && feedback?.playedSan
                 ? `${feedback.playedSan} isn't in your repertoire here. `
-                : `Play your reply for ${colorLabel}. `}
-              The opponent picked this line at random.
+                : trainer.currentPath.length
+                  ? `Play your reply for ${colorLabel}. `
+                  : `Play your first move as ${colorLabel}. `}
+              {/* Before the opponent's first move there's no "line" it picked yet. */}
+              {trainer.currentPath.length ? 'The opponent picked this line at random.' : ''}
             </p>
             {trainer.hint && expectedHintSan && (
               <span className="practice-hint">Hint: {expectedHintSan}</span>

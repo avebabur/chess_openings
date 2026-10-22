@@ -101,6 +101,38 @@ test('clean white drill auto-plays the opponent and finishes the run', async ({ 
   await expect(page.getByText('Nothing due')).toBeVisible()
 })
 
+test('a drill only accepts moves from the opening being drilled', async ({ page, request }) => {
+  // Both lines start from the same position. 1.e4 is in the repertoire — but
+  // not in the opening being drilled, and used to pass as a "Clean line".
+  await saveBranch(request, {
+    color: 'white', name: 'QP', moves_san: 'd4 d5', opening: 'Queen Pawn Test', label: 'main', note: '',
+  })
+  await saveBranch(request, {
+    color: 'white', name: 'KP', moves_san: 'e4 e5', opening: 'King Pawn Test', label: 'main', note: '',
+  })
+
+  await page.goto('/')
+  await trainOpening(page, 'Queen Pawn Test')
+  await expect(page.getByText('Your move')).toBeVisible()
+
+  await playMoveAndWaitForDrillWrite(page, 'e2', 'e4')
+  await expect(page.locator('.practice-card.active')).toContainText("isn't in your repertoire here")
+  await expect(page.getByText('Clean line')).toHaveCount(0)
+
+  // Mid-drill, Explore explains itself instead of showing some earlier position's stats.
+  await page.getByRole('tab', { name: 'Explore' }).click()
+  await expect(page.getByText('Drill in progress')).toBeVisible()
+  await page.getByRole('button', { name: 'Back to drill' }).click()
+
+  await playMove(page, 'd2', 'd4')
+  await expect(page.getByText('Line complete')).toBeVisible()
+  await page.getByRole('button', { name: 'Finish' }).click()
+  await page.getByRole('button', { name: 'Back to openings' }).click()
+
+  // The selection list reflects the run just finished, without a reload.
+  await expect(page.locator('.op-pick').filter({ hasText: 'Queen Pawn Test' })).toContainText('1 trained')
+})
+
 test('wrong move is rejected, hints after two misses, and the miss reaches Review', async ({ page, request }) => {
   await saveBranch(request, {
     color: 'white',

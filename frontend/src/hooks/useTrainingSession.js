@@ -11,7 +11,10 @@ import { useDrillPersistence } from './useDrillPersistence'
 export function useTrainingSession({ activeTab, repertoire, reloadRepertoire }) {
   const [trainer, dispatchTrainer] = useReducer(trainerReducer, null)
   const timer = useRef(null)
-  const drillWrite = useDrillPersistence(reloadRepertoire)
+  // Results are saved per move, but the repertoire (≈600 KB of JSON for a big
+  // one) is re-fetched once per finished line or exited run, not after every
+  // move: nothing mid-line reads the refreshed counts.
+  const drillWrite = useDrillPersistence()
   const trainerPath = useMemo(() => trainer?.currentPath || [], [trainer])
 
   useEffect(() => () => window.clearTimeout(timer.current), [])
@@ -39,17 +42,23 @@ export function useTrainingSession({ activeTab, repertoire, reloadRepertoire }) 
         source: 'practice',
         branch_id: branch.id,
         path_san: key,
-      }, () => dispatchTrainer({ type: 'markLineRecorded' }))
+      }, () => {
+        dispatchTrainer({ type: 'markLineRecorded' })
+        reloadRepertoire?.()
+      })
     } else {
       dispatchTrainer({ type: 'markLineRecorded' })
+      reloadRepertoire?.()
     }
-  }, [trainer, trainerPath, repertoire, drillWrite])
+  }, [trainer, trainerPath, repertoire, drillWrite, reloadRepertoire])
 
   const stopTrainer = useCallback(() => {
     window.clearTimeout(timer.current)
     dispatchTrainer({ type: 'stop' })
     drillWrite.clear()
-  }, [drillWrite])
+    // Misses from a line abandoned midway are saved but not yet reflected.
+    reloadRepertoire?.()
+  }, [drillWrite, reloadRepertoire])
 
   const clearTimer = useCallback(() => window.clearTimeout(timer.current), [])
 
