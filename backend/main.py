@@ -15,6 +15,7 @@ from contextlib import asynccontextmanager
 from fastapi import APIRouter, FastAPI, HTTPException, Path, Query, Request
 from fastapi.background import BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
@@ -36,6 +37,10 @@ import live_engine  # noqa: E402  (openings-local interactive eval engine)
 from sync_service import AccountSyncService  # noqa: E402
 from services import ExternalApiClients, SQLiteService  # noqa: E402
 
+# Route handlers that touch SQLite are plain `def`, not `async def`: FastAPI runs
+# those in its threadpool. As coroutines they ran on the event loop itself, so a
+# query waiting out busy_timeout behind the sync writer froze every other request
+# (engine streams included) for up to five seconds.
 api = APIRouter(prefix="/api")
 
 DIST_DIR = os.path.join(OPENINGS_ROOT, "frontend", "dist")
@@ -152,7 +157,7 @@ async def lifespan(target_app):
 
 
 @api.get("/health")
-async def health(request: Request):
+def health(request: Request):
     try:
         request.app.state.database.connect().close()
     except Exception as e:
@@ -161,7 +166,7 @@ async def health(request: Request):
 
 
 @api.get("/profile")
-async def get_profile(request: Request):
+def get_profile(request: Request):
     return {
         "accounts": db.list_accounts(),
         "has_lichess_token": bool(db.get_setting("lichess_token")),
@@ -171,12 +176,12 @@ async def get_profile(request: Request):
 
 
 @api.get("/accounts")
-async def get_accounts():
+def get_accounts():
     return db.list_accounts()
 
 
 @api.post("/accounts", status_code=201)
-async def add_account(input: AccountInput, request: Request):
+def add_account(input: AccountInput, request: Request):
     try:
         account = db.create_account(input.platform, input.username, input.label)
     except ValueError as e:
@@ -186,7 +191,7 @@ async def add_account(input: AccountInput, request: Request):
 
 
 @api.post("/accounts/{account_id}/sync", status_code=202)
-async def sync_account(request: Request, account_id: int = Path(gt=0)):
+def sync_account(request: Request, account_id: int = Path(gt=0)):
     account = db.get_account(account_id)
     if not account:
         raise HTTPException(404, "Account not found")
@@ -194,7 +199,7 @@ async def sync_account(request: Request, account_id: int = Path(gt=0)):
 
 
 @api.get("/sync-jobs/{job_id}")
-async def get_sync_job(job_id: str = Path(
+def get_sync_job(job_id: str = Path(
     min_length=36, max_length=36,
     pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
 )):
@@ -205,7 +210,7 @@ async def get_sync_job(job_id: str = Path(
 
 
 @api.delete("/sync-jobs/{job_id}", status_code=202)
-async def cancel_sync_job(
+def cancel_sync_job(
     request: Request,
     job_id: str = Path(
         min_length=36, max_length=36,
@@ -219,7 +224,7 @@ async def cancel_sync_job(
 
 
 @api.delete("/accounts/{account_id}")
-async def remove_account(
+def remove_account(
     request: Request,
     account_id: int = Path(gt=0),
     delete_games: bool = True,
@@ -234,7 +239,7 @@ async def remove_account(
 
 
 @api.put("/settings/lichess-token")
-async def set_lichess_token(input: LichessTokenInput):
+def set_lichess_token(input: LichessTokenInput):
     token = (input.token or "").strip()
     db.set_setting("lichess_token", token)
     return {"has_lichess_token": bool(token)}
@@ -301,7 +306,7 @@ async def cloud_eval(request: Request, fen: str = Query(min_length=4, max_length
 
 
 @api.get("/saved-eval")
-async def get_saved_eval(fen: str = Query(min_length=4, max_length=128)):
+def get_saved_eval(fen: str = Query(min_length=4, max_length=128)):
     """A user-saved deep Stockfish eval for ``fen`` (or null). Loaded on every
     position so a saved line auto-fills the engine panel without re-searching or
     calling Lichess."""
@@ -310,7 +315,7 @@ async def get_saved_eval(fen: str = Query(min_length=4, max_length=128)):
 
 
 @api.post("/saved-eval")
-async def save_saved_eval(input: SavedEvalInput):
+def save_saved_eval(input: SavedEvalInput):
     try:
         chess.Board(input.fen)
     except ValueError:
@@ -321,7 +326,7 @@ async def save_saved_eval(input: SavedEvalInput):
 
 
 @api.delete("/saved-eval")
-async def delete_saved_eval(fen: str = Query(min_length=4, max_length=128)):
+def delete_saved_eval(fen: str = Query(min_length=4, max_length=128)):
     _validate_fen(fen)
     db.delete_saved_eval(fen)
     return {"deleted": True, "fen": fen}
@@ -379,7 +384,7 @@ async def opening_explorer(
 
 
 @api.get("/games")
-async def list_games(
+def list_games(
     account_id: int | None = Query(default=None, gt=0),
     color: Literal["", "white", "black"] = "",
     time_class: str = Query(default="", max_length=64),
@@ -399,7 +404,7 @@ async def list_games(
 
 
 @api.get("/games/{game_id}")
-async def get_game(game_id: int = Path(gt=0)):
+def get_game(game_id: int = Path(gt=0)):
     """Full game including PGN, for the in-app review board."""
     game = db.get_game(game_id)
     if not game:
@@ -408,14 +413,14 @@ async def get_game(game_id: int = Path(gt=0)):
 
 
 @api.get("/repertoire/tree")
-async def repertoire_tree(color: str = "white"):
+def repertoire_tree(color: str = "white"):
     if color not in ("white", "black"):
         raise HTTPException(400, "color must be 'white' or 'black'")
     return db.get_repertoire_tree(color)
 
 
 @api.get("/openings/classify")
-async def classify_opening(moves_san: str = ""):
+def classify_opening(moves_san: str = ""):
     """Name the opening a SAN line reaches, or null if unrecognized.
 
     Used by the editor to pre-fill the opening of a line you're about to save."""
@@ -423,14 +428,14 @@ async def classify_opening(moves_san: str = ""):
 
 
 @api.get("/repertoire/openings")
-async def list_repertoire_openings(color: str = "white"):
+def list_repertoire_openings(color: str = "white"):
     if color not in ("white", "black"):
         raise HTTPException(400, "color must be 'white' or 'black'")
     return db.list_repertoire_openings(color)
 
 
 @api.post("/repertoire/openings")
-async def create_repertoire_opening(input: RepertoireOpeningInput):
+def create_repertoire_opening(input: RepertoireOpeningInput):
     try:
         return db.create_repertoire_opening(input.color, input.name, input.note)
     except ValueError as e:
@@ -438,7 +443,7 @@ async def create_repertoire_opening(input: RepertoireOpeningInput):
 
 
 @api.patch("/repertoire/openings/{opening_id}")
-async def update_repertoire_opening(input: RepertoireOpeningPatch, opening_id: int = Path(gt=0)):
+def update_repertoire_opening(input: RepertoireOpeningPatch, opening_id: int = Path(gt=0)):
     try:
         opening = db.update_repertoire_opening(opening_id, name=input.name, note=input.note)
     except ValueError as e:
@@ -449,14 +454,14 @@ async def update_repertoire_opening(input: RepertoireOpeningPatch, opening_id: i
 
 
 @api.delete("/repertoire/openings/{opening_id}")
-async def delete_repertoire_opening(opening_id: int = Path(gt=0)):
+def delete_repertoire_opening(opening_id: int = Path(gt=0)):
     if not db.delete_repertoire_opening(opening_id):
         raise HTTPException(404, "Opening not found")
     return {"success": True}
 
 
 @api.post("/repertoire/tree/branches")
-async def save_repertoire_branch(input: RepertoireBranchInput):
+def save_repertoire_branch(input: RepertoireBranchInput):
     try:
         return db.save_repertoire_branch(
             input.color, input.name, input.moves_san,
@@ -469,14 +474,14 @@ async def save_repertoire_branch(input: RepertoireBranchInput):
 
 
 @api.delete("/repertoire/tree/branches/{branch_id}")
-async def delete_repertoire_branch(branch_id: int = Path(gt=0)):
+def delete_repertoire_branch(branch_id: int = Path(gt=0)):
     if not db.delete_repertoire_branch(branch_id):
         raise HTTPException(404, "Branch not found")
     return {"success": True}
 
 
 @api.patch("/repertoire/tree/branches/{branch_id}")
-async def update_repertoire_branch(input: RepertoireBranchPatch, branch_id: int = Path(gt=0)):
+def update_repertoire_branch(input: RepertoireBranchPatch, branch_id: int = Path(gt=0)):
     try:
         branch = db.update_repertoire_branch(
             branch_id,
@@ -497,7 +502,7 @@ async def update_repertoire_branch(input: RepertoireBranchPatch, branch_id: int 
 
 
 @api.post("/repertoire/drill-attempts")
-async def record_drill_attempt(input: DrillAttemptInput):
+def record_drill_attempt(input: DrillAttemptInput):
     try:
         result = db.record_repertoire_drill_attempt(
             input.event_key,
@@ -538,6 +543,18 @@ async def download_backup(request: Request, background_tasks: BackgroundTasks):
     )
 
 
+class _FingerprintedStaticFiles(StaticFiles):
+    """Vite puts a content hash in every dist/assets filename (index-<hash>.js), so
+    the bytes behind a URL never change: browsers may keep them for a year instead
+    of revalidating the bundle on every load. index.html is what must stay fresh."""
+
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        if response.status_code == 200:
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        return response
+
+
 def _setup_desktop_frontend(target_app):
     if os.environ.get("CHESS_OPENINGS_DESKTOP") != "1":
         return
@@ -556,7 +573,7 @@ def _setup_desktop_frontend(target_app):
 
     assets_dir = os.path.join(DIST_DIR, "assets")
     if os.path.isdir(assets_dir):
-        target_app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+        target_app.mount("/assets", _FingerprintedStaticFiles(directory=assets_dir), name="assets")
 
     favicon = os.path.join(public_root, "favicon.svg")
     if os.path.isfile(favicon):
@@ -584,7 +601,8 @@ def _setup_desktop_frontend(target_app):
             if contained and os.path.isfile(target_real):
                 return FileResponse(target_real)
         if os.path.isfile(index):
-            return FileResponse(index)
+            # Revalidate every time: it names the current fingerprinted bundle.
+            return FileResponse(index, headers={"Cache-Control": "no-cache"})
         raise HTTPException(
             503,
             "Frontend not built. Run: cd openings && ./start.sh",
@@ -604,6 +622,9 @@ def create_app():
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    # JSON (the repertoire tree especially) and the JS/CSS bundle compress 3-5x.
+    # Starlette skips text/event-stream, so engine SSE frames are never buffered.
+    target_app.add_middleware(GZipMiddleware, minimum_size=1024)
     target_app.include_router(api)
     _setup_desktop_frontend(target_app)
     return target_app

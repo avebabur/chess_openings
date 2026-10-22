@@ -31,6 +31,7 @@ import {
   splitSanLine,
   indexNodesByEpdBefore,
   positionKeyFromFen,
+  positionKeysAlongPath,
   repliesAtPosition,
 } from './domain/chessLine'
 import {
@@ -65,6 +66,8 @@ const TIME_CLASSES = [
   { key: 'daily', label: 'Daily' },
 ]
 
+const ACCOUNT_STORAGE_KEY = 'op_account_id'
+
 const TABS = [
   { id: 'Explore', hint: 'Your game stats' },
   { id: 'Repertoire', hint: 'Saved variations' },
@@ -84,8 +87,14 @@ export default function OpeningsExplorer() {
   } = useOpeningNavigation()
   const activeLineKey = path.join(' ')
   const [selectedAccountId, setSelectedAccountId] = useState(() => {
-    const stored = Number(localStorage.getItem('op_account_id'))
-    return stored > 0 ? stored : null
+    // Storage can throw (blocked site data, some private modes); that must not
+    // take the whole app down at mount — it only costs the remembered account.
+    try {
+      const stored = Number(localStorage.getItem(ACCOUNT_STORAGE_KEY))
+      return stored > 0 ? stored : null
+    } catch {
+      return null
+    }
   })
   const [accountsModalOpen, setAccountsModalOpen] = useState(false)
   const [saveDraft, setSaveDraft] = useState({ opening: '', name: '', tags: [], note: '' })
@@ -192,8 +201,12 @@ export default function OpeningsExplorer() {
   const currentNode = useMemo(() => findNodeByPath(repertoire?.root, path), [repertoire, path])
 
   useEffect(() => {
-    if (selectedAccountId == null) localStorage.removeItem('op_account_id')
-    else localStorage.setItem('op_account_id', String(selectedAccountId))
+    try {
+      if (selectedAccountId == null) localStorage.removeItem(ACCOUNT_STORAGE_KEY)
+      else localStorage.setItem(ACCOUNT_STORAGE_KEY, String(selectedAccountId))
+    } catch {
+      // Not persisted this session; the selection itself still works.
+    }
   }, [selectedAccountId])
 
   useEffect(() => { setFlipped(false) }, [color, setFlipped])
@@ -366,12 +379,7 @@ export default function OpeningsExplorer() {
     // Prefix-matching the SAN text misses a parent saved under another move
     // order, so also accept a branch whose terminal position this line passes
     // through. Deepest match wins either way.
-    const passesThrough = new Set(
-      splitSanLine(activeLineKey).reduce((keys, _san, i) => {
-        keys.push(positionKeyFromFen(boardFromPath(splitSanLine(activeLineKey).slice(0, i + 1)).fen))
-        return keys
-      }, [positionKeyFromFen(START_FEN)]),
-    )
+    const passesThrough = new Set(positionKeysAlongPath(activeLineKey))
     let best = null
     for (const b of branches) {
       if (!b.opening) continue
@@ -387,11 +395,11 @@ export default function OpeningsExplorer() {
   // the header shows the right name. Cheap, offline lookup keyed by the SAN path.
   useEffect(() => {
     if (!activeLineKey) { setClassifiedOpening(null); return }
-    let cancelled = false
-    api.get('/openings/classify', { params: { moves_san: activeLineKey } })
-      .then(res => { if (!cancelled) setClassifiedOpening(res.data || null) })
-      .catch(() => { if (!cancelled) setClassifiedOpening(null) })
-    return () => { cancelled = true }
+    const controller = new AbortController()
+    api.get('/openings/classify', { params: { moves_san: activeLineKey }, signal: controller.signal })
+      .then(res => { if (!controller.signal.aborted) setClassifiedOpening(res.data || null) })
+      .catch(() => { if (!controller.signal.aborted) setClassifiedOpening(null) })
+    return () => controller.abort()
   }, [activeLineKey])
 
   useEffect(() => {

@@ -1,46 +1,38 @@
 /* eslint-disable react-hooks/set-state-in-effect */
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../api'
 
 export function useRepertoire(color) {
   const [repertoire, setRepertoire] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(false)
+  // Every load — the color-change effect and each explicit reload() — takes a
+  // ticket, and only the newest may write. A reload issued for White (after a
+  // save or drill) that lands after the user switched to Black would otherwise
+  // replace Black's repertoire with White's.
+  const reqId = useRef(0)
 
   const reload = useCallback(async () => {
+    const id = ++reqId.current
     setLoading(true)
     setError(false)
     try {
       const res = await api.get('/repertoire/tree', { params: { color } })
+      if (id !== reqId.current) return null
       setRepertoire(res.data)
       return res.data
     } catch {
-      setError(true)
+      if (id === reqId.current) setError(true)
       return null
     } finally {
-      setLoading(false)
+      if (id === reqId.current) setLoading(false)
     }
   }, [color])
 
   useEffect(() => {
-    let alive = true
-    setLoading(true)
-    setError(false)
-    api.get('/repertoire/tree', { params: { color } })
-      .then((res) => {
-        if (alive) setRepertoire(res.data)
-      })
-      .catch(() => {
-        if (!alive) return
-        setError(true)
-      })
-      .finally(() => {
-        if (alive) setLoading(false)
-      })
-    return () => {
-      alive = false
-    }
-  }, [color])
+    reload()
+    return () => { reqId.current += 1 }
+  }, [reload])
 
   return { repertoire, loading, error, reload }
 }

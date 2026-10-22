@@ -29,7 +29,7 @@ from collections import OrderedDict
 import chess
 import chess.pgn
 
-from position_key import START_KEY, position_key
+from position_key import position_key
 
 MAX_PLIES = 40  # how deep we index move paths (move 20 per side)
 MAX_EXAMPLES = 12  # sample games kept per position
@@ -37,25 +37,83 @@ MAX_TRANSPOSITIONS = 12  # alternative move orders reported per position
 MAX_CACHED_TREES = 4  # built graphs held in memory; see OpeningTreeCache
 
 
+def _graph_key(board):
+    """The graph's internal node key: the same identity as ``position_key``.
+
+    ``board.epd()`` rebuilds a FEN string square by square, and computing it per
+    ply was ~70% of a cold tree build. This packs exactly the fields an EPD
+    carries — piece placement (six piece bitboards plus White's occupancy),
+    castling rights, the en-passant square only when the capture is legal, and
+    side to move — into one int, so two boards share a key iff their EPDs match.
+    It never leaves this module; responses still report ``position_key``.
+    """
+    key = board.clean_castling_rights()
+    for bitboard in (board.occupied_co[chess.WHITE], board.pawns, board.knights,
+                     board.bishops, board.rooks, board.queens, board.kings):
+        key = (key << 64) | bitboard
+    ep = board.ep_square if board.has_legal_en_passant() else 64
+    return (((key << 7) | ep) << 1) | int(board.turn)
+
+
+START_KEY = _graph_key(chess.Board())
+
+
+class _OpeningMoves(chess.pgn.BaseVisitor):
+    """Collect the first ``cap`` mainline moves of a PGN, then stop parsing SAN.
+
+    ``read_game``'s default GameBuilder parses and validates *every* move of the
+    game (plus clock comments) into a node tree, though only the opening is used
+    here. Returning SKIP from ``begin_parse_san`` once we have enough makes the
+    rest of the game a token scan.
+    """
+
+    def __init__(self, cap):
+        self.cap = cap
+        self.start = None
+        self.moves = []
+
+    def begin_variation(self):
+        return chess.pgn.SKIP
+
+    def begin_parse_san(self, board, san):
+        return chess.pgn.SKIP if len(self.moves) >= self.cap else None
+
+    def visit_move(self, board, move):
+        if self.start is None:
+            self.start = board.copy(stack=False)
+        self.moves.append(move)
+
+    def handle_error(self, error):
+        # Like GameBuilder: an illegal move ends the line; keep what came before.
+        self.cap = len(self.moves)
+
+    def result(self):
+        return self
+
+
 def _parse_plies(pgn, cap=MAX_PLIES):
-    """Replay a PGN mainline into ``[(san, epd_before, epd_after), ...]``.
+    """Replay a PGN mainline into ``[(san, key_before, key_after), ...]``.
 
     We already had to walk the game on a board to produce canonical SAN, so the
-    position keys come almost free. Stops at the first move that doesn't apply.
+    position keys come almost free — and each ply's ``key_after`` *is* the next
+    ply's ``key_before``, so it is computed (and stored) once. Stops at the first
+    move that doesn't apply. Keys are ``_graph_key`` values.
     """
-    node = chess.pgn.read_game(io.StringIO(pgn))
-    if node is None:
+    parsed = chess.pgn.read_game(io.StringIO(pgn), Visitor=lambda: _OpeningMoves(cap))
+    if parsed is None or parsed.start is None:
         return []
-    board = node.board()
+    board = parsed.start
     out = []
-    for mv in node.mainline_moves():
-        before = position_key(board)
+    before = _graph_key(board)
+    for mv in parsed.moves:
         try:
             san = board.san(mv)
             board.push(mv)
         except (ValueError, AssertionError):
             break
-        out.append((san, before, position_key(board)))
+        after = _graph_key(board)
+        out.append((san, before, after))
+        before = after
         if len(out) >= cap:
             break
     return out
@@ -116,7 +174,7 @@ def _summary(san, agg, parent_games, board):
     }
 
 
-def _dag_node(epd):
+def _dag_node(key):
     """One position.
 
     ``moves[san]`` is the outgoing edge: its own aggregate (how the games that
@@ -127,7 +185,7 @@ def _dag_node(epd):
     ``paths`` counts the move orders that reached this position, one tally per
     game, so ``sum(paths.values()) == agg["games"]`` exactly.
     """
-    return {"epd": epd, "agg": _new_agg(), "moves": {},
+    return {"key": key, "agg": _new_agg(), "moves": {},
             "examples": [], "paths": {}}
 
 
@@ -137,7 +195,7 @@ def _example(game):
 
 
 def _build_graph(games, color, plies_for=None):
-    """Fold games into ``{epd: node}``. The root is always present."""
+    """Fold games into ``{graph key: node}``. The root is always present."""
     plies_for = plies_for or (lambda game: _parse_plies(game.get("pgn") or ""))
     graph = {START_KEY: _dag_node(START_KEY)}
 
@@ -157,30 +215,30 @@ def _build_graph(games, color, plies_for=None):
         seen_departures = set()
         path = []
 
-        for san, epd_before, epd_after in plies_for(game):
+        for san, key_before, key_after in plies_for(game):
             path.append(san)
-            parent = graph.get(epd_before)
+            parent = graph.get(key_before)
             if parent is None:  # unreachable: the parent was just visited
-                parent = graph[epd_before] = _dag_node(epd_before)
+                parent = graph[key_before] = _dag_node(key_before)
 
             edge = parent["moves"].get(san)
             if edge is None:
-                edge = parent["moves"][san] = {"agg": _new_agg(), "epd": epd_after}
-            if epd_before not in seen_departures:
+                edge = parent["moves"][san] = {"agg": _new_agg(), "key": key_after}
+            if key_before not in seen_departures:
                 # One departure per position per game. A game that wanders back
                 # (repetitions, knight shuffles) leaves the same position twice,
                 # and crediting both made the move shares at that position sum
                 # past 100%. The first choice is the one that answers "when I
                 # reached here, what did I play?"; the later one only happened
                 # because the game returned.
-                seen_departures.add(epd_before)
+                seen_departures.add(key_before)
                 _tally(edge["agg"], game, color)
 
-            node = graph.get(epd_after)
+            node = graph.get(key_after)
             if node is None:
-                node = graph[epd_after] = _dag_node(epd_after)
-            if epd_after not in seen_positions:
-                seen_positions.add(epd_after)
+                node = graph[key_after] = _dag_node(key_after)
+            if key_after not in seen_positions:
+                seen_positions.add(key_after)
                 _tally(node["agg"], game, color)
                 key = tuple(path)
                 node["paths"][key] = node["paths"].get(key, 0) + 1
@@ -210,15 +268,14 @@ def _node_from_graph(graph, color, path):
             break
 
     epd = position_key(board) if legal_path else None
-    current = graph.get(epd) if epd else None
-    empty = _dag_node(epd or "")
-    current = current or empty
+    current = graph.get(_graph_key(board)) if legal_path else None
+    current = current or _dag_node(None)
 
     aggregate = current["agg"]
     parent_games = aggregate["games"]
     move_list = []
     for san, edge in current["moves"].items():
-        child = graph.get(edge["epd"])
+        child = graph.get(edge["key"])
         summary = _summary(san, edge["agg"], parent_games, board)
         # `games` is how often this move was played *from here*; `total_games`
         # counts every game that reached the resulting position, by any order.
@@ -267,6 +324,12 @@ class OpeningTreeCache:
         self._trees = OrderedDict()
         self._max_trees = max(1, max_trees)
         self._game_loader = game_loader
+        # Bumped by every invalidate(). A build that started before an
+        # invalidation read the old games, so it must not be cached after it.
+        self._generation = 0
+        # Builds are CPU-bound, so the GIL serializes them anyway; doing it
+        # explicitly means a burst of requests for one cold key builds it once.
+        self._build_lock = threading.Lock()
 
     def _moves_for(self, game):
         gid = game["id"]
@@ -296,16 +359,29 @@ class OpeningTreeCache:
         else:
             loader = self._game_loader
         key = (color, tuple(sorted(time_classes or ())), account_id)
+        root = self._cached(key)
+        if root is None:
+            with self._build_lock:
+                root = self._cached(key)
+                if root is None:
+                    with self._lock:
+                        generation = self._generation
+                    games = loader(color=color, time_classes=time_classes, account_id=account_id)
+                    root = _build_graph(games, color, self._moves_for)
+                    with self._lock:
+                        # Invalidated mid-build (a sync landed): this graph is
+                        # still good for the request that asked, but caching it
+                        # would hide the new games until the next invalidation.
+                        if generation == self._generation:
+                            root = self._remember(key, root)
+        return _node_from_graph(root, color, path)
+
+    def _cached(self, key):
         with self._lock:
             root = self._trees.get(key)
             if root is not None:
                 self._trees.move_to_end(key)
-        if root is None:
-            games = loader(color=color, time_classes=time_classes, account_id=account_id)
-            built = _build_graph(games, color, self._moves_for)
-            with self._lock:
-                root = self._remember(key, built)
-        return _node_from_graph(root, color, path)
+            return root
 
     def invalidate(self, account_id=None):
         """Drop built graphs so the next read rebuilds them.
@@ -317,6 +393,7 @@ class OpeningTreeCache:
         None``), leaving other accounts' graphs intact. With no arg, all go.
         """
         with self._lock:
+            self._generation += 1
             if account_id is None:
                 self._trees.clear()
             else:

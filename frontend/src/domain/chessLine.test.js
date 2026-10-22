@@ -12,9 +12,11 @@ import {
   matchExpectedMove,
   needsPromotion,
   positionKeyFromFen,
+  positionKeysAlongPath,
   repliesAtPosition,
   reviewQueueFromDueNodes,
   sideToMove,
+  splitSanLine,
 } from './chessLine'
 
 // The other half of the contract in backend/tests/test_position_key.py. Both
@@ -217,5 +219,21 @@ describe('chessLine domain helpers', () => {
 
     expect(item.epd_before).toBe('start-key')
     expect(matchExpectedMove(played, item.accepted)?.node_id).toBe(9)
+  })
+})
+
+describe('positionKeysAlongPath', () => {
+  it('keys the start and every position of the line in one replay', () => {
+    const line = 'd4 Nf6 c4 e6'
+    const keys = positionKeysAlongPath(line)
+    expect(keys).toHaveLength(5)
+    expect(keys[0]).toBe(positionKeyFromFen(START_FEN))
+    splitSanLine(line).forEach((_san, i) => {
+      expect(keys[i + 1]).toBe(positionKeyFromFen(boardFromPath(splitSanLine(line).slice(0, i + 1)).fen))
+    })
+  })
+
+  it('stops at the first illegal move', () => {
+    expect(positionKeysAlongPath('e4 e5 Ke3 Nc6')).toHaveLength(3)
   })
 })

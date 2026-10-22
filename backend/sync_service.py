@@ -2,12 +2,18 @@
 import queue
 import threading
 import logging
+import time
 
 import database as db
 import game_import
 import opening_tree
 
 log = logging.getLogger("account_sync")
+
+# How stale a "was this job cancelled?" answer may be while a sync runs. The
+# importers ask once per game, and each answer used to cost a fresh SQLite
+# connection — six thousand of them for a full Lichess history.
+CANCEL_POLL_SECS = 0.5
 
 
 class AccountSyncService:
@@ -48,6 +54,24 @@ class AccountSyncService:
     def _cancelled(self, job_id):
         return self._stopping.is_set() or db.sync_job_cancel_requested(job_id)
 
+    def _throttled_cancel_check(self, job_id):
+        """``_cancelled`` for the importers' per-game polling: shutdown is seen
+        at once, a user's cancel within CANCEL_POLL_SECS."""
+        state = {"checked_at": None, "cancelled": False}
+
+        def cancelled():
+            if self._stopping.is_set():
+                return True
+            now = time.monotonic()
+            if not state["cancelled"] and (
+                state["checked_at"] is None or now - state["checked_at"] >= CANCEL_POLL_SECS
+            ):
+                state["checked_at"] = now
+                state["cancelled"] = db.sync_job_cancel_requested(job_id)
+            return state["cancelled"]
+
+        return cancelled
+
     def _run(self):
         while not self._stopping.is_set():
             job_id = self._queue.get()
@@ -80,7 +104,7 @@ class AccountSyncService:
             try:
                 kwargs = {
                     "progress": progress,
-                    "cancelled": lambda: self._cancelled(job_id),
+                    "cancelled": self._throttled_cancel_check(job_id),
                 }
                 if self._import_client is not None:
                     kwargs["client"] = self._import_client

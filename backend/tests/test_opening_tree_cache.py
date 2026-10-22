@@ -74,6 +74,48 @@ class OpeningTreeCacheTests(unittest.TestCase):
         after = cache.node_for_filter("white", [], account_id=1)
         self.assertEqual(before, after)
 
+    def test_build_overtaken_by_invalidation_is_not_cached(self):
+        # A sync can land while a graph is being built from the pre-sync games.
+        # That graph may answer the request in flight, but caching it would hide
+        # the new games until some later invalidation.
+        cache = None
+
+        def racing_loader(color, time_classes=None, account_id=None):
+            games = _loader(color, time_classes, account_id)
+            cache.invalidate(account_id=account_id)   # the sync finishes mid-build
+            return games
+
+        cache = opening_tree.OpeningTreeCache(game_loader=racing_loader)
+        node = cache.node_for_filter("white", [], account_id=1)
+        self.assertEqual(node["total_games"], 1)
+        self.assertNotIn(("white", (), 1), cache._trees)
+
+    def test_graph_key_identifies_positions_exactly_like_position_key(self):
+        import chess
+        from position_key import position_key
+
+        lines = [
+            "", "e4", "e4 e5", "d4 Nf6 c4 e6", "c4 e6 d4 Nf6",          # transposition
+            "e4 d5 e5 f5",                                              # legal en passant
+            "e4 Nf6 e5 d5", "e4 Nf6 e5 Nd5 c4 Nb6",                     # ep legal / none
+            "Nf3 Nf6 Ng1 Ng8", "Nf3 Nf6 Ng1 Ng8 Nf3 Nf6 Ng1 Ng8",       # repetition, clocks differ
+            "e4 e5 Ke2 Ke7", "e4 e5 Ke2 Ke7 Ke1 Ke8",                    # castling rights lost
+            "e4 e5 Nf3 Nc6 Bc4 Bc5 O-O Nf6",
+        ]
+        boards = []
+        for line in lines:
+            board = chess.Board()
+            for san in line.split():
+                board.push_san(san)
+            boards.append(board)
+        for a in boards:
+            for b in boards:
+                self.assertEqual(
+                    opening_tree._graph_key(a) == opening_tree._graph_key(b),
+                    position_key(a) == position_key(b),
+                    (a.fen(), b.fen()),
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

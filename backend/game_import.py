@@ -23,6 +23,11 @@ _MAX_GAMES = 6000  # safety ceiling per sync so one account can't run away
 
 _HEADER_RE = re.compile(r'^\[(\w+)\s+"(.*)"\]\s*$', re.M)
 # Lichess "speed" → the time-class vocabulary the UI filters on (chess.com's).
+# Lichess statuses for games that may never have been played out. With no
+# `winner` such a game would otherwise be filed as a draw in the tree. (A
+# noStart *can* carry a winner — the player who never moved loses — so only a
+# winnerless one is skipped.)
+_LICHESS_UNPLAYED = {"created", "started", "aborted", "noStart"}
 _LICHESS_SPEED_TO_CLASS = {
     "ultraBullet": "bullet", "bullet": "bullet", "blitz": "blitz",
     "rapid": "rapid", "classical": "rapid", "correspondence": "daily",
@@ -175,6 +180,8 @@ def import_lichess(username, account_id, progress=None, cancelled=None, client=N
                 except ValueError:
                     continue
                 if g.get("variant", "standard") != "standard":
+                    continue
+                if g.get("status") in _LICHESS_UNPLAYED and not g.get("winner"):
                     continue
                 pgn = g.get("pgn")
                 if not pgn:

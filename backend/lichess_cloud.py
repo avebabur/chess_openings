@@ -15,7 +15,7 @@ import re
 import time
 import threading
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import httpx
 
@@ -107,7 +107,8 @@ def _miss_fresh(fetched_at):
         dt = datetime.strptime(fetched_at[:19], "%Y-%m-%d %H:%M:%S")
     except ValueError:
         return False
-    return datetime.utcnow() - dt < _MISS_TTL
+    # SQLite datetime() is naive UTC; utcnow() is deprecated as of Python 3.12.
+    return datetime.now(timezone.utc).replace(tzinfo=None) - dt < _MISS_TTL
 
 
 def get_cloud_eval(fen, multipv=1, allow_network=True, client=None):

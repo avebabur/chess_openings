@@ -55,6 +55,22 @@ export function boardFromPath(path) {
   return { fen: game.fen(), last, accepted }
 }
 
+// The position key of the start and of every position along a SAN line, in one
+// replay. Stops at the first illegal move, like boardFromPath.
+export function positionKeysAlongPath(path) {
+  const game = new Chess()
+  const keys = [positionKeyFromFen(game.fen())]
+  for (const san of splitSanLine(path)) {
+    try {
+      if (!game.move(san)) break
+    } catch {
+      break
+    }
+    keys.push(positionKeyFromFen(game.fen()))
+  }
+  return keys
+}
+
 /** Is the side to move in check? Drives chessground's `check` highlight.
  *
  * Chessground will not derive this itself: `highlight.check` only decides
