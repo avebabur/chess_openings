@@ -10,14 +10,23 @@ config and the cancellation model are different.
 
 Threads / memory
 ----------------
-Reported depth and practical search strength are different metrics. Local
-benchmarks on this app's target positions showed Threads=1 gives the best
-balance for the live engine: efficient CPU use, good depth, and stable latency.
+Reported depth and practical search strength are different metrics. Stockfish's
+multithreading (Lazy SMP) runs every thread on the same root position and
+shares results through the hash table, so extra threads barely raise the
+reported depth at a fixed time. They still find the right move sooner and play
+stronger. Do NOT compare thread counts by depth; compare time-to-solution or Elo.
 
-The live engine still has two configurable thread profiles. Depth-targeted
-searches use ``OPENINGS_LIVE_INTERACTIVE_THREADS`` (default 1). Infinite and
-time-only analysis use ``OPENINGS_LIVE_DEEP_THREADS`` (default 1). The legacy
-``OPENINGS_LIVE_THREADS`` env var still overrides both profiles when set.
+Both thread profiles default to ``DEFAULT_THREADS`` (4, capped at the CPU count).
+On the 8-core (4 performance + 4 efficiency) dev Mac running Stockfish 19,
+nodes/sec rose from about 270k at 1 thread to 825k at 4 but only 890k at 8.
+Threads past 4 land on the slower efficiency cores. The cost is that multithreaded results are not bit-for-bit
+reproducible: the same position can show a slightly different eval or PV
+between runs. The best move is what stays stable.
+
+Depth-targeted searches use ``OPENINGS_LIVE_INTERACTIVE_THREADS``. Infinite and
+time-only analysis use ``OPENINGS_LIVE_DEEP_THREADS``. The legacy
+``OPENINGS_LIVE_THREADS`` env var still overrides both profiles when set; set it
+to 1 for reproducible single-threaded output.
 
 Current default hash is ``Hash=1024`` MB. There is exactly ONE shared engine, so
 that 1 GB (plus the binary + NNUE nets) is the app's entire engine footprint, not
@@ -58,16 +67,17 @@ def _stockfish_path():
 STOCKFISH_PATH = _stockfish_path()
 
 
-def _default_deep_threads():
-    """Default threads for time/∞ searches."""
-    return 1
+def _default_threads():
+    """4 search threads, or fewer on a machine with fewer cores."""
+    return max(1, min(4, os.cpu_count() or 1))
 
 
+DEFAULT_THREADS = _default_threads()
 _LEGACY_THREADS = os.environ.get("OPENINGS_LIVE_THREADS")
 LIVE_INTERACTIVE_THREADS = int(os.environ.get(
-    "OPENINGS_LIVE_INTERACTIVE_THREADS", _LEGACY_THREADS or "1"))
+    "OPENINGS_LIVE_INTERACTIVE_THREADS", _LEGACY_THREADS or str(DEFAULT_THREADS)))
 LIVE_DEEP_THREADS = int(os.environ.get(
-    "OPENINGS_LIVE_DEEP_THREADS", _LEGACY_THREADS or str(_default_deep_threads())))
+    "OPENINGS_LIVE_DEEP_THREADS", _LEGACY_THREADS or str(DEFAULT_THREADS)))
 LIVE_THREADS = LIVE_INTERACTIVE_THREADS  # Backward-compatible module constant.
 LIVE_HASH_MB = int(os.environ.get("OPENINGS_LIVE_HASH_MB", "1024"))
 LIVE_DEPTH = int(os.environ.get("OPENINGS_LIVE_DEPTH", "22"))
@@ -101,8 +111,8 @@ def _build_limit(depth, max_seconds):
 
 
 def _threads_for_limit(limit):
-    # Keep separate profiles so deep/time-based searches can be tuned by env var
-    # without changing the default single-thread behavior.
+    # Separate profiles so shallow vs deep/time-based searches can be tuned
+    # independently by env var. Both default to DEFAULT_THREADS.
     depth = getattr(limit, "depth", None)
     if depth is not None and depth <= LIVE_DEPTH:
         return LIVE_INTERACTIVE_THREADS

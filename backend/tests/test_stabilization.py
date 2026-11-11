@@ -224,32 +224,28 @@ class StabilizationTests(unittest.TestCase):
         self.assertFalse(status["available"])
         self.assertIn("Install Stockfish", status["message"])
 
-    def test_live_engine_defaults_to_single_thread_for_all_searches(self):
+    def test_live_engine_defaults_to_four_threads_for_all_searches(self):
         import live_engine
         shallow = live_engine._build_limit(live_engine.LIVE_DEPTH, live_engine.LIVE_MAX_SECONDS)
         deep_depth = live_engine._build_limit(live_engine.LIVE_DEPTH + 10, 0)
         time_only = live_engine._build_limit(0, live_engine.LIVE_MAX_SECONDS)
         infinite = live_engine._build_limit(0, 0)
 
-        self.assertEqual(live_engine.LIVE_INTERACTIVE_THREADS, 1)
-        self.assertEqual(live_engine.LIVE_DEEP_THREADS, 1)
-        self.assertEqual(
-            live_engine._threads_for_limit(shallow),
-            1,
-        )
-        self.assertEqual(
-            live_engine._threads_for_limit(deep_depth),
-            1,
-        )
-        self.assertEqual(
-            live_engine._threads_for_limit(time_only),
-            1,
-        )
-        self.assertEqual(
-            live_engine._threads_for_limit(infinite),
-            1,
-        )
+        expected = min(4, os.cpu_count() or 1)
+        self.assertEqual(live_engine.DEFAULT_THREADS, expected)
+        self.assertEqual(live_engine.LIVE_INTERACTIVE_THREADS, expected)
+        self.assertEqual(live_engine.LIVE_DEEP_THREADS, expected)
+        for limit in (shallow, deep_depth, time_only, infinite):
+            self.assertEqual(live_engine._threads_for_limit(limit), expected)
 
+    def test_default_threads_never_exceeds_cpu_count(self):
+        import live_engine
+        with patch.object(live_engine.os, "cpu_count", return_value=2):
+            self.assertEqual(live_engine._default_threads(), 2)
+        with patch.object(live_engine.os, "cpu_count", return_value=None):
+            self.assertEqual(live_engine._default_threads(), 1)
+        with patch.object(live_engine.os, "cpu_count", return_value=16):
+            self.assertEqual(live_engine._default_threads(), 4)
 
 if __name__ == "__main__":
     unittest.main()
