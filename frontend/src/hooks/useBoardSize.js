@@ -25,7 +25,9 @@ import { useEffect, useRef, useState } from 'react'
  */
 
 const MIN = 280
-const MAX = 680
+// Only a guard for very large screens. In practice the board is limited by the
+// window height (byHeight below), and by PANEL_MIN on a narrow window.
+const MAX = 1200
 const GAP = 16        // .op-shell column gap
 const RAIL = 300      // .op-analysis-rail fixed width
 const PANEL_MIN = 360 // .op-panel flex-basis / comfortable minimum

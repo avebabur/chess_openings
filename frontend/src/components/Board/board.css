@@ -1,7 +1,8 @@
 /* Board chrome. Square colours, piece sprites and coordinate placement are
  * ported from lichess: chessground.brown.css (square states) and lila's
  * ui/lib/css/theme/board/_coords-in.scss (coordinates inside the board).
- * Only the palette is retuned for this app's blue board and dark theme. */
+ * The board itself is two flat colours (#EAE9D2 / #4B729A) and the pieces are
+ * lichess's Maestro set by sadsnake1 (CC BY-NC-SA 4.0, see CREDITS.md). */
 
 .board-area {
   position: relative;
@@ -42,27 +43,27 @@
   height: 100%;
 }
 
-/* ── Board surface + Merida pieces ───────────────────────────────────────── */
+/* ── Board surface + Maestro pieces ──────────────────────────────────────── */
 
 .cr-board-inner cg-board,
 .board-wrapper cg-board {
-  background-image: url('/board/blue2.jpg');
+  background-image: url('/board/blue-flat.svg');
   background-size: cover;
   border-radius: var(--radius, 8px);
 }
 
-.board-wrapper piece.pawn.white   { background-image: url('/piece/merida/wP.svg'); }
-.board-wrapper piece.knight.white { background-image: url('/piece/merida/wN.svg'); }
-.board-wrapper piece.bishop.white { background-image: url('/piece/merida/wB.svg'); }
-.board-wrapper piece.rook.white   { background-image: url('/piece/merida/wR.svg'); }
-.board-wrapper piece.queen.white  { background-image: url('/piece/merida/wQ.svg'); }
-.board-wrapper piece.king.white   { background-image: url('/piece/merida/wK.svg'); }
-.board-wrapper piece.pawn.black   { background-image: url('/piece/merida/bP.svg'); }
-.board-wrapper piece.knight.black { background-image: url('/piece/merida/bN.svg'); }
-.board-wrapper piece.bishop.black { background-image: url('/piece/merida/bB.svg'); }
-.board-wrapper piece.rook.black   { background-image: url('/piece/merida/bR.svg'); }
-.board-wrapper piece.queen.black  { background-image: url('/piece/merida/bQ.svg'); }
-.board-wrapper piece.king.black   { background-image: url('/piece/merida/bK.svg'); }
+.board-wrapper piece.pawn.white   { background-image: url('/piece/maestro/wP.svg'); }
+.board-wrapper piece.knight.white { background-image: url('/piece/maestro/wN.svg'); }
+.board-wrapper piece.bishop.white { background-image: url('/piece/maestro/wB.svg'); }
+.board-wrapper piece.rook.white   { background-image: url('/piece/maestro/wR.svg'); }
+.board-wrapper piece.queen.white  { background-image: url('/piece/maestro/wQ.svg'); }
+.board-wrapper piece.king.white   { background-image: url('/piece/maestro/wK.svg'); }
+.board-wrapper piece.pawn.black   { background-image: url('/piece/maestro/bP.svg'); }
+.board-wrapper piece.knight.black { background-image: url('/piece/maestro/bN.svg'); }
+.board-wrapper piece.bishop.black { background-image: url('/piece/maestro/bB.svg'); }
+.board-wrapper piece.rook.black   { background-image: url('/piece/maestro/bR.svg'); }
+.board-wrapper piece.queen.black  { background-image: url('/piece/maestro/bQ.svg'); }
+.board-wrapper piece.king.black   { background-image: url('/piece/maestro/bK.svg'); }
 
 .board-wrapper piece {
   background-size: cover;
@@ -98,6 +99,31 @@
 .board-wrapper cg-board square.oc.move-dest:hover,
 .board-wrapper cg-board square.oc.move-dest.hover {
   background: rgb(20 85 30 / 0.3);
+}
+
+/* Premoves: lichess's blue, against the green of an ordinary move. */
+.board-wrapper cg-board square.premove-dest {
+  background: radial-gradient(
+    rgb(20 30 85 / 0.5) 22%,
+    #203085 0,
+    rgb(0 0 0 / 0.3) 0,
+    rgb(0 0 0 / 0) 0
+  );
+  pointer-events: auto;
+}
+
+.board-wrapper cg-board square.oc.premove-dest {
+  background: radial-gradient(transparent 0%, transparent 80%, rgb(20 30 85 / 0.2) 80%);
+  pointer-events: auto;
+}
+
+.board-wrapper cg-board square.premove-dest:hover,
+.board-wrapper cg-board square.premove-dest.hover {
+  background: rgb(20 30 85 / 0.2);
+}
+
+.board-wrapper cg-board square.current-premove {
+  background-color: rgb(20 30 85 / 0.5);
 }
 
 .board-wrapper cg-board square.last-move {
@@ -169,21 +195,22 @@
 }
 
 /* Alternating with the square underneath, per chessground.brown.css's mapping
- * (which is correct for this DOM); only the two colours are retuned for blue2. */
+ * (which is correct for this DOM). Each label takes the colour of the *other*
+ * square, as on lichess, so it reads on both without a shadow. */
 .board-wrapper .orientation-white .ranks :nth-child(odd),
 .board-wrapper .orientation-white .files :nth-child(even),
 .board-wrapper .orientation-black .ranks :nth-child(even),
 .board-wrapper .orientation-black .files :nth-child(odd) {
-  color: rgb(40 52 60 / 0.85);
-  text-shadow: 0 1px 1px rgb(255 255 255 / 0.25);
+  color: #4b729a;
+  text-shadow: none;
 }
 
 .board-wrapper .orientation-white .ranks :nth-child(even),
 .board-wrapper .orientation-white .files :nth-child(odd),
 .board-wrapper .orientation-black .ranks :nth-child(odd),
 .board-wrapper .orientation-black .files :nth-child(even) {
-  color: rgb(248 252 255 / 0.92);
-  text-shadow: 0 1px 2px rgb(0 0 0 / 0.6);
+  color: #eae9d2;
+  text-shadow: none;
 }
 
 /* ── Promotion picker ────────────────────────────────────────────────────── */
@@ -256,14 +283,14 @@
   background-position: center;
 }
 
-.promotion-sprite[data-piece='wq'] { background-image: url('/piece/merida/wQ.svg'); }
-.promotion-sprite[data-piece='wr'] { background-image: url('/piece/merida/wR.svg'); }
-.promotion-sprite[data-piece='wb'] { background-image: url('/piece/merida/wB.svg'); }
-.promotion-sprite[data-piece='wn'] { background-image: url('/piece/merida/wN.svg'); }
-.promotion-sprite[data-piece='bq'] { background-image: url('/piece/merida/bQ.svg'); }
-.promotion-sprite[data-piece='br'] { background-image: url('/piece/merida/bR.svg'); }
-.promotion-sprite[data-piece='bb'] { background-image: url('/piece/merida/bB.svg'); }
-.promotion-sprite[data-piece='bn'] { background-image: url('/piece/merida/bN.svg'); }
+.promotion-sprite[data-piece='wq'] { background-image: url('/piece/maestro/wQ.svg'); }
+.promotion-sprite[data-piece='wr'] { background-image: url('/piece/maestro/wR.svg'); }
+.promotion-sprite[data-piece='wb'] { background-image: url('/piece/maestro/wB.svg'); }
+.promotion-sprite[data-piece='wn'] { background-image: url('/piece/maestro/wN.svg'); }
+.promotion-sprite[data-piece='bq'] { background-image: url('/piece/maestro/bQ.svg'); }
+.promotion-sprite[data-piece='br'] { background-image: url('/piece/maestro/bR.svg'); }
+.promotion-sprite[data-piece='bb'] { background-image: url('/piece/maestro/bB.svg'); }
+.promotion-sprite[data-piece='bn'] { background-image: url('/piece/maestro/bN.svg'); }
 
 @media (prefers-reduced-motion: reduce) {
   .promotion-piece {

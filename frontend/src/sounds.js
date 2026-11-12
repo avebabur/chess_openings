@@ -169,3 +169,8 @@ export function playStepSound(san) {
 export function playIllegalSound() {
   playNamed('Error')
 }
+
+/** Game over. Lichess's Victory, Defeat and Draw are all this one chime. */
+export function playGameEndSound() {
+  playNamed('GenericNotify')
+}

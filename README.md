@@ -134,4 +134,6 @@ The Lichess opening explorer and player lookups require a Lichess API token, con
 
 ## License
 
-Released under the [MIT License](LICENSE).
+Released under the [GNU Affero General Public License v3.0 or later](LICENSE).
+
+The board uses Lichess's chessground library and several Lichess assets (pieces, sounds), each under its own licence. See [CREDITS.md](CREDITS.md). The Maestro piece set is licensed for non-commercial use only.

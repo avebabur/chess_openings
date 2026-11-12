@@ -1,6 +1,7 @@
 {
   "name": "chess-openings",
   "private": true,
+  "license": "AGPL-3.0-or-later",
   "version": "0.0.0",
   "type": "module",
   "scripts": {
@@ -13,9 +14,9 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@lichess-org/chessground": "10.5.0",
     "axios": "1.16.1",
     "chess.js": "1.4.0",
-    "chessground": "9.2.1",
     "react": "19.2.6",
     "react-dom": "19.2.6"
   },

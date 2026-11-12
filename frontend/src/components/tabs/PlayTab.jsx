@@ -1,0 +1,238 @@
+import { useState } from 'react'
+import {
+  PLAY_STATUS,
+  latestVerdict,
+  pieceCount,
+  playFen,
+  resultText,
+  tablebaseCovers,
+} from '../../domain/playSession'
+
+const THINK_TIMES = [1, 3, 10]
+
+function colorName(color) {
+  return color === 'white' ? 'White' : 'Black'
+}
+
+/** One sentence on what the tablebase made of the user's last move. */
+function verdictCopy(verdict) {
+  const fifty = verdict.fiftyMove ? ' (only because of the 50-move rule)' : ''
+  switch (verdict.kind) {
+    case 'kept-win': {
+      const mate = verdict.mateIn != null ? `, mate in ${verdict.mateIn}` : ''
+      const faster = verdict.fastest === false && verdict.fastestSan
+        ? ` ${verdict.fastestSan} was quicker (mate in ${verdict.fastestMateIn}).`
+        : ''
+      return { tone: 'good', title: `${verdict.san} keeps the win`, body: `Still winning${mate}.${faster}` }
+    }
+    case 'kept-draw':
+      return { tone: 'good', title: `${verdict.san} holds the draw`, body: `Still a draw${fifty}.` }
+    case 'lost-anyway':
+      return { tone: 'neutral', title: `${verdict.san}`, body: 'The position was already lost. No move saves it.' }
+    case 'win-to-draw':
+      return {
+        tone: 'bad',
+        title: `${verdict.san} throws away the win`,
+        body: `It is now a draw${fifty}. ${verdict.bestSan} was winning.`,
+      }
+    case 'win-to-loss':
+      return {
+        tone: 'bad',
+        title: `${verdict.san} turns a win into a loss`,
+        body: `${verdict.bestSan} was winning.`,
+      }
+    case 'draw-to-loss':
+      return {
+        tone: 'bad',
+        title: `${verdict.san} loses`,
+        body: `${verdict.bestSan} held the draw.`,
+      }
+    default:
+      return null
+  }
+}
+
+export default function PlayTab({
+  session,
+  positionTitle,
+  positionFen,
+  positionOver,
+  fenDraft,
+  fenError,
+  usingPastedFen,
+  onFenDraftChange,
+  onStart,
+  onTakeBack,
+  onRestart,
+  onExit,
+  onRetry,
+}) {
+  const [seconds, setSeconds] = useState(THINK_TIMES[0])
+
+  // --- Setup screen ---
+  if (!session) {
+    const toMove = positionFen.split(' ')[1] === 'b' ? 'black' : 'white'
+    const pieces = pieceCount(positionFen)
+    const covered = tablebaseCovers(positionFen)
+    return (
+      <div className="tab-pane" role="tabpanel">
+        <div className="op-pane-head">
+          <div className="op-pane-head-text">
+            <h2>Play against Stockfish</h2>
+            <p>
+              Play the position on the board against the engine. Reach one in Explore,
+              open one of your games, or paste a position below.
+            </p>
+          </div>
+        </div>
+
+        <div className="practice-card">
+          <span className="eyebrow">{usingPastedFen ? 'Pasted position' : 'Position from Explore'}</span>
+          <strong>{usingPastedFen ? 'Shown on the board' : positionTitle}</strong>
+          <p>
+            {colorName(toMove)} to move · {pieces} pieces.{' '}
+            {covered
+              ? 'Every move you make will be checked against the endgame tablebase.'
+              : 'Tablebase verdicts begin once 7 or fewer pieces are left.'}
+          </p>
+        </div>
+
+        <label className="play-fen">
+          <span className="eyebrow">Or paste a position (FEN)</span>
+          <input
+            type="text"
+            value={fenDraft}
+            onChange={event => onFenDraftChange(event.target.value)}
+            placeholder="6K1/4k1P1/8/8/8/7r/8/5R2 w - - 0 1"
+            spellCheck={false}
+            autoComplete="off"
+            aria-invalid={Boolean(fenError)}
+            aria-describedby={fenError ? 'play-fen-error' : undefined}
+          />
+        </label>
+        {fenError && <p className="play-fen-error" id="play-fen-error" role="alert">{fenError}</p>}
+        {fenDraft && (
+          <button type="button" className="btn-link" onClick={() => onFenDraftChange('')}>
+            Clear and use the Explore position
+          </button>
+        )}
+
+        <div className="play-setup-row">
+          <span className="eyebrow" id="play-think-label">Stockfish thinking time</span>
+          <div className="seg" role="group" aria-labelledby="play-think-label">
+            {THINK_TIMES.map(value => (
+              <button
+                key={value}
+                type="button"
+                className={seconds === value ? 'on' : ''}
+                aria-pressed={seconds === value}
+                onClick={() => setSeconds(value)}
+              >
+                {value}s
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {fenError ? null : positionOver ? (
+          <div className="op-empty compact">
+            <strong>This position is already over</strong>
+            <p>Go back a move in Explore to play from an earlier position.</p>
+          </div>
+        ) : (
+          <div className="practice-done-actions">
+            {['white', 'black'].map(side => (
+              <button
+                key={side}
+                type="button"
+                className={side === toMove ? 'btn-primary' : 'btn-secondary'}
+                onClick={() => onStart({ userColor: side, seconds })}
+              >
+                Play as {colorName(side)}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  // --- Game in progress ---
+  const { status, error, userColor } = session
+  const verdict = latestVerdict(session)
+  const copy = verdict ? verdictCopy(verdict) : null
+  const fen = playFen(session)
+  const userMoves = session.moves.filter(move => move.by === 'user').length
+  const lastEngine = session.moves.at(-1)?.by === 'engine' ? session.moves.at(-1) : null
+
+  return (
+    <div className="tab-pane" role="tabpanel">
+      <div className="practice-session">
+        <div className="practice-header">
+          <div>
+            <span className="eyebrow">Playing as {colorName(userColor)}</span>
+            <strong>{session.label || 'Against Stockfish'}</strong>
+          </div>
+          <button type="button" className="btn-secondary" onClick={onExit}>Exit</button>
+        </div>
+
+        {status === PLAY_STATUS.USER_TURN && (
+          <div className="practice-card active" role="status">
+            <strong>Your move</strong>
+            <p>
+              {lastEngine
+                ? `Stockfish played ${lastEngine.san}${lastEngine.source === 'tablebase' ? ' (tablebase)' : ''}.`
+                : `You are ${colorName(userColor)}.`}
+            </p>
+          </div>
+        )}
+
+        {status === PLAY_STATUS.ENGINE_THINKING && !error && (
+          <div className="practice-card" role="status">
+            <strong>Stockfish is thinking…</strong>
+            <p>You can queue your next move now. It is played if it is still legal.</p>
+          </div>
+        )}
+
+        {error && (
+          <div className="review-write-error" role="alert">
+            <span>{error}</span>
+            <button type="button" className="btn-secondary" onClick={onRetry}>Retry</button>
+          </div>
+        )}
+
+        {status === PLAY_STATUS.OVER && (
+          <div className={`practice-card ${session.result?.winner === userColor ? 'success' : ''}`} role="status">
+            <strong>{resultText(session)}</strong>
+            <p>{userMoves} move{userMoves === 1 ? '' : 's'} played.</p>
+          </div>
+        )}
+
+        {copy && (
+          <div className={`practice-card play-verdict ${copy.tone}`} role="status" aria-label="Tablebase verdict">
+            <span className="eyebrow">Tablebase</span>
+            <strong>{copy.title}</strong>
+            <p>{copy.body}</p>
+          </div>
+        )}
+
+        {!copy && status !== PLAY_STATUS.OVER && !tablebaseCovers(fen) && (
+          <p className="play-note">
+            {pieceCount(fen) > 7
+              ? `Tablebase verdicts begin at 7 pieces. There are ${pieceCount(fen)} now.`
+              : 'The tablebase does not cover positions that still have castling rights.'}
+          </p>
+        )}
+
+        <div className="practice-done-actions">
+          <button type="button" className="btn-secondary" onClick={onTakeBack} disabled={!userMoves}>
+            Take back
+          </button>
+          <button type="button" className="btn-secondary" onClick={onRestart} disabled={!session.moves.length}>
+            Restart
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}

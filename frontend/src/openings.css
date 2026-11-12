@@ -4,7 +4,9 @@
   box-sizing: border-box;
   flex: 1;
   width: 100%;
-  max-width: 1640px;
+  /* No max-width: the engine rail sits at the left edge of the window and the
+   * panel at the right, so every spare pixel between them goes to the board
+   * (which is then limited by the window's height, see useBoardSize). */
   margin: 0 auto;
   padding: 16px 20px 48px;
   min-width: 0;
@@ -2270,6 +2272,83 @@
 }
 
 .practice-done-actions .btn-primary { margin-top: 0; }
+
+/* ── Play tab ── */
+
+.play-setup-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.play-fen {
+  display: grid;
+  gap: 6px;
+  margin-top: 14px;
+}
+
+.play-fen input {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xs);
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  padding: 8px 10px;
+}
+
+.play-fen input[aria-invalid='true'] {
+  border-color: var(--loss);
+}
+
+.play-fen-error {
+  margin: 6px 0 0;
+  color: var(--loss);
+  font-size: 12px;
+}
+
+.btn-link {
+  appearance: none;
+  border: 0;
+  background: none;
+  padding: 0;
+  margin-top: 8px;
+  color: var(--accent-2);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.practice-card.play-verdict.good {
+  border-color: color-mix(in oklch, var(--win), var(--line) 50%);
+}
+
+.practice-card.play-verdict.bad {
+  border-color: var(--loss);
+  background: color-mix(in srgb, var(--loss) 10%, transparent);
+}
+
+.practice-card .eyebrow {
+  margin-bottom: 6px;
+}
+
+.play-note,
+.play-rail-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.play-rail-note {
+  margin-top: 8px;
+}
 
 .review-summary { display: grid; gap: 4px; justify-items: start; }
 

@@ -101,6 +101,131 @@ test('clean white drill auto-plays the opponent and finishes the run', async ({ 
   await expect(page.getByText('Nothing due')).toBeVisible()
 })
 
+test('a premove queued during the opponent reply is played when the turn comes back', async ({ page, request }) => {
+  await saveBranch(request, {
+    color: 'white',
+    name: 'Premove line',
+    moves_san: 'e4 e5 Nf3',
+    opening: 'Open Game',
+    label: 'main',
+    note: '',
+  })
+
+  // The opponent only replies once the drill write for your move has settled.
+  // Holding that write keeps it Black's turn for as long as the test needs to
+  // queue a premove, instead of racing the 420ms autoplay timer.
+  let release
+  const held = new Promise((resolve) => { release = resolve })
+  await page.route('**/api/repertoire/drill-attempts', async (route) => {
+    await held
+    await route.continue()
+  })
+
+  await page.goto('/')
+  await trainOpening(page, 'Open Game')
+  await expect(page.getByText('Your move')).toBeVisible()
+
+  await playMove(page, 'e2', 'e4')
+  // Black to move: this is queued, not played.
+  await playMove(page, 'g1', 'f3')
+  // :visible matters — chessground keeps spent highlight squares in the DOM,
+  // hidden, to reuse them on the next render.
+  const premoveSquares = page.locator('cg-board square.current-premove:visible')
+  await expect(premoveSquares).toHaveCount(2)
+  const history = page.getByRole('navigation', { name: 'Move history' })
+  await expect(history.getByRole('button', { name: /Nf3/ })).toHaveCount(0)
+
+  release()
+  await waitForOpponentReply(page, 'e5')
+  // No further clicks: the queued move plays itself and finishes the line.
+  await expect(history.getByRole('button', { name: /Nf3/ })).toBeVisible()
+  await expect(premoveSquares).toHaveCount(0)
+  await expect(page.getByText('Clean line')).toBeVisible()
+})
+
+test('play a pasted endgame against the engine and get a tablebase verdict on each move', async ({ page }) => {
+  const LUCENA = '6K1/4k1P1/8/8/8/7r/8/5R2 w - - 0 1'
+  // The app is offline in this suite, so the two play endpoints are stubbed
+  // with what the backend returns for this position.
+  await page.route('**/api/tablebase**', route => route.fulfill({
+    json: {
+      available: true,
+      outcome: 'win',
+      moves: [
+        { uci: 'f1e1', san: 'Re1+', outcome: 'win', dtm: 40 },
+        { uci: 'f1h1', san: 'Rh1', outcome: 'draw', dtm: 0 },
+      ],
+    },
+  }))
+  await page.route('**/api/play/reply', (route) => {
+    const { fen } = route.request().postDataJSON()
+    // After Rh1 the rook is taken; after Re1+ the king steps out of check.
+    const reply = fen.startsWith('6K1/4k1P1/8/8/8/7r/8/7R')
+      ? { uci: 'h3h1', san: 'Rxh1', source: 'tablebase' }
+      : { uci: 'e7d7', san: 'Kd7', source: 'tablebase' }
+    return route.fulfill({ json: reply })
+  })
+
+  await page.goto('/')
+  await page.getByRole('tab', { name: 'Play' }).click()
+
+  const fenBox = page.getByPlaceholder(/6K1/)
+  await fenBox.fill('4k3/8/8/8/8/8/4R3/4K3 w - - 0 1')
+  await expect(page.getByRole('alert')).toContainText("Black's king is in check")
+  await expect(page.getByRole('button', { name: 'Play as White' })).toHaveCount(0)
+
+  await fenBox.fill(LUCENA)
+  await expect(page.getByText('Pasted position')).toBeVisible()
+  // The board previews the pasted position before the game starts.
+  await expect(page.locator('cg-board piece')).toHaveCount(5)
+  await page.getByRole('button', { name: 'Play as White' }).click()
+  await expect(page.getByText('Your move')).toBeVisible()
+
+  const history = page.getByRole('navigation', { name: 'Move history' })
+  const verdict = page.getByRole('status', { name: 'Tablebase verdict' })
+
+  await playMove(page, 'f1', 'h1')
+  await expect(verdict).toContainText('Rh1 throws away the win')
+  await expect(verdict).toContainText('Re1+ was winning')
+  await waitForOpponentReply(page, 'Rxh1')
+
+  await page.getByRole('button', { name: 'Take back' }).click()
+  await expect(history.getByRole('button', { name: /Rh1/ })).toHaveCount(0)
+  await expect(page.locator('cg-board piece:visible')).toHaveCount(5)
+
+  await playMove(page, 'f1', 'e1')
+  await expect(verdict).toContainText('Re1+ keeps the win')
+  await expect(verdict).toContainText('mate in 20')
+  await waitForOpponentReply(page, 'Kd7')
+
+  await page.getByRole('button', { name: 'Exit', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Play against Stockfish' })).toBeVisible()
+})
+
+test('play from the Explore position, with no verdicts until seven pieces are left', async ({ page }) => {
+  await page.route('**/api/play/reply', route => route.fulfill({
+    json: { uci: 'e7e5', san: 'e5', source: 'stockfish', eval: 0.2, depth: 20 },
+  }))
+  let tablebaseCalls = 0
+  await page.route('**/api/tablebase**', (route) => { tablebaseCalls += 1; return route.fulfill({ json: { available: false } }) })
+
+  await page.goto('/')
+  await page.getByRole('tab', { name: 'Play' }).click()
+  await expect(page.getByText('Position from Explore')).toBeVisible()
+  await page.getByRole('button', { name: 'Play as White' }).click()
+
+  await playMove(page, 'e2', 'e4')
+  await waitForOpponentReply(page, 'e5')
+  await expect(page.getByText('Stockfish played e5.')).toBeVisible()
+  await expect(page.getByText('Tablebase verdicts begin at 7 pieces. There are 32 now.')).toBeVisible()
+  expect(tablebaseCalls).toBe(0)
+
+  // The engine panel is hidden during a game, as it is in a drill.
+  await expect(page.getByText('Lichess cloud')).toHaveCount(0)
+  await page.getByRole('button', { name: 'Exit', exact: true }).click()
+  await expect(page.getByRole('button', { name: 'Play as White' })).toBeVisible()
+})
+
 test('a drill only accepts moves from the opening being drilled', async ({ page, request }) => {
   // Both lines start from the same position. 1.e4 is in the repertoire — but
   // not in the opening being drilled, and used to pass as a "Clean line".

@@ -15,6 +15,7 @@ import { useAccountManager } from './hooks/useAccountManager'
 import { useOpeningNavigation } from './hooks/useOpeningNavigation'
 import { useTrainingSession } from './hooks/useTrainingSession'
 import { useReviewSession } from './hooks/useReviewSession'
+import { usePlaySession } from './hooks/usePlaySession'
 import {
   START_FEN,
   applySanMove,
@@ -46,6 +47,15 @@ import {
   reviewDisplayPath,
   reviewPriorPath as getReviewPriorPath,
 } from './domain/reviewSession'
+import {
+  PLAY_STATUS,
+  gameResult,
+  parseStartFen,
+  playFen,
+  playLastMove,
+  playSans,
+  startPlyOf,
+} from './domain/playSession'
 import BoardPane from './components/BoardPane'
 import EnginePanel from './components/EnginePanel'
 import SessionRail from './components/SessionRail'
@@ -54,6 +64,7 @@ import AccountsModal from './components/AccountsModal'
 import ExploreTab from './components/tabs/ExploreTab'
 import RepertoireTab from './components/tabs/RepertoireTab'
 import PracticeTab from './components/tabs/PracticeTab'
+import PlayTab from './components/tabs/PlayTab'
 import ReviewTab from './components/tabs/ReviewTab'
 import GamesTab from './components/tabs/GamesTab'
 import GameReviewPanel from './components/tabs/GameReviewPanel'
@@ -73,6 +84,7 @@ const TABS = [
   { id: 'Explore', hint: 'Your game stats' },
   { id: 'Repertoire', hint: 'Saved variations' },
   { id: 'Practice', label: 'Train', hint: 'Drill openings with random branching' },
+  { id: 'Play', hint: 'Play the position against Stockfish' },
   { id: 'Review', hint: 'Spaced repetition' },
   { id: 'Games', hint: 'Browse and review full games' },
 ]
@@ -109,6 +121,8 @@ export default function OpeningsExplorer() {
   const [pendingPromotion, setPendingPromotion] = useState(null)
   const [boardResetKey, setBoardResetKey] = useState(0)
   const [explorerFiltersOpen, setExplorerFiltersOpen] = useState(false)
+  // A position pasted into the Play tab, as typed. Parsed below.
+  const [playFenDraft, setPlayFenDraft] = useState('')
   const shellRef = useRef(null)
   const boardColumnRef = useRef(null)
   const { repertoire, error: repertoireError, reload: loadRepertoire } = useRepertoire(color)
@@ -127,9 +141,13 @@ export default function OpeningsExplorer() {
     review, reviewItem, reviewWrite, dispatchReview,
     recordReview, retryReviewWrite, resetReviewWrite,
   } = useReviewSession(loadRepertoire)
+  const play = usePlaySession()
+  const playSession = play.session
+  const stopPlay = play.stop
+  const beginPlay = play.start
   const { tree, loading, error, reload: reloadTree } = useOpeningTree({
     color, pathKey: activeLineKey, timeClass, accountId: selectedAccountId,
-    enabled: activeTab === 'Explore' && !trainer && !reviewItem,
+    enabled: activeTab === 'Explore' && !trainer && !reviewItem && !playSession,
   })
   // The games list is fetched the first time the tab is opened, not on every
   // page load; after that it stays loaded (and keeps any "Load more" pages).
@@ -155,6 +173,7 @@ export default function OpeningsExplorer() {
     clearTrainerTimer()
     dispatchTrainer({ type: 'stop' })
     dispatchReview({ type: 'clear' })
+    stopPlay()
     setActiveTab('Games')
     setFlipped(false)
     try {
@@ -166,7 +185,7 @@ export default function OpeningsExplorer() {
       setReviewGame({ ...game, sans: [], error: true })
       setLine({ path: [], future: [] })
     }
-  }, [clearTrainerTimer, dispatchReview, dispatchTrainer, setFlipped, setLine])
+  }, [clearTrainerTimer, dispatchReview, dispatchTrainer, stopPlay, setFlipped, setLine])
 
   const exploreBoard = useMemo(() => boardFromPath(path), [path])
   // How many of the open game's moves are currently on the board (leading prefix
@@ -187,10 +206,29 @@ export default function OpeningsExplorer() {
     return boardFromPath(reviewDisplayPath(review))
   }, [reviewItem, review])
 
-  const inSession = isTraining || isReviewing
+  const isPlaying = Boolean(playSession)
+  const playBoard = useMemo(() => (
+    playSession ? { fen: playFen(playSession), last: playLastMove(playSession) } : null
+  ), [playSession])
+  const playPath = useMemo(() => (playSession ? playSans(playSession) : []), [playSession])
+
+  const inSession = isTraining || isReviewing || isPlaying
+  const pastedStart = useMemo(() => parseStartFen(playFenDraft), [playFenDraft])
+  // While the Play tab is open with a valid pasted position and no game running,
+  // the board shows that position so you can see what you are about to play.
+  // It is a picture, not the explored line: moves on it are switched off below.
+  const playPreview = useMemo(() => (
+    activeTab === 'Play' && !inSession && pastedStart.fen ? { fen: pastedStart.fen, last: null } : null
+  ), [activeTab, inSession, pastedStart.fen])
   const boardSize = useBoardSize(shellRef, boardColumnRef)
-  const display = isReviewing ? reviewBoard : isTraining ? trainerBoard : exploreBoard
-  const displayPath = isReviewing ? reviewPriorPath : isTraining ? trainerPath : path
+  const display = isReviewing
+    ? reviewBoard
+    : isTraining ? trainerBoard : isPlaying ? playBoard : (playPreview || exploreBoard)
+  const displayPath = isReviewing
+    ? reviewPriorPath
+    : isTraining ? trainerPath : isPlaying ? playPath : (playPreview ? [] : path)
+  // A game can start from any position, so its move numbers come from the FEN.
+  const displayStartPly = isPlaying && !isReviewing && !isTraining ? startPlyOf(playSession.startFen) : 0
   const {
     localEval, cloud, target, actionError: evalActionError, fetchCloud,
     deepen, shallow, goInfinite, resetDepth, freeze, saveEval, clearSaved,
@@ -268,13 +306,26 @@ export default function OpeningsExplorer() {
       ? activeTab === 'Practice'
         && !drillWrite.pending && !drillWrite.error
         && [TRAINER_STATUS.AWAITING_USER_MOVE, TRAINER_STATUS.WRONG_MOVE_FEEDBACK].includes(trainer?.status)
-      : true
+      : isPlaying
+        ? activeTab === 'Play' && playSession.status === PLAY_STATUS.USER_TURN
+        : !playPreview
   const movableDests = useMemo(
     () => (canMoveBoard ? legalDests(display.fen) : null),
     [canMoveBoard, display.fen],
   )
 
-  const movableColor = sideToMove(display.fen)
+  // In a drill one colour is yours, so the board is told which: that is what lets
+  // you queue a premove while the opponent's reply is still being played. Everywhere
+  // else both sides are moved by hand and the mover is simply the side to move.
+  const sessionColor = isReviewing
+    ? null
+    : isTraining
+      ? (activeTab === 'Practice' ? trainer.userColor : null)
+      : isPlaying
+        ? (activeTab === 'Play' ? playSession.userColor : null)
+        : null
+  const premove = Boolean(sessionColor)
+  const movableColor = sessionColor || sideToMove(display.fen)
   const summary = tree?.summary
   const moves = tree?.moves || []
   const branches = useMemo(() => repertoire?.branches || [], [repertoire?.branches])
@@ -305,7 +356,9 @@ export default function OpeningsExplorer() {
     ? `Training · ${trainer.scope?.label || 'Openings'}`
     : isReviewing
       ? 'Spaced review'
-      : !path.length
+      : isPlaying
+        ? 'Playing Stockfish'
+        : !path.length
         ? 'Starting position'
         : (openingTitle || formatMoveLine(path, 10))
   const headerIsPlaceholder = !inSession && !path.length
@@ -356,6 +409,7 @@ export default function OpeningsExplorer() {
   const trainedBranches = branches.filter(branch => branch.drill_count > 0)
   const ungroupedBranches = useMemo(() => branches.filter(b => !b.opening_id), [branches])
   const currentLineTitle = path.length ? formatMoveLine(path, 12) : 'Starting position'
+  const positionOver = useMemo(() => gameResult(START_FEN, path) !== null, [path])
   const duePreview = dueNodes.slice(0, 12)
   const reviewCompleted = reviewCompletedCount(review)
 
@@ -698,9 +752,10 @@ export default function OpeningsExplorer() {
     setEditingBranchId(null)
     setEditorOpen(false)
     drillWrite.clear()
+    stopPlay()
     setActiveTab('Practice')
     dispatchTrainer({ type: 'start', payload: { branches: scopeBranches, userColor, scope } })
-  }, [clearTrainerTimer, dispatchReview, dispatchTrainer, drillWrite])
+  }, [clearTrainerTimer, dispatchReview, dispatchTrainer, drillWrite, stopPlay])
 
   // Drill a single saved line (a one-leaf scope).
   const startPractice = useCallback((branch) => {
@@ -817,12 +872,13 @@ export default function OpeningsExplorer() {
     if (!dueNodes.length) return
     clearTrainerTimer()
     dispatchTrainer({ type: 'stop' })
+    stopPlay()
     setEditingBranchId(null)
     setEditorOpen(false)
     setActiveTab('Review')
     resetReviewWrite()
     dispatchReview({ type: 'start', dueNodes })
-  }, [clearTrainerTimer, dispatchReview, dispatchTrainer, dueNodes, resetReviewWrite])
+  }, [clearTrainerTimer, dispatchReview, dispatchTrainer, dueNodes, resetReviewWrite, stopPlay])
 
   const nextReview = useCallback(() => dispatchReview({ type: 'next' }), [dispatchReview])
   const completeReview = useCallback(() => dispatchReview({ type: 'finish' }), [dispatchReview])
@@ -863,17 +919,57 @@ export default function OpeningsExplorer() {
     grade(result)
   }, [review, reviewItem, reviewBoard.fen, pendingPromotion, queuePromotion, recordReview, resetBoardPosition, dispatchReview])
 
+  // Start a game against Stockfish from whatever position Explore is showing.
+  const startPlay = useCallback(({ userColor, seconds }) => {
+    clearTrainerTimer()
+    dispatchTrainer({ type: 'stop' })
+    dispatchReview({ type: 'clear' })
+    setEditingBranchId(null)
+    setEditorOpen(false)
+    setFlipped(false)
+    setActiveTab('Play')
+    beginPlay({
+      fen: pastedStart.fen || exploreBoard.fen,
+      userColor,
+      seconds,
+      label: pastedStart.fen
+        ? 'Pasted position'
+        : (path.length ? formatMoveLine(path, 8) : 'From the starting position'),
+    })
+  }, [clearTrainerTimer, dispatchReview, dispatchTrainer, setFlipped, beginPlay, pastedStart.fen, exploreBoard.fen, path])
+
+  const playUserMove = play.userMove
+  const handlePlayMove = useCallback((orig, dest) => {
+    if (!playSession || playSession.status !== PLAY_STATUS.USER_TURN || pendingPromotion) return
+    const fen = playFen(playSession)
+    const accept = (move) => {
+      playStepSound(move.san)
+      playUserMove(move)
+    }
+    if (needsPromotion(fen, orig, dest)) {
+      queuePromotion(fen, orig, dest, accept)
+      return
+    }
+    completeMove(fen, orig, dest, 'q', accept)
+  }, [playSession, pendingPromotion, queuePromotion, completeMove, playUserMove])
+
   const boardOnMove = isReviewing && activeTab === 'Review'
     ? handleReviewMove
     : isTraining && activeTab === 'Practice'
       ? handleTrainMove
-      : handleExploreBoardMove
+      : isPlaying
+        ? handlePlayMove
+        : handleExploreBoardMove
 
   const baseOrientation = isReviewing
     ? reviewItem.color
     : isTraining
       ? trainer.userColor
-      : (reviewGame ? (reviewGame.user_color || 'white') : color)
+      : isPlaying
+        ? playSession.userColor
+        : playPreview
+          ? sideToMove(playPreview.fen)
+          : (reviewGame ? (reviewGame.user_color || 'white') : color)
   const orientation = flipped
     ? (baseOrientation === 'white' ? 'black' : 'white')
     : baseOrientation
@@ -895,10 +991,16 @@ export default function OpeningsExplorer() {
   })
 
   const exitSession = useCallback(() => {
+    // A game was started from a position you set up in Explore, so leaving it
+    // puts you back there. Drills and reviews have no such position to return to.
+    if (playSession) {
+      stopPlay()
+      return
+    }
     stopTrainer()
     stopReview()
     goStart()
-  }, [stopTrainer, stopReview, goStart])
+  }, [playSession, stopPlay, stopTrainer, stopReview, goStart])
 
   const handleCrumbClick = useCallback((i) => {
     setLine(({ path, future }) => ({
@@ -960,6 +1062,7 @@ export default function OpeningsExplorer() {
               review={review}
               reviewItem={reviewItem}
               reviewCompleted={reviewCompleted}
+              playSession={playSession}
             />
           ) : (
             <EnginePanel
@@ -994,11 +1097,13 @@ export default function OpeningsExplorer() {
           inSession={inSession}
           display={display}
           displayPath={displayPath}
+          startPly={displayStartPly}
           path={path}
           orientation={orientation}
           shapes={shapes}
           movableDests={movableDests}
           movableColor={movableColor}
+          premove={premove}
           boardOnMove={boardOnMove}
           pendingPromotion={pendingPromotion}
           onPromotionSelect={handlePromotionSelect}
@@ -1054,14 +1159,18 @@ export default function OpeningsExplorer() {
               // so showing ExploreTab here meant stats for some earlier position.
               <div className="tab-pane" role="tabpanel">
                 <div className="op-empty">
-                  <strong>{isTraining ? 'Drill in progress' : 'Review in progress'}</strong>
-                  <p>Your game stats would give away the answer, so Explore waits until you finish.</p>
+                  <strong>{isPlaying ? 'Game in progress' : isTraining ? 'Drill in progress' : 'Review in progress'}</strong>
+                  <p>
+                    {isPlaying
+                      ? 'Explore shows your game stats for the position you started from. It waits until the game is over.'
+                      : 'Your game stats would give away the answer, so Explore waits until you finish.'}
+                  </p>
                   <div className="op-empty-actions">
-                    <button type="button" className="btn-primary" onClick={() => setActiveTab(isTraining ? 'Practice' : 'Review')}>
-                      {isTraining ? 'Back to drill' : 'Back to review'}
+                    <button type="button" className="btn-primary" onClick={() => setActiveTab(isPlaying ? 'Play' : isTraining ? 'Practice' : 'Review')}>
+                      {isPlaying ? 'Back to game' : isTraining ? 'Back to drill' : 'Back to review'}
                     </button>
                     <button type="button" className="btn-secondary" onClick={exitSession}>
-                      {isTraining ? 'Exit drill' : 'End review'}
+                      {isPlaying ? 'Exit game' : isTraining ? 'Exit drill' : 'End review'}
                     </button>
                   </div>
                 </div>
@@ -1159,6 +1268,23 @@ export default function OpeningsExplorer() {
               />
             )}
 
+            {activeTab === 'Play' && (
+              <PlayTab
+                session={playSession}
+                positionTitle={currentLineTitle}
+                positionFen={pastedStart.fen || exploreBoard.fen}
+                positionOver={!pastedStart.fen && positionOver}
+                fenDraft={playFenDraft}
+                fenError={pastedStart.error || ''}
+                usingPastedFen={Boolean(pastedStart.fen)}
+                onFenDraftChange={setPlayFenDraft}
+                onStart={startPlay}
+                onTakeBack={play.takeBack}
+                onRestart={play.restart}
+                onExit={stopPlay}
+                onRetry={play.retry}
+              />
+            )}
             {activeTab === 'Review' && (
               <ReviewTab
                 review={review}

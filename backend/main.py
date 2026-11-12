@@ -126,6 +126,11 @@ class DrillAttemptInput(BaseModel):
         return self
 
 
+class PlayReplyInput(BaseModel):
+    fen: str = Field(min_length=4, max_length=128)
+    seconds: float = Field(default=1.0, ge=0.1, le=30)
+
+
 def _validate_fen(fen):
     try:
         chess.Board(fen)
@@ -312,6 +317,50 @@ async def cloud_eval(request: Request, fen: str = Query(min_length=4, max_length
         raise HTTPException(400, "Invalid FEN")
     return await run_in_threadpool(
         request.app.state.external_clients.cloud_eval, fen, multipv, network)
+
+
+def _external_network_allowed():
+    return os.environ.get("OPENINGS_DISABLE_EXTERNAL_NETWORK") != "1"
+
+
+@api.get("/tablebase")
+async def tablebase(request: Request, fen: str = Query(min_length=4, max_length=128)):
+    """Exact result of a position with seven or fewer pieces, and of each legal
+    move in it, from the Lichess tablebase. ``available`` is false otherwise."""
+    _validate_fen(fen)
+    return await run_in_threadpool(
+        request.app.state.external_clients.tablebase, fen, _external_network_allowed())
+
+
+@api.post("/play/reply")
+async def play_reply(input: PlayReplyInput, request: Request):
+    """The opponent's move in the Play tab.
+
+    With seven or fewer pieces the tablebase's best move is played: it is
+    perfect and instant, and as the defender it holds out as long as possible,
+    which Stockfish does not guarantee. Otherwise Stockfish searches for
+    ``seconds``.
+    """
+    _validate_fen(input.fen)
+    board = chess.Board(input.fen)
+    # The Play tab accepts pasted positions. Stockfish 19 exits on one that no
+    # game can reach, so those stop here instead of costing an engine restart.
+    if not board.is_valid():
+        raise HTTPException(400, "That position cannot occur in a game")
+    if board.is_game_over():
+        raise HTTPException(400, "The game is already over")
+
+    table = await run_in_threadpool(
+        request.app.state.external_clients.tablebase, input.fen, _external_network_allowed())
+    if table.get("available") and table.get("moves"):
+        best = table["moves"][0]
+        return {"uci": best["uci"], "san": best["san"], "source": "tablebase"}
+
+    move = await run_in_threadpool(
+        request.app.state.live_engine.best_move, input.fen, input.seconds)
+    if move is None:
+        raise HTTPException(503, "Stockfish did not return a move")
+    return {**move, "source": "stockfish"}
 
 
 @api.get("/saved-eval")

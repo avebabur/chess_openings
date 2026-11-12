@@ -14,6 +14,7 @@ export default function SessionRail({
   review,
   reviewItem,
   reviewCompleted,
+  playSession,
 }) {
   if (isTraining && trainerStrip) {
     return (
@@ -42,6 +43,25 @@ export default function SessionRail({
             style={{ width: `${Math.round((reviewCompleted / review.queue.length) * 100)}%` }}
           />
         </div>
+      </div>
+    )
+  }
+
+  if (playSession) {
+    const userMoves = playSession.moves.filter(move => move.by === 'user')
+    const judged = userMoves.filter(move => move.verdict)
+    const mistakes = judged.filter(move => move.verdict.mistake).length
+    return (
+      <div className="op-practice-strip" role="status">
+        <div className="op-practice-strip-head">
+          <span>Playing Stockfish as {playSession.userColor === 'white' ? 'White' : 'Black'}</span>
+          <span>{userMoves.length} move{userMoves.length === 1 ? '' : 's'}</span>
+        </div>
+        <p className="play-rail-note">
+          {judged.length
+            ? `Tablebase: ${judged.length - mistakes} of ${judged.length} moves kept the result.`
+            : 'The engine panel is hidden during a game, like the answers in a drill.'}
+        </p>
       </div>
     )
   }

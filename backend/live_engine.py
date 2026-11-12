@@ -489,6 +489,15 @@ class LiveEngineService:
             yield _sse(_terminal_payload(board, target_depth=limit.depth))
             return
 
+        for item in self._frames(board, limit):
+            yield _sse(item)
+
+    def _frames(self, board, limit):
+        """Submit one search and yield its payloads until the ``done`` one.
+
+        Ends early, without a ``done`` frame, when a newer request supersedes
+        this search or the worker stops answering.
+        """
         generation, q = self.submit(board, limit)
         try:
             while True:
@@ -498,12 +507,37 @@ class LiveEngineService:
                     return  # worker vanished — let the client fall back / retry
                 if item is _SUPERSEDED:
                     return
-                yield _sse(item)
+                yield item
                 if item.get("done"):
                     return
         finally:
             # Client gone (navigated away / closed tab): stop the search if it's ours.
             self.cancel(generation)
+
+    def best_move(self, fen, seconds):
+        """Search ``fen`` for ``seconds`` and return the move to play.
+
+        This is the opponent in the Play tab. It runs on the same single engine
+        as the analysis panel, so it inherits its thread and hash settings, and a
+        new analysis request would cut it short; the panel is hidden during a
+        game for that reason. Returns ``None`` when there is no legal move, or
+        when the search was superseded or failed before producing one.
+        """
+        board = chess.Board(fen)
+        if board.is_game_over():
+            return None
+        last = None
+        for item in self._frames(board, _build_limit(0, seconds)):
+            if item.get("best_move_uci"):
+                last = item
+        if last is None:
+            return None
+        return {
+            "uci": last["best_move_uci"],
+            "san": last["best_move"],
+            "eval": last.get("eval"),
+            "depth": last.get("depth"),
+        }
 
 
 # Legacy module-level wrappers stay lazy for direct callers. The application uses

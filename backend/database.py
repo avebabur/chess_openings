@@ -863,6 +863,14 @@ def init_db():
             source TEXT,
             fetched_at TEXT DEFAULT (datetime('now'))
         );
+        -- Exact endgame results from the Lichess tablebase. `position` is the
+        -- FEN without its fullmove number (the halfmove clock stays: the 50-move
+        -- rule can change the result). Rows never go stale.
+        CREATE TABLE IF NOT EXISTS tablebase_cache (
+            position TEXT PRIMARY KEY,
+            payload JSON NOT NULL,
+            fetched_at TEXT DEFAULT (datetime('now'))
+        );
         CREATE TABLE IF NOT EXISTS schema_migrations (
             version TEXT PRIMARY KEY,
             applied_at TEXT DEFAULT (datetime('now'))
@@ -938,9 +946,11 @@ from evaluation_repository import (  # noqa: E402,F401
     get_cloud_eval_cached,
     get_explorer_cached,
     get_saved_eval,
+    get_tablebase_cached,
     put_cloud_eval,
     put_explorer,
     put_saved_eval,
+    put_tablebase,
 )
 
 # Re-export the active repertoire repository for compatibility with existing

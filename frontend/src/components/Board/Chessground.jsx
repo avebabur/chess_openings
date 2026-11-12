@@ -1,15 +1,21 @@
 import { useCallback, useEffect, useRef } from 'react'
-import { Chessground } from 'chessground'
-import 'chessground/assets/chessground.base.css'
+import { Chessground } from '@lichess-org/chessground'
+import '@lichess-org/chessground/assets/chessground.base.css'
 import PromotionDialog from '../PromotionDialog'
 import './board.css'
 
 const EMPTY_DESTS = new Map()
 
-// Lichess's "Normal" move animation (Pref.scala animationMillis: 0/120/250/500).
+// Lichess's "Normal" preference is 250ms (Pref.scala animationMillis:
+// 0/120/250/500), but that is not what its boards run at. The server scales it
+// by the game's clock (modules/round JsonView.animationMillis): 0 for bullet,
+// rising to a cap of 1.2x for games of seven minutes or more, and for anything
+// with no clock at all, which is the analysis board. So the lichess you see
+// while analysing or playing rapid glides for 300ms. Measured on lichess.org's
+// analysis board: 300ms, 19 frames.
 // Anything under 70ms makes chessground disable animation outright, which is how
 // the reduced-motion path below switches it off.
-const ANIM_MS = 250
+const ANIM_MS = 300
 
 const prefersReducedMotion = () => (
   typeof window !== 'undefined'
@@ -30,6 +36,16 @@ const isSafari = () => (
  *
  * Click (or tap) a piece to see its legal destinations, then click a square to
  * move. Dragging works too. Arrow keys / navigation are handled by the parent.
+ *
+ * The configuration follows lichess's own (ui/analyse/src/ground.ts and
+ * ui/round/src/ground.ts), on the same @lichess-org/chessground build:
+ *   - Right-drag draws an arrow, right-click circles a square. Shift/Ctrl makes
+ *     it red, Alt blue, both yellow. A left click on the board clears them, and
+ *     so does any position change.
+ *   - With `premove`, the side in `movableColor` can queue one move while it is
+ *     the other side's turn. It is played the moment the turn comes back, if it
+ *     is still legal, and dropped otherwise. Only meaningful when one colour is
+ *     the player's (a drill, a game against the engine), never with 'both'.
  *
  * The board is created once and then reconciled through three focused effects:
  *   1. position  — `fen` + `lastMove`, only when they actually change.
@@ -52,6 +68,7 @@ export default function Board({
   duration = ANIM_MS,
   movableDests = null,
   movableColor = 'both',
+  premove = false,
   onMove = null,
   disabled = false,
   promotion = null,
@@ -116,7 +133,13 @@ export default function Board({
       highlight: { lastMove: true, check: true },
       lastMove: lastMove || undefined,
       check,
-      drawable: { enabled: false, visible: true, autoShapes: shapes },
+      drawable: {
+        enabled: true,
+        visible: true,
+        defaultSnapToValidMove: true,
+        eraseOnMovablePieceClick: true,
+        autoShapes: shapes,
+      },
       selectable: { enabled: true },
       draggable: {
         enabled: true,
@@ -124,7 +147,7 @@ export default function Board({
         showGhost: true,
         autoDistance: true,
       },
-      premovable: { enabled: false },
+      premovable: { enabled: premove, showDests: true, castle: true },
       movable: {
         free: false,
         color: movableColor,
@@ -163,6 +186,8 @@ export default function Board({
   useEffect(() => {
     const cg = cgRef.current
     if (!cg || resetKey === prevResetKeyRef.current) return
+    // A rejected move also voids whatever was queued behind it.
+    cg.cancelPremove()
     cg.set({ fen, turnColor, lastMove: lastMove || undefined, check })
     prevFenRef.current = fen
     prevLastMoveRef.current = lastMove
@@ -186,7 +211,9 @@ export default function Board({
         showDests: interactive,
         events: { after: handleCgMove },
       },
+      premovable: { enabled: premove },
     })
+    if (!premove) cg.cancelPremove()
     if (prevOrientationRef.current !== orientation) {
       prevOrientationRef.current = orientation
       cg.set({ orientation })
@@ -196,7 +223,18 @@ export default function Board({
       needsRebindRef.current = false
       cg.redrawAll()
     }
-  }, [orientation, movableColor, movableDests, interactive, handleCgMove])
+  }, [orientation, movableColor, movableDests, premove, interactive, handleCgMove])
+
+  // ── 3a. Play a queued premove once the turn is back ────────────────────────
+  // Declared after the position and interaction effects on purpose: effects run
+  // in order, so by now chessground holds the new pieces *and* the new legal
+  // destinations. playPremove() checks the queued move against those and either
+  // plays it (firing `movable.events.after` like a normal move) or drops it.
+  const canPlayNow = premove && interactive && turnColor === movableColor
+    && Boolean(movableDests && movableDests.size)
+  useEffect(() => {
+    if (canPlayNow) cgRef.current?.playPremove()
+  }, [canPlayNow, fen])
 
   // ── 3b. Animation speed, if the OS motion preference changes mid-session ───
   useEffect(() => {

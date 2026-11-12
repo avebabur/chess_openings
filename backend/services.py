@@ -4,6 +4,7 @@ import httpx
 import database
 import lichess_cloud
 import lichess_explorer
+import lichess_tablebase
 
 
 class SQLiteService:
@@ -39,6 +40,9 @@ class ExternalApiClients:
         return lichess_explorer.get_opening_explorer(
             fen, allow_network, client=self.http, filters=filters,
         )
+
+    def tablebase(self, fen, allow_network=True):
+        return lichess_tablebase.get_tablebase(fen, allow_network, client=self.http)
 
     @property
     def import_client(self):

@@ -1,10 +1,17 @@
 import { cleanup, render } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { Chessground } from 'chessground'
+import { Chessground } from '@lichess-org/chessground'
 import Board from './Chessground'
 
 const { api } = vi.hoisted(() => ({
-  api: { set: vi.fn(), setAutoShapes: vi.fn(), redrawAll: vi.fn(), destroy: vi.fn() },
+  api: {
+    set: vi.fn(),
+    setAutoShapes: vi.fn(),
+    redrawAll: vi.fn(),
+    destroy: vi.fn(),
+    playPremove: vi.fn(),
+    cancelPremove: vi.fn(),
+  },
 }))
 
 const START = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1'
@@ -12,7 +19,7 @@ const AFTER_E4 = 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1'
 
 const setCalls = () => api.set.mock.calls.map(([config]) => config)
 
-vi.mock('chessground', () => ({ Chessground: vi.fn(() => api) }))
+vi.mock('@lichess-org/chessground', () => ({ Chessground: vi.fn(() => api) }))
 
 describe('Chessground reset behavior', () => {
   beforeEach(() => {
@@ -98,5 +105,47 @@ describe('Chessground reset behavior', () => {
     // Every redrawAll leaks a ResizeObserver in chessground, so it must not
     // fire just because a dialog opened and closed.
     expect(api.redrawAll).not.toHaveBeenCalled()
+  })
+
+  it('plays a queued premove only once the turn and the legal moves are back', () => {
+    const dests = new Map([['e2', ['e4']]])
+    const props = { boardSize: 320, onMove: vi.fn(), premove: true, movableColor: 'white' }
+
+    // Black to move: white may queue a move but nothing is played yet.
+    const view = render(<Board {...props} fen={AFTER_E4} movableDests={null} />)
+    expect(Chessground.mock.calls[0][1].premovable.enabled).toBe(true)
+    expect(api.playPremove).not.toHaveBeenCalled()
+
+    // The reply lands, white is to move and has legal moves again.
+    view.rerender(<Board {...props} fen={START} movableDests={dests} />)
+    expect(api.playPremove).toHaveBeenCalledTimes(1)
+
+    // The interaction config that preceded it must already carry the new dests,
+    // or chessground would test the premove against the old position.
+    const lastMovable = setCalls().filter(config => config.movable).at(-1)
+    expect(lastMovable.movable.dests).toBe(dests)
+  })
+
+  it('never plays a premove when premoves are off or both colours move', () => {
+    const dests = new Map([['e2', ['e4']]])
+    const view = render(<Board boardSize={320} onMove={vi.fn()} fen={AFTER_E4} movableDests={null} />)
+    view.rerender(<Board boardSize={320} onMove={vi.fn()} fen={START} movableDests={dests} movableColor="white" />)
+    expect(Chessground.mock.calls[0][1].premovable.enabled).toBe(false)
+    expect(api.playPremove).not.toHaveBeenCalled()
+  })
+
+  it('lets the user draw arrows, as on lichess', () => {
+    render(<Board boardSize={320} onMove={vi.fn()} fen={START} movableDests={new Map()} />)
+    const { drawable } = Chessground.mock.calls[0][1]
+    expect(drawable.enabled).toBe(true)
+    expect(drawable.eraseOnMovablePieceClick).toBe(true)
+  })
+
+  it('drops a queued premove when the parent rejects a move', () => {
+    const props = { boardSize: 320, fen: START, movableDests: new Map(), onMove: vi.fn(), premove: true, movableColor: 'white' }
+    const view = render(<Board {...props} resetKey={0} />)
+    api.cancelPremove.mockClear()
+    view.rerender(<Board {...props} resetKey={1} />)
+    expect(api.cancelPremove).toHaveBeenCalledTimes(1)
   })
 })

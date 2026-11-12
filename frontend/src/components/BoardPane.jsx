@@ -2,17 +2,27 @@ import { useRef, useEffect, useMemo } from 'react'
 import { START_FEN, isCheckFen } from '../domain/chessLine'
 import Board from './Board/Chessground'
 
+// "12." before a White move; "12…" before a Black move that opens the list
+// (a game started from a position where Black is to move).
+function moveNumberPrefix(ply, first) {
+  const number = Math.floor(ply / 2) + 1
+  if (ply % 2 === 0) return `${number}.`
+  return first ? `${number}…` : ''
+}
+
 export default function BoardPane({
   boardSize,
   columnRef,
   inSession,
   display,
   displayPath,
+  startPly = 0,
   path,
   orientation,
   shapes,
   movableDests,
   movableColor,
+  premove,
   boardOnMove,
   pendingPromotion,
   onPromotionSelect,
@@ -55,6 +65,7 @@ export default function BoardPane({
         shapes={shapes}
         movableDests={movableDests}
         movableColor={movableColor}
+        premove={premove}
         onMove={boardOnMove}
         disabled={Boolean(pendingPromotion)}
         promotion={pendingPromotion}
@@ -83,7 +94,7 @@ export default function BoardPane({
               onClick={() => !inSession && onCrumbClick(i)}
               disabled={inSession}
             >
-              {i % 2 === 0 ? `${Math.floor(i / 2) + 1}.` : ''}{san}
+              {moveNumberPrefix(startPly + i, i === 0)}{san}
             </button>
           ))}
         </div>
