@@ -904,6 +904,32 @@ def init_db():
             last_result TEXT,
             last_played_at TEXT
         );
+        -- Moves of the user's that Stockfish (or the tablebase) rates as a
+        -- mistake, found by game_analysis.py. Each is a position to replay.
+        CREATE TABLE IF NOT EXISTS game_mistakes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            game_id INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+            ply INTEGER NOT NULL,
+            fen TEXT NOT NULL,
+            user_color TEXT NOT NULL,
+            played_san TEXT NOT NULL,
+            played_uci TEXT NOT NULL,
+            best_san TEXT NOT NULL,
+            best_uci TEXT NOT NULL,
+            cp_before INTEGER NOT NULL,
+            cp_after INTEGER NOT NULL,
+            target_cp INTEGER NOT NULL,
+            loss REAL NOT NULL,
+            kind TEXT NOT NULL,
+            source TEXT NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            solved_count INTEGER NOT NULL DEFAULT 0,
+            failed_count INTEGER NOT NULL DEFAULT 0,
+            last_result TEXT,
+            last_played_at TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(game_id, ply)
+        );
         CREATE TABLE IF NOT EXISTS schema_migrations (
             version TEXT PRIMARY KEY,
             applied_at TEXT DEFAULT (datetime('now'))
@@ -933,6 +959,9 @@ def init_db():
         # repertoire_node_position_keys_v1.
         "ALTER TABLE repertoire_nodes ADD COLUMN epd_before TEXT",
         "ALTER TABLE repertoire_nodes ADD COLUMN epd_after TEXT",
+        # When game_analysis.py last searched this game for mistakes. Separate
+        # from the legacy `analyzed` flag, which belongs to the old review JSON.
+        "ALTER TABLE games ADD COLUMN mistakes_analyzed_at TEXT",
     ):
         try:
             conn.execute(ddl)

@@ -315,6 +315,74 @@ test('a practice position shows its goal, records success and moves on to the ne
   await expect(page.getByRole('heading', { name: 'Play against Stockfish' })).toBeVisible()
 })
 
+const MISTAKE = {
+  id: 7, game_id: 3, ply: 40, fen: '6k1/4Rppp/8/8/8/8/5PPP/6K1 w - - 0 21', user_color: 'white',
+  played_san: 'Re1', played_uci: 'e7e1', best_san: 'Re8#',
+  cp_before: 9999, cp_after: 20, target_cp: 300, loss: 49.5, kind: 'blunder', source: 'stockfish',
+  progress: { attempts: 0, solved: 0, failed: 0, last_result: null, last_played_at: null },
+}
+const MISTAKE_GAME = {
+  id: 3, white: 'me', black: 'rival', result: '1/2-1/2', date: '2026.11.10', user_color: 'white',
+  time_class: 'rapid', opening: '', eco: '', mistakes: [MISTAKE],
+}
+
+test('a mistake from your own game becomes a one-move exercise', async ({ page }) => {
+  const attempts = []
+  let analysing = false
+  await page.route('**/api/mistakes*', route => route.fulfill({
+    json: analysing
+      ? { games: [MISTAKE_GAME], total: 1, solved: 0, games_total: 9, games_analysed: 4 }
+      : { games: [], total: 0, solved: 0, games_total: 9, games_analysed: 0 },
+  }))
+  await page.route('**/api/mistakes/*/attempts', (route) => {
+    attempts.push(route.request().postDataJSON().solved)
+    return route.fulfill({ json: { attempts: 1, solved: 0, failed: 0, last_result: null } })
+  })
+  await page.route('**/api/analysis', (route) => {
+    if (route.request().method() === 'POST') {
+      analysing = true
+      expect(route.request().postDataJSON().count).toBe(4)
+      return route.fulfill({ status: 202, json: { running: true, done: 1, total: 4, title: 'me vs rival', mistakes: 0, error: null } })
+    }
+    return route.fulfill({ json: { running: false, done: analysing ? 4 : 0, total: 4, title: '', mistakes: 1, error: null } })
+  })
+  await page.route('**/api/play/reply', route => route.fulfill({
+    json: { uci: 'g8f8', san: 'Kf8', source: 'stockfish', outcome: null, cp: -50 },
+  }))
+
+  await page.goto('/')
+  await page.getByRole('tab', { name: 'Play' }).click()
+  await page.getByRole('button', { name: 'Analyse my last 4 games' }).click()
+  await expect(page.getByText('Analysing game 2 of 4 (me vs rival)')).toBeVisible()
+  await expect(page.getByText('0 of 1 mistakes fixed')).toBeVisible()
+  await expect(page.getByText('4 of 9 analysed')).toBeVisible()
+
+  await page.getByRole('button', { name: /21\. Re1/ }).click()
+  const goal = page.getByLabel('Goal', { exact: true })
+  await expect(goal).toContainText('Find a better move than Re1')
+  await expect(goal).toContainText('from winning to +0.2')
+
+  // A different move that Stockfish does not like either.
+  await playMove(page, 'e7', 'a7')
+  const result = page.getByRole('status', { name: 'Goal result' })
+  await expect(result).toContainText('Ra7 does not fix it')
+  await expect(result).toContainText('It would have played Re8#')
+
+  // The move from the game is refused without asking the engine.
+  await result.getByRole('button', { name: 'Try again' }).click()
+  await playMove(page, 'e7', 'e1')
+  await expect(result).toContainText('That is the move from the game')
+
+  await page.unroute('**/api/play/reply')
+  await page.route('**/api/play/reply', route => route.fulfill({
+    json: { uci: 'g8f8', san: 'Kf8', source: 'stockfish', outcome: null, cp: 450 },
+  }))
+  await result.getByRole('button', { name: 'Try again' }).click()
+  await playMove(page, 'e7', 'd7')
+  await expect(result).toContainText('Rd7 is better')
+  await expect.poll(() => attempts).toEqual([false, false, true])
+})
+
 test('the practice library offers to import from Lichess when it is empty, and shows it when done', async ({ page }) => {
   let importing = false
   let polls = 0

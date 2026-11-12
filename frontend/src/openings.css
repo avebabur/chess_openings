@@ -3410,3 +3410,30 @@
   clip: rect(0 0 0 0);
   white-space: nowrap;
 }
+
+/* Mistakes from the user's own games (Play tab list, game review marks). */
+.mistake-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 10px 0 12px;
+}
+.mistake-actions .btn-primary { margin-top: 0; }
+.mistake-count {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.mistake-game-meta {
+  margin-left: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.mistake-kind {
+  margin-left: 3px;
+  font-weight: var(--weight-medium);
+  color: var(--warn, #d9a441);
+}
+.mistake-kind.blunder { color: var(--loss); }

@@ -19,6 +19,10 @@
  *               rated no worse than -50cp for you.
  *   draw        survive `moves` moves without the tablebase (or a rating of
  *               -300cp) saying you have lost.
+ *   better      a mistake from one of your own games (see mistakeGoal). You
+ *               get one move; it must leave you rated at least `cp`, which is
+ *               a little below what the best move keeps. The move you played
+ *               in the game fails at once.
  *
  * The rating of a position comes from the reply the backend sends after each
  * of your moves: the tablebase result with seven pieces or fewer, Stockfish's
@@ -44,6 +48,33 @@ export function assessmentFromReply(reply, userColor) {
   if (outcome) cp = OUTCOME_CP[outcome]
   else if (Number.isFinite(reply?.cp)) cp = userColor === 'white' ? reply.cp : -reply.cp
   return { cp, outcome }
+}
+
+/** Does a drawn game count as reaching this goal? */
+function drawIsEnough(goal) {
+  return goal.kind === 'equalize' || goal.kind === 'draw' || (goal.kind === 'better' && goal.cp <= 0)
+}
+
+/** A rating from your side in words: "+1.2", "-0.4", "winning", "a draw". */
+export function ratingText(cp, source) {
+  if (cp >= 9000) return 'winning'
+  if (cp <= -9000) return 'lost'
+  if (source === 'tablebase' && cp === 0) return 'a draw'
+  return `${cp > 0 ? '+' : cp < 0 ? '-' : ''}${(Math.abs(cp) / 100).toFixed(1)}`
+}
+
+/** The one-move exercise for a mistake row from GET /api/mistakes. */
+export function mistakeGoal(mistake) {
+  return {
+    kind: 'better',
+    cp: mistake.target_cp,
+    played: mistake.played_san,
+    playedUci: mistake.played_uci,
+    best: mistake.best_san,
+    before: mistake.cp_before,
+    after: mistake.cp_after,
+    source: mistake.source,
+  }
 }
 
 export function isPlayableGoal(goal) {
@@ -94,6 +125,11 @@ export function describeGoal(goal) {
         title: `Equalize within ${movesText(goal.moves)}`,
         detail: 'You are worse. Reach a position that is level, or better, in that many moves.',
       }
+    case 'better':
+      return {
+        title: `Find a better move than ${goal.played}`,
+        detail: `In your game ${goal.played} took you from ${ratingText(goal.before, goal.source)} to ${ratingText(goal.after, goal.source)}. You get one move, and Stockfish rates it.`,
+      }
     case 'draw':
       return {
         title: `Hold the draw for ${goal.moves} moves`,
@@ -114,6 +150,7 @@ export function goalLabel(goal) {
     case 'win': return 'Win'
     case 'equalize': return `Equalize in ${goal.moves}`
     case 'draw': return `Hold ${goal.moves} moves`
+    case 'better': return `Better than ${goal.played}`
     default: return 'Lesson'
   }
 }
@@ -149,7 +186,7 @@ export function judgeGoal({ goal, userColor, moves, result }) {
   }
   if (result) {
     // Stalemate, repetition and the like.
-    return base(goal.kind === 'equalize' || goal.kind === 'draw' ? solved('drawn') : failed('drawn'))
+    return base(drawIsEnough(goal) ? solved('drawn') : failed('drawn'))
   }
 
   const rated = userMoves.map(move => move.assessment || null)
@@ -189,6 +226,16 @@ export function judgeGoal({ goal, userColor, moves, result }) {
       return base({ state: 'running' })
     }
 
+    case 'better': {
+      const first = userMoves[0]
+      if (!first) return base({ state: 'running' })
+      if (first.uci === goal.playedUci) return base(failed('same-move'))
+      const cp = rated[0]?.cp
+      if (cp == null) return base({ state: 'running' })
+      const extra = { cp, san: first.san }
+      return base(cp >= goal.cp ? solved('better', extra) : failed('not-better', extra))
+    }
+
     case 'draw': {
       const slipped = rated.findIndex(a => a && (a.outcome === 'loss' || (a.cp != null && a.cp <= LOST_CP)))
       if (slipped >= 0) return base(failed('lost'))
@@ -225,9 +272,22 @@ export function goalOutcomeText(goal, judgement) {
     case 'held':
       return { title: 'You held the draw', body: `You got through ${judgement.limit} moves without losing.` }
     case 'drawn':
-      return goal.kind === 'equalize' || goal.kind === 'draw'
+      return drawIsEnough(goal)
         ? { title: 'Drawn. Goal reached.', body: 'The game ended in a draw, which is what you needed.' }
         : { title: 'The game was drawn', body: 'The goal was more than a draw.' }
+    case 'better':
+      return {
+        title: `${judgement.san} is better`,
+        body: `${shown ? `Stockfish rates it ${shown} for you.` : 'It keeps the result.'} ${
+          judgement.san === goal.best ? 'It is Stockfish\'s first choice too.' : `Its own choice was ${goal.best}.`}`,
+      }
+    case 'not-better':
+      return {
+        title: `${judgement.san} does not fix it`,
+        body: `${shown ? `Stockfish rates it ${shown} for you. ` : ''}It would have played ${goal.best}.`,
+      }
+    case 'same-move':
+      return { title: 'That is the move from the game', body: 'It is the one that went wrong. Look for something else.' }
     case 'checkmated':
       return { title: 'You were checkmated', body: 'Try the position again.' }
     case 'too-slow':

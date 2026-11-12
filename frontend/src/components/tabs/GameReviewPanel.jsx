@@ -44,18 +44,26 @@ export default function GameReviewPanel({ game, sans, currentPly, onSelectPly, o
     rows.push({ no: i / 2 + 1, w: { san: sans[i], ply: i }, b: sans[i + 1] != null ? { san: sans[i + 1], ply: i + 1 } : null })
   }
 
+  // Your mistakes in this game, once it has been analysed from the Play tab.
+  const mistakeAt = new Map((game.mistakes || []).map(m => [m.ply, m]))
+
   const cell = (m) => {
     if (!m) return <span className="grm-san empty" />
     const played = m.ply < currentPly
     const current = m.ply === currentPly - 1
+    const mistake = mistakeAt.get(m.ply)
     return (
       <button
         type="button"
         ref={current ? currentRef : null}
         className={`grm-san${current ? ' current' : ''}${played ? ' played' : ''}`}
         onClick={() => onSelectPly(m.ply + 1)}
+        title={mistake ? `Stockfish preferred ${mistake.best_san}` : undefined}
       >
         {m.san}
+        {mistake && (
+          <span className={`mistake-kind ${mistake.kind}`}>{mistake.kind === 'blunder' ? '??' : '?'}</span>
+        )}
       </button>
     )
   }

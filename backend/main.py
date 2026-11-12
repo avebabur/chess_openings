@@ -35,6 +35,7 @@ import eco_openings  # noqa: E402  (offline move-sequence → opening-name recog
 import lichess_explorer  # noqa: E402  (SPEEDS / RATING_GROUPS / MIN_YEAR allow-lists)
 import live_engine  # noqa: E402  (openings-local interactive eval engine)
 import practice_library  # noqa: E402  (Lichess Practice sets)
+import game_analysis  # noqa: E402  (mistakes in the user's own games)
 import game_import  # noqa: E402
 from sync_service import AccountSyncService  # noqa: E402
 from services import ExternalApiClients, SQLiteService  # noqa: E402
@@ -131,6 +132,11 @@ class PracticeAttemptInput(BaseModel):
     solved: bool
 
 
+class AnalysisStartInput(BaseModel):
+    account_id: int | None = Field(default=None, gt=0)
+    count: int = Field(default=4, ge=1, le=50)
+
+
 class PlayReplyInput(BaseModel):
     fen: str = Field(min_length=4, max_length=128)
     seconds: float = Field(default=1.0, ge=0.1, le=30)
@@ -153,6 +159,7 @@ async def lifespan(target_app):
     target_app.state.opening_tree_cache = ot.OpeningTreeCache()
     target_app.state.live_engine = live_engine.LiveEngineService()
     target_app.state.practice_importer = practice_library.PracticeImporter()
+    target_app.state.game_analyzer = game_analysis.GameAnalyzer()
     target_app.state.sync_service = AccountSyncService(
         invalidate_cache=target_app.state.opening_tree_cache.invalidate,
         import_client=target_app.state.external_clients.import_client,
@@ -162,6 +169,7 @@ async def lifespan(target_app):
         target_app.state.sync_service.start()
         yield
     finally:
+        target_app.state.game_analyzer.shutdown()
         target_app.state.sync_service.shutdown()
         target_app.state.live_engine.shutdown()
         target_app.state.external_clients.close()
@@ -404,6 +412,44 @@ def practice_record_attempt(position_id: int, input: PracticeAttemptInput):
     return progress
 
 
+@api.get("/mistakes")
+def list_mistakes(account_id: int | None = Query(default=None, gt=0)):
+    """The user's mistakes in their analysed games, grouped by game."""
+    return game_analysis.list_mistakes(account_id)
+
+
+@api.post("/mistakes/{mistake_id}/attempts")
+def mistake_record_attempt(input: PracticeAttemptInput, mistake_id: int = Path(gt=0)):
+    progress = game_analysis.record_attempt(mistake_id, input.solved)
+    if progress is None:
+        raise HTTPException(404, "Mistake not found")
+    return progress
+
+
+@api.get("/analysis")
+def analysis_status(request: Request):
+    return request.app.state.game_analyzer.status()
+
+
+@api.post("/analysis", status_code=202)
+def analysis_start(input: AnalysisStartInput, request: Request):
+    """Search the newest `count` games that have not been analysed yet for the
+    user's mistakes, in the background. Poll GET /analysis for progress."""
+    clients = request.app.state.external_clients
+    allow_network = _external_network_allowed()
+    try:
+        return request.app.state.game_analyzer.start(
+            tablebase=lambda fen: clients.tablebase(fen, allow_network),
+            account_id=input.account_id, count=input.count)
+    except game_analysis.AnalysisError as exc:
+        raise HTTPException(503, str(exc))
+
+
+@api.delete("/analysis", status_code=202)
+def analysis_stop(request: Request):
+    return request.app.state.game_analyzer.stop()
+
+
 @api.get("/saved-eval")
 def get_saved_eval(fen: str = Query(min_length=4, max_length=128)):
     """A user-saved deep Stockfish eval for ``fen`` (or null). Loaded on every
@@ -508,6 +554,7 @@ def get_game(game_id: int = Path(gt=0)):
     game = db.get_game(game_id)
     if not game:
         raise HTTPException(404, "Game not found")
+    game["mistakes"] = game_analysis.mistakes_for_game(game["id"])
     return game
 
 

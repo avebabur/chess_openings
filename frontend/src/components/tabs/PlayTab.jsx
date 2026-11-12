@@ -10,6 +10,7 @@ import {
 } from '../../domain/playSession'
 import { describeGoal, goalOutcomeText, isPlayableGoal } from '../../domain/practiceGoal'
 import PracticeLibrary from './PracticeLibrary'
+import MistakeList from './MistakeList'
 
 const THINK_TIMES = [1, 3, 10]
 
@@ -72,6 +73,8 @@ export default function PlayTab({
   practice,
   onStartPractice,
   onNextPractice,
+  mistakes,
+  onStartMistake,
 }) {
   const [seconds, setSeconds] = useState(THINK_TIMES[0])
 
@@ -91,6 +94,15 @@ export default function PlayTab({
             </p>
           </div>
         </div>
+
+        <MistakeList
+          data={mistakes.data}
+          loadError={mistakes.loadError}
+          job={mistakes.job}
+          onAnalyse={mistakes.start}
+          onStop={mistakes.stop}
+          onStart={onStartMistake}
+        />
 
         <PracticeLibrary
           library={practice.library}

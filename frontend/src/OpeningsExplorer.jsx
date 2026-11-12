@@ -17,6 +17,8 @@ import { useTrainingSession } from './hooks/useTrainingSession'
 import { useReviewSession } from './hooks/useReviewSession'
 import { usePlaySession } from './hooks/usePlaySession'
 import { nextPositionAfter, usePracticeLibrary } from './hooks/usePracticeLibrary'
+import { moveLabel, nextMistakeAfter, opponentOf, useMistakes } from './hooks/useMistakes'
+import { mistakeGoal } from './domain/practiceGoal'
 import {
   START_FEN,
   applySanMove,
@@ -146,6 +148,7 @@ export default function OpeningsExplorer() {
   } = useReviewSession(loadRepertoire)
   const play = usePlaySession()
   const practiceLibrary = usePracticeLibrary({ enabled: activeTab === 'Play' })
+  const mistakes = useMistakes({ enabled: activeTab === 'Play', accountId: selectedAccountId })
   const playSession = play.session
   const stopPlay = play.stop
   const beginPlay = play.start
@@ -958,28 +961,49 @@ export default function OpeningsExplorer() {
       seconds: PRACTICE_THINK_SECONDS,
       label: position.setTitle ? `${position.setTitle}: ${position.name}` : position.name,
       goal: position.goal,
-      practice: { id: position.id, name: position.name },
+      practice: { id: position.id, name: position.name, source: position.source || 'library' },
     })
   }, [clearTrainerTimer, dispatchReview, dispatchTrainer, setFlipped, beginPlay])
 
-  const nextPractice = useMemo(() => (
-    playSession?.practice ? nextPositionAfter(practiceLibrary.library, playSession.practice.id) : null
-  ), [playSession?.practice, practiceLibrary.library])
+  // A mistake from one of the user's own games, as a one-move exercise. It
+  // goes through the same session as a library position; `source` says where
+  // the result is recorded.
+  const startMistake = useCallback((mistake, game) => {
+    startLibraryPosition({
+      id: mistake.id,
+      fen: mistake.fen,
+      orientation: mistake.user_color,
+      name: `vs ${opponentOf(game)}, ${moveLabel(mistake.ply, mistake.played_san)}`,
+      goal: mistakeGoal(mistake),
+      source: 'mistake',
+    })
+  }, [startLibraryPosition])
+
+  const nextPractice = useMemo(() => {
+    const current = playSession?.practice
+    if (!current) return null
+    if (current.source === 'mistake') return nextMistakeAfter(mistakes.data, current.id)
+    return nextPositionAfter(practiceLibrary.library, current.id)
+  }, [playSession?.practice, practiceLibrary.library, mistakes.data])
   const startNextPractice = useCallback(() => {
-    if (nextPractice) startLibraryPosition(nextPractice)
-  }, [nextPractice, startLibraryPosition])
+    if (!nextPractice) return
+    if (nextPractice.mistake) startMistake(nextPractice.mistake, nextPractice.game)
+    else startLibraryPosition(nextPractice)
+  }, [nextPractice, startLibraryPosition, startMistake])
 
   // Count each finished try once, however many times the session re-renders.
   const recordedAttempt = useRef(null)
   const recordPracticeAttempt = practiceLibrary.recordAttempt
+  const recordMistakeAttempt = mistakes.recordAttempt
   const goalState = playSession?.goalState
   useEffect(() => {
     if (!playSession?.practice || !goalState || goalState.state === 'running') return
     const key = `${playSession.id}:${playSession.attempt}`
     if (recordedAttempt.current === key) return
     recordedAttempt.current = key
-    recordPracticeAttempt(playSession.practice.id, goalState.state === 'solved')
-  }, [playSession?.id, playSession?.practice, playSession?.attempt, goalState, recordPracticeAttempt])
+    const record = playSession.practice.source === 'mistake' ? recordMistakeAttempt : recordPracticeAttempt
+    record(playSession.practice.id, goalState.state === 'solved')
+  }, [playSession?.id, playSession?.practice, playSession?.attempt, goalState, recordPracticeAttempt, recordMistakeAttempt])
 
   const playUserMove = play.userMove
   const handlePlayMove = useCallback((orig, dest) => {
@@ -1329,6 +1353,8 @@ export default function OpeningsExplorer() {
                 practice={practiceLibrary}
                 onStartPractice={startLibraryPosition}
                 onNextPractice={nextPractice ? startNextPractice : null}
+                mistakes={mistakes}
+                onStartMistake={startMistake}
               />
             )}
             {activeTab === 'Review' && (

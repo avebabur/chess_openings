@@ -7,6 +7,8 @@ import {
   goalLabel,
   goalOutcomeText,
   judgeGoal,
+  mistakeGoal,
+  ratingText,
 } from './practiceGoal'
 
 const goal = (kind, cp = null, moves = null) => ({ kind, cp, moves })
@@ -157,5 +159,46 @@ describe('a practice game in the play session', () => {
     const state = createPlaySession({ fen: FEN, userColor: 'white', goal: goal('study') })
     expect(state.goalState).toBeNull()
     expect(state.status).toBe('userTurn')
+  })
+})
+
+describe('a mistake from your own game', () => {
+  const mistake = {
+    target_cp: 50, played_san: 'Qh5', played_uci: 'd1h5', best_san: 'Nf3',
+    cp_before: 110, cp_after: -240, source: 'stockfish',
+  }
+  const g = mistakeGoal(mistake)
+  const first = (uci, san, cp) => [{ by: 'user', uci, san, assessment: cp == null ? null : { cp, outcome: null } }]
+  const run = (moves, result = null) => judgeGoal({ goal: g, userColor: 'white', moves, result })
+
+  it('describes what happened in the game', () => {
+    expect(describeGoal(g).title).toBe('Find a better move than Qh5')
+    expect(describeGoal(g).detail).toContain('from +1.1 to -2.4')
+    expect(ratingText(10000, 'tablebase')).toBe('winning')
+    expect(ratingText(0, 'tablebase')).toBe('a draw')
+  })
+
+  it('waits for the rating, then judges the one move', () => {
+    expect(run([]).state).toBe('running')
+    expect(run(first('g1f3', 'Nf3', null)).state).toBe('running')
+    const good = run(first('g1f3', 'Nf3', 90))
+    expect(good).toMatchObject({ state: 'solved', reason: 'better', san: 'Nf3' })
+    expect(goalOutcomeText(g, good).body).toContain('first choice too')
+    const bad = run(first('a2a3', 'a3', -100))
+    expect(bad).toMatchObject({ state: 'failed', reason: 'not-better' })
+    expect(goalOutcomeText(g, bad).body).toContain('It would have played Nf3')
+  })
+
+  it('fails the move from the game without waiting', () => {
+    expect(run(first('d1h5', 'Qh5', null))).toMatchObject({ state: 'failed', reason: 'same-move' })
+  })
+
+  it('accepts a draw only when a draw is all there was', () => {
+    const drawn = { winner: null, reason: 'stalemate' }
+    expect(run(first('a2a3', 'a3', null), drawn).state).toBe('failed')
+    const holding = judgeGoal({
+      goal: { ...g, cp: -100 }, userColor: 'white', moves: first('a2a3', 'a3', null), result: drawn,
+    })
+    expect(holding.state).toBe('solved')
   })
 })
