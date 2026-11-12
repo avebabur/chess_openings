@@ -164,7 +164,9 @@ class PlayReplyApiTests(unittest.TestCase):
                 patch.object(engine, "best_move") as best_move:
             response = self.client.post("/api/play/reply", json={"fen": LUCENA})
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), {"uci": "f1e1", "san": "Re1+", "source": "tablebase"})
+        self.assertEqual(response.json(), {
+            "uci": "f1e1", "san": "Re1+", "source": "tablebase", "outcome": "win", "cp": None,
+        })
         best_move.assert_not_called()
 
     def test_otherwise_stockfish_chooses_within_the_requested_time(self):
@@ -175,7 +177,7 @@ class PlayReplyApiTests(unittest.TestCase):
                 patch.object(engine, "best_move", return_value=reply) as best_move:
             response = self.client.post("/api/play/reply", json={"fen": START, "seconds": 2})
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), {**reply, "source": "stockfish"})
+        self.assertEqual(response.json(), {**reply, "source": "stockfish", "outcome": None, "cp": 30})
         best_move.assert_called_once_with(START, 2.0)
 
     def test_a_finished_game_and_a_silent_engine_are_errors(self):

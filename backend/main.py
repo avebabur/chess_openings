@@ -34,6 +34,7 @@ import database as db  # noqa: E402
 import eco_openings  # noqa: E402  (offline move-sequence → opening-name recognizer)
 import lichess_explorer  # noqa: E402  (SPEEDS / RATING_GROUPS / MIN_YEAR allow-lists)
 import live_engine  # noqa: E402  (openings-local interactive eval engine)
+import practice_library  # noqa: E402  (Lichess Practice sets)
 import game_import  # noqa: E402
 from sync_service import AccountSyncService  # noqa: E402
 from services import ExternalApiClients, SQLiteService  # noqa: E402
@@ -126,6 +127,10 @@ class DrillAttemptInput(BaseModel):
         return self
 
 
+class PracticeAttemptInput(BaseModel):
+    solved: bool
+
+
 class PlayReplyInput(BaseModel):
     fen: str = Field(min_length=4, max_length=128)
     seconds: float = Field(default=1.0, ge=0.1, le=30)
@@ -147,6 +152,7 @@ async def lifespan(target_app):
     target_app.state.external_clients = ExternalApiClients()
     target_app.state.opening_tree_cache = ot.OpeningTreeCache()
     target_app.state.live_engine = live_engine.LiveEngineService()
+    target_app.state.practice_importer = practice_library.PracticeImporter()
     target_app.state.sync_service = AccountSyncService(
         invalidate_cache=target_app.state.opening_tree_cache.invalidate,
         import_client=target_app.state.external_clients.import_client,
@@ -354,13 +360,48 @@ async def play_reply(input: PlayReplyInput, request: Request):
         request.app.state.external_clients.tablebase, input.fen, _external_network_allowed())
     if table.get("available") and table.get("moves"):
         best = table["moves"][0]
-        return {"uci": best["uci"], "san": best["san"], "source": "tablebase"}
+        # `outcome` is the replying side's result with perfect play. Practice
+        # goals use it to judge the move that was just played.
+        return {"uci": best["uci"], "san": best["san"], "source": "tablebase",
+                "outcome": table["outcome"], "cp": None}
 
     move = await run_in_threadpool(
         request.app.state.live_engine.best_move, input.fen, input.seconds)
     if move is None:
         raise HTTPException(503, "Stockfish did not return a move")
-    return {**move, "source": "stockfish"}
+    # `eval` is pawns from White's side; `cp` is the same in centipawns.
+    cp = round(move["eval"] * 100) if move.get("eval") is not None else None
+    return {**move, "source": "stockfish", "outcome": None, "cp": cp}
+
+
+@api.get("/practice/library")
+def practice_library_listing():
+    """Every imported practice set with the user's progress on each position."""
+    return practice_library.get_library()
+
+
+@api.get("/practice/import")
+def practice_import_status(request: Request):
+    return request.app.state.practice_importer.status()
+
+
+@api.post("/practice/import", status_code=202)
+def practice_import_start(request: Request):
+    """Fetch (or refresh) all Lichess Practice sets in the background. Safe to
+    repeat: existing positions are updated in place and progress is kept."""
+    try:
+        return request.app.state.practice_importer.start(
+            request.app.state.external_clients.http, _external_network_allowed())
+    except practice_library.PracticeImportError as exc:
+        raise HTTPException(503, str(exc))
+
+
+@api.post("/practice/positions/{position_id}/attempts")
+def practice_record_attempt(position_id: int, input: PracticeAttemptInput):
+    progress = practice_library.record_attempt(position_id, input.solved)
+    if progress is None:
+        raise HTTPException(404, "Practice position not found")
+    return progress
 
 
 @api.get("/saved-eval")

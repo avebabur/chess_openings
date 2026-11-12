@@ -871,6 +871,39 @@ def init_db():
             payload JSON NOT NULL,
             fetched_at TEXT DEFAULT (datetime('now'))
         );
+        -- The Lichess Practice library. A position is one chapter of one study;
+        -- progress is a separate table so re-importing never touches it.
+        CREATE TABLE IF NOT EXISTS practice_positions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            study_id TEXT NOT NULL,
+            chapter_id TEXT NOT NULL,
+            section TEXT NOT NULL,
+            section_title TEXT NOT NULL,
+            set_title TEXT NOT NULL,
+            set_subtitle TEXT NOT NULL DEFAULT '',
+            set_order INTEGER NOT NULL,
+            chapter_order INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            fen TEXT NOT NULL,
+            orientation TEXT NOT NULL,
+            goal_text TEXT NOT NULL DEFAULT '',
+            goal_kind TEXT NOT NULL,
+            goal_cp INTEGER,
+            goal_moves INTEGER,
+            description TEXT NOT NULL DEFAULT '',
+            solution_san JSON NOT NULL DEFAULT '[]',
+            source_url TEXT NOT NULL,
+            imported_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(study_id, chapter_id)
+        );
+        CREATE TABLE IF NOT EXISTS practice_progress (
+            position_id INTEGER PRIMARY KEY REFERENCES practice_positions(id) ON DELETE CASCADE,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            solved_count INTEGER NOT NULL DEFAULT 0,
+            failed_count INTEGER NOT NULL DEFAULT 0,
+            last_result TEXT,
+            last_played_at TEXT
+        );
         CREATE TABLE IF NOT EXISTS schema_migrations (
             version TEXT PRIMARY KEY,
             applied_at TEXT DEFAULT (datetime('now'))

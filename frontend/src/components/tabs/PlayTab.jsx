@@ -1,12 +1,15 @@
 import { useState } from 'react'
 import {
   PLAY_STATUS,
+  goalEnded,
   latestVerdict,
   pieceCount,
   playFen,
   resultText,
   tablebaseCovers,
 } from '../../domain/playSession'
+import { describeGoal, goalOutcomeText, isPlayableGoal } from '../../domain/practiceGoal'
+import PracticeLibrary from './PracticeLibrary'
 
 const THINK_TIMES = [1, 3, 10]
 
@@ -66,6 +69,9 @@ export default function PlayTab({
   onRestart,
   onExit,
   onRetry,
+  practice,
+  onStartPractice,
+  onNextPractice,
 }) {
   const [seconds, setSeconds] = useState(THINK_TIMES[0])
 
@@ -85,6 +91,14 @@ export default function PlayTab({
             </p>
           </div>
         </div>
+
+        <PracticeLibrary
+          library={practice.library}
+          loadError={practice.loadError}
+          importState={practice.importState}
+          onImport={practice.startImport}
+          onStart={onStartPractice}
+        />
 
         <div className="practice-card">
           <span className="eyebrow">{usingPastedFen ? 'Pasted position' : 'Position from Explore'}</span>
@@ -164,6 +178,10 @@ export default function PlayTab({
   const fen = playFen(session)
   const userMoves = session.moves.filter(move => move.by === 'user').length
   const lastEngine = session.moves.at(-1)?.by === 'engine' ? session.moves.at(-1) : null
+  const goal = isPlayableGoal(session.goal) ? session.goal : null
+  const goalText = goal ? describeGoal(goal) : null
+  const ended = goalEnded(session)
+  const outcome = ended ? goalOutcomeText(goal, session.goalState) : null
 
   return (
     <div className="tab-pane" role="tabpanel">
@@ -175,6 +193,46 @@ export default function PlayTab({
           </div>
           <button type="button" className="btn-secondary" onClick={onExit}>Exit</button>
         </div>
+
+        {goalText && (
+          <div className="practice-card" aria-label="Goal">
+            <span className="eyebrow">Goal</span>
+            <strong>{goalText.title}</strong>
+            <p>{goalText.detail}</p>
+            {goal.moves && (
+              <p className="practice-goal-progress">
+                Moves used: {Math.min(session.goalState?.used ?? 0, goal.moves)} of {goal.moves}
+              </p>
+            )}
+          </div>
+        )}
+
+        {outcome && (
+          <div
+            className={`practice-card ${session.goalState.state === 'solved' ? 'success' : 'miss'}`}
+            role="status"
+            aria-label="Goal result"
+          >
+            <strong>{outcome.title}</strong>
+            {outcome.body && <p>{outcome.body}</p>}
+            <div className="practice-done-actions">
+              {session.goalState.state === 'solved' && onNextPractice && (
+                <button type="button" className="btn-primary" onClick={onNextPractice}>Next position</button>
+              )}
+              <button
+                type="button"
+                className={session.goalState.state === 'solved' ? 'btn-secondary' : 'btn-primary'}
+                onClick={onRestart}
+              >
+                Try again
+              </button>
+              {session.goalState.state !== 'solved' && onNextPractice && (
+                <button type="button" className="btn-secondary" onClick={onNextPractice}>Skip to next</button>
+              )}
+              <button type="button" className="btn-secondary" onClick={onExit}>Back to library</button>
+            </div>
+          </div>
+        )}
 
         {status === PLAY_STATUS.USER_TURN && (
           <div className="practice-card active" role="status">
@@ -201,7 +259,7 @@ export default function PlayTab({
           </div>
         )}
 
-        {status === PLAY_STATUS.OVER && (
+        {status === PLAY_STATUS.OVER && !outcome && (
           <div className={`practice-card ${session.result?.winner === userColor ? 'success' : ''}`} role="status">
             <strong>{resultText(session)}</strong>
             <p>{userMoves} move{userMoves === 1 ? '' : 's'} played.</p>
@@ -224,14 +282,16 @@ export default function PlayTab({
           </p>
         )}
 
-        <div className="practice-done-actions">
-          <button type="button" className="btn-secondary" onClick={onTakeBack} disabled={!userMoves}>
-            Take back
-          </button>
-          <button type="button" className="btn-secondary" onClick={onRestart} disabled={!session.moves.length}>
-            Restart
-          </button>
-        </div>
+        {!outcome && (
+          <div className="practice-done-actions">
+            <button type="button" className="btn-secondary" onClick={onTakeBack} disabled={!userMoves}>
+              Take back
+            </button>
+            <button type="button" className="btn-secondary" onClick={onRestart} disabled={!session.moves.length}>
+              Restart
+            </button>
+          </div>
+        )}
       </div>
     </div>
   )

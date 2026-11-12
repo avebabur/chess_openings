@@ -226,6 +226,118 @@ test('play from the Explore position, with no verdicts until seven pieces are le
   await expect(page.getByRole('button', { name: 'Play as White' })).toBeVisible()
 })
 
+// A two-position library, as GET /api/practice/library returns it. The suite is
+// offline, so the practice endpoints and the engine's reply are stubbed.
+const PRACTICE_LIBRARY = {
+  imported: true,
+  total: 2,
+  solved: 0,
+  sections: [{
+    id: 'checkmates', title: 'Checkmates', total: 2, solved: 0,
+    sets: [{
+      id: 'abc12345', title: 'Checkmate Patterns I', subtitle: 'Recognize the patterns', total: 2, solved: 0,
+      positions: [
+        {
+          id: 1, name: 'Back-Rank Mate #1', fen: '6k1/4Rppp/8/8/8/8/5PPP/6K1 w - - 0 1', orientation: 'white',
+          goal: { kind: 'mate', cp: null, moves: 1, text: 'mate in 1' }, description: '',
+          source_url: 'https://lichess.org/study/abc12345/one',
+          progress: { attempts: 0, solved: 0, failed: 0, last_result: null, last_played_at: null },
+        },
+        {
+          id: 2, name: 'Win material', fen: '4k3/8/8/8/8/1q6/8/R3K3 w - - 0 1', orientation: 'white',
+          goal: { kind: 'eval', cp: 300, moves: 1, text: '+300cp in 1' }, description: '',
+          source_url: 'https://lichess.org/study/abc12345/two',
+          progress: { attempts: 0, solved: 0, failed: 0, last_result: null, last_played_at: null },
+        },
+      ],
+    }],
+  }],
+}
+
+async function stubPractice(page, { library = PRACTICE_LIBRARY } = {}) {
+  const attempts = []
+  await page.route('**/api/practice/library', route => route.fulfill({ json: library }))
+  await page.route('**/api/practice/import', route => route.fulfill({ json: { running: false, error: null, result: null } }))
+  await page.route('**/api/practice/positions/*/attempts', (route) => {
+    const id = Number(route.request().url().match(/positions\/(\d+)\//)[1])
+    attempts.push({ id, ...route.request().postDataJSON() })
+    return route.fulfill({ json: { attempts: 1, solved: 0, failed: 0, last_result: null } })
+  })
+  return attempts
+}
+
+async function openPosition(page, setTitle, positionName) {
+  await page.getByRole('tab', { name: 'Play' }).click()
+  await page.locator('summary', { hasText: setTitle }).click()
+  await page.getByRole('button', { name: new RegExp(positionName) }).click()
+}
+
+test('a practice position shows its goal, records success and moves on to the next position', async ({ page }) => {
+  const attempts = await stubPractice(page)
+  await page.route('**/api/play/reply', route => route.fulfill({
+    json: { uci: 'b3b8', san: 'Qb8', source: 'stockfish', outcome: null, cp: 100 },
+  }))
+  await page.goto('/')
+  await openPosition(page, 'Checkmate Patterns I', 'Back-Rank Mate #1')
+
+  const goal = page.getByLabel('Goal', { exact: true })
+  await expect(goal).toContainText('Checkmate in one move')
+  await expect(goal).toContainText('Moves used: 0 of 1')
+
+  await playMove(page, 'e7', 'e8')
+  const result = page.getByRole('status', { name: 'Goal result' })
+  await expect(result).toContainText('Checkmate. Goal reached.')
+  await expect.poll(() => attempts).toEqual([{ id: 1, solved: true }])
+
+  // "Next position" goes on to the second one, which is judged by Stockfish.
+  await result.getByRole('button', { name: 'Next position' }).click()
+  await expect(goal).toContainText('Be 3 pawns better within one move')
+  await playMove(page, 'a1', 'a8')
+  await expect(result).toContainText('Not enough')
+  await expect(result).toContainText('+1')
+  await expect.poll(() => attempts.at(-1)).toEqual({ id: 2, solved: false })
+
+  // The engine's rating decides it: this time Stockfish likes the move.
+  await page.unroute('**/api/play/reply')
+  await page.route('**/api/play/reply', route => route.fulfill({
+    json: { uci: 'b3b8', san: 'Qb8', source: 'stockfish', outcome: null, cp: 450 },
+  }))
+  await result.getByRole('button', { name: 'Try again' }).click()
+  await expect(result).toHaveCount(0)
+  await playMove(page, 'a1', 'a8')
+  await expect(result).toContainText('Goal reached')
+  await expect.poll(() => attempts.at(-1)).toEqual({ id: 2, solved: true })
+  expect(attempts).toHaveLength(3)
+  // It was the last position, so there is nothing further to go to.
+  await expect(result.getByRole('button', { name: 'Next position' })).toHaveCount(0)
+
+  await result.getByRole('button', { name: 'Back to library' }).click()
+  await expect(page.getByRole('heading', { name: 'Play against Stockfish' })).toBeVisible()
+})
+
+test('the practice library offers to import from Lichess when it is empty, and shows it when done', async ({ page }) => {
+  let importing = false
+  let polls = 0
+  await page.route('**/api/practice/library', route => route.fulfill({
+    json: importing && polls > 0 ? PRACTICE_LIBRARY : { imported: false, sections: [], total: 0, solved: 0 },
+  }))
+  await page.route('**/api/practice/import', (route) => {
+    if (route.request().method() === 'POST') {
+      importing = true
+      return route.fulfill({ status: 202, json: { running: true, done: 3, total: 32, title: 'The Pin', error: null, result: null } })
+    }
+    if (importing) polls += 1
+    return route.fulfill({ json: { running: false, done: 32, total: 32, title: '', error: null, result: { sets: 32, positions: 316, failed: [] } } })
+  })
+
+  await page.goto('/')
+  await page.getByRole('tab', { name: 'Play' }).click()
+  await page.getByRole('button', { name: 'Import the Lichess Practice sets' }).click()
+  await expect(page.getByText('Importing from Lichess… 3 of 32 sets (The Pin)')).toBeVisible()
+  await expect(page.locator('summary', { hasText: 'Checkmate Patterns I' })).toBeVisible()
+  await expect(page.getByText('0 of 2 solved')).toBeVisible()
+})
+
 test('a drill only accepts moves from the opening being drilled', async ({ page, request }) => {
   // Both lines start from the same position. 1.e4 is in the repertoire — but
   // not in the opening being drilled, and used to pass as a "Clean line".

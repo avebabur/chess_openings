@@ -16,6 +16,7 @@ import { useOpeningNavigation } from './hooks/useOpeningNavigation'
 import { useTrainingSession } from './hooks/useTrainingSession'
 import { useReviewSession } from './hooks/useReviewSession'
 import { usePlaySession } from './hooks/usePlaySession'
+import { nextPositionAfter, usePracticeLibrary } from './hooks/usePracticeLibrary'
 import {
   START_FEN,
   applySanMove,
@@ -79,6 +80,8 @@ const TIME_CLASSES = [
 ]
 
 const ACCOUNT_STORAGE_KEY = 'op_account_id'
+// Seconds Stockfish thinks per move in a practice position: enough to rate it.
+const PRACTICE_THINK_SECONDS = 2
 
 const TABS = [
   { id: 'Explore', hint: 'Your game stats' },
@@ -142,6 +145,7 @@ export default function OpeningsExplorer() {
     recordReview, retryReviewWrite, resetReviewWrite,
   } = useReviewSession(loadRepertoire)
   const play = usePlaySession()
+  const practiceLibrary = usePracticeLibrary({ enabled: activeTab === 'Play' })
   const playSession = play.session
   const stopPlay = play.stop
   const beginPlay = play.start
@@ -938,6 +942,45 @@ export default function OpeningsExplorer() {
     })
   }, [clearTrainerTimer, dispatchReview, dispatchTrainer, setFlipped, beginPlay, pastedStart.fen, exploreBoard.fen, path])
 
+  // Start a Lichess Practice position: you play the side the board is turned to
+  // (which may not be the side to move; the engine then moves first).
+  const startLibraryPosition = useCallback((position) => {
+    clearTrainerTimer()
+    dispatchTrainer({ type: 'stop' })
+    dispatchReview({ type: 'clear' })
+    setEditingBranchId(null)
+    setEditorOpen(false)
+    setFlipped(false)
+    setActiveTab('Play')
+    beginPlay({
+      fen: position.fen,
+      userColor: position.orientation,
+      seconds: PRACTICE_THINK_SECONDS,
+      label: position.setTitle ? `${position.setTitle}: ${position.name}` : position.name,
+      goal: position.goal,
+      practice: { id: position.id, name: position.name },
+    })
+  }, [clearTrainerTimer, dispatchReview, dispatchTrainer, setFlipped, beginPlay])
+
+  const nextPractice = useMemo(() => (
+    playSession?.practice ? nextPositionAfter(practiceLibrary.library, playSession.practice.id) : null
+  ), [playSession?.practice, practiceLibrary.library])
+  const startNextPractice = useCallback(() => {
+    if (nextPractice) startLibraryPosition(nextPractice)
+  }, [nextPractice, startLibraryPosition])
+
+  // Count each finished try once, however many times the session re-renders.
+  const recordedAttempt = useRef(null)
+  const recordPracticeAttempt = practiceLibrary.recordAttempt
+  const goalState = playSession?.goalState
+  useEffect(() => {
+    if (!playSession?.practice || !goalState || goalState.state === 'running') return
+    const key = `${playSession.id}:${playSession.attempt}`
+    if (recordedAttempt.current === key) return
+    recordedAttempt.current = key
+    recordPracticeAttempt(playSession.practice.id, goalState.state === 'solved')
+  }, [playSession?.id, playSession?.practice, playSession?.attempt, goalState, recordPracticeAttempt])
+
   const playUserMove = play.userMove
   const handlePlayMove = useCallback((orig, dest) => {
     if (!playSession || playSession.status !== PLAY_STATUS.USER_TURN || pendingPromotion) return
@@ -1283,6 +1326,9 @@ export default function OpeningsExplorer() {
                 onRestart={play.restart}
                 onExit={stopPlay}
                 onRetry={play.retry}
+                practice={practiceLibrary}
+                onStartPractice={startLibraryPosition}
+                onNextPractice={nextPractice ? startNextPractice : null}
               />
             )}
             {activeTab === 'Review' && (

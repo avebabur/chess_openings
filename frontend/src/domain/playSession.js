@@ -6,6 +6,7 @@
  * move back is just dropping it from the list.
  */
 import { Chess } from 'chess.js'
+import { assessmentFromReply, judgeGoal } from './practiceGoal'
 
 export const PLAY_STATUS = {
   USER_TURN: 'userTurn',
@@ -148,12 +149,25 @@ export function verdictForMove(table, uci) {
   }
 }
 
-export function createPlaySession({ fen, userColor, seconds = 1, label = '' }) {
+/**
+ * `goal` and `practice` are set when the game comes from the practice library:
+ * the goal decides when the game is over (see practiceGoal.js), and `practice`
+ * says which library position it is so the result can be recorded. `attempt`
+ * counts restarts, so each try is recorded once.
+ */
+let sessionCounter = 0
+
+export function createPlaySession({ fen, userColor, seconds = 1, label = '', goal = null, practice = null }) {
+  sessionCounter += 1
   const session = {
+    id: sessionCounter,
     startFen: fen,
     userColor: userColor === 'black' ? 'black' : 'white',
     seconds,
     label,
+    goal,
+    practice,
+    attempt: 1,
     moves: [],
     error: null,
   }
@@ -175,13 +189,25 @@ export function playLastMove(session) {
 
 function withStatus(session) {
   const result = gameResult(session.startFen, playSans(session))
-  if (result) return { ...session, result, status: PLAY_STATUS.OVER }
+  const goalState = judgeGoal({
+    goal: session.goal, userColor: session.userColor, moves: session.moves, result,
+  })
+  // A reached or missed goal ends the game even though the position goes on.
+  if (result || (goalState && goalState.state !== 'running')) {
+    return { ...session, result, goalState, status: PLAY_STATUS.OVER }
+  }
   const userToMove = colorOfTurn(playFen(session)) === session.userColor
   return {
     ...session,
     result: null,
+    goalState,
     status: userToMove ? PLAY_STATUS.USER_TURN : PLAY_STATUS.ENGINE_THINKING,
   }
+}
+
+/** True once the goal of a practice game is reached or missed. */
+export function goalEnded(session) {
+  return Boolean(session?.goalState && session.goalState.state !== 'running')
 }
 
 function moveEntry(by, move, extra = {}) {
@@ -205,7 +231,7 @@ export function playReducer(state, action) {
     case 'stop':
       return null
     case 'restart':
-      return state ? withStatus({ ...state, moves: [], error: null }) : state
+      return state ? withStatus({ ...state, moves: [], error: null, attempt: state.attempt + 1 }) : state
     case 'userMove': {
       if (!state || state.status !== PLAY_STATUS.USER_TURN) return state
       const entry = moveEntry('user', action.move, { fenBefore: playFen(state) })
@@ -235,8 +261,22 @@ export function playReducer(state, action) {
       moves[index] = { ...moves[index], verdict: action.verdict }
       return { ...state, moves }
     }
+    case 'assessment': {
+      // How the position after the user's last move was rated. It arrives with
+      // the engine's reply, so it can be late for a position we have left.
+      const last = state?.moves.at(-1)
+      if (!last || last.by !== 'user' || last.fenAfter !== action.fen) return state
+      const moves = state.moves.slice()
+      moves[moves.length - 1] = {
+        ...last,
+        assessment: assessmentFromReply(action.reply, state.userColor),
+      }
+      return withStatus({ ...state, moves })
+    }
     case 'takeBack': {
       if (!state || !state.moves.some(move => move.by === 'user')) return state
+      // A finished practice goal has been recorded; "Try again" is the way back.
+      if (goalEnded(state)) return state
       // Drop the engine's reply (if it has replied) and the user move before it.
       const moves = state.moves.slice()
       while (moves.length && moves.at(-1).by !== 'user') moves.pop()

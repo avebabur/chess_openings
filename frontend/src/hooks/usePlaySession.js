@@ -64,6 +64,10 @@ export function usePlaySession() {
     api.post('/play/reply', { fen, seconds }, { signal: controller.signal })
       .then((res) => {
         const { uci, source } = res.data || {}
+        // How the position you just left was rated; a practice goal may end
+        // the game here, which also cancels the reply below.
+        dispatch({ type: 'assessment', fen, reply: res.data })
+        if (controller.signal.aborted) return
         const move = uci ? makeMove(fen, uci.slice(0, 2), uci.slice(2, 4), uci[4] || 'q') : null
         if (!move) throw new Error('Stockfish returned a move that is not legal here')
         const wait = Math.max(0, MIN_REPLY_MS - (performance.now() - started))
