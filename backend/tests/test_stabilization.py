@@ -224,14 +224,14 @@ class StabilizationTests(unittest.TestCase):
         self.assertFalse(status["available"])
         self.assertIn("Install Stockfish", status["message"])
 
-    def test_live_engine_defaults_to_four_threads_for_all_searches(self):
+    def test_live_engine_defaults_to_three_threads_for_all_searches(self):
         import live_engine
         shallow = live_engine._build_limit(live_engine.LIVE_DEPTH, live_engine.LIVE_MAX_SECONDS)
         deep_depth = live_engine._build_limit(live_engine.LIVE_DEPTH + 10, 0)
         time_only = live_engine._build_limit(0, live_engine.LIVE_MAX_SECONDS)
         infinite = live_engine._build_limit(0, 0)
 
-        expected = min(4, os.cpu_count() or 1)
+        expected = min(3, os.cpu_count() or 1)
         self.assertEqual(live_engine.DEFAULT_THREADS, expected)
         self.assertEqual(live_engine.LIVE_INTERACTIVE_THREADS, expected)
         self.assertEqual(live_engine.LIVE_DEEP_THREADS, expected)
@@ -245,7 +245,7 @@ class StabilizationTests(unittest.TestCase):
         with patch.object(live_engine.os, "cpu_count", return_value=None):
             self.assertEqual(live_engine._default_threads(), 1)
         with patch.object(live_engine.os, "cpu_count", return_value=16):
-            self.assertEqual(live_engine._default_threads(), 4)
+            self.assertEqual(live_engine._default_threads(), 3)
 
 if __name__ == "__main__":
     unittest.main()

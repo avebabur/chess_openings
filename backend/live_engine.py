@@ -16,12 +16,25 @@ shares results through the hash table, so extra threads barely raise the
 reported depth at a fixed time. They still find the right move sooner and play
 stronger. Do NOT compare thread counts by depth; compare time-to-solution or Elo.
 
-Both thread profiles default to ``DEFAULT_THREADS`` (4, capped at the CPU count).
-On the 8-core (4 performance + 4 efficiency) dev Mac running Stockfish 19,
-nodes/sec rose from about 270k at 1 thread to 825k at 4 but only 890k at 8.
-Threads past 4 land on the slower efficiency cores. The cost is that multithreaded results are not bit-for-bit
-reproducible: the same position can show a slightly different eval or PV
-between runs. The best move is what stays stable.
+Both thread profiles default to ``DEFAULT_THREADS`` (3, capped at the CPU count).
+Measured on the 8-core (4 performance + 4 efficiency) dev Mac with Stockfish 19,
+on 20 repertoire positions at the default 4s search:
+
+    threads   nodes/sec   mean depth   reached the d22 save floor
+       1        284k         22.8            14/20
+       3        700k         23.4            16/20
+       4        800k         22.2            15/20
+
+3 threads give 87% of the 4-thread speed and leave one performance core free for
+the browser and backend. Threads past 4 land on the efficiency cores (about 890k
+nodes/sec at 8).
+
+The cost of multithreading is repeatability. Running the same 4s search twice,
+1 thread chose the same best move in 20/20 positions (eval within 0.3cp), while
+4 threads chose the same move in only 15/20 (eval within about 10cp). The flips
+are between near-equal moves, mostly 0.1 to 0.3 pawns apart, so in a quiet
+opening position the suggested move can change between visits. 3 threads were
+not measured for repeatability; expect the same kind of variation.
 
 Depth-targeted searches use ``OPENINGS_LIVE_INTERACTIVE_THREADS``. Infinite and
 time-only analysis use ``OPENINGS_LIVE_DEEP_THREADS``. The legacy
@@ -68,8 +81,8 @@ STOCKFISH_PATH = _stockfish_path()
 
 
 def _default_threads():
-    """4 search threads, or fewer on a machine with fewer cores."""
-    return max(1, min(4, os.cpu_count() or 1))
+    """3 search threads, or fewer on a machine with fewer cores."""
+    return max(1, min(3, os.cpu_count() or 1))
 
 
 DEFAULT_THREADS = _default_threads()
