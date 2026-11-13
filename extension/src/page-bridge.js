@@ -29,4 +29,26 @@
   if (window.__oxLichessBridge) document.removeEventListener('ox-lichess', window.__oxLichessBridge);
   window.__oxLichessBridge = handle;
   document.addEventListener('ox-lichess', handle);
+
+  // Practice (Mastery mode) could wait forever on "Computer thinking…": there
+  // Lichess moves for the computer only once the engine is idle (lila
+  // practiceCtrl.ts `playable`), but with an external engine the last result
+  // arrives while it still counts as computing, and nothing asks again after
+  // it stops. So: when Practice is waiting on the computer, the search has a
+  // final answer and the engine is idle, ask Lichess to look again (its own
+  // onCeval, exactly what a new engine result triggers).
+  let nudgedPath = null;
+  let nudges = 0;
+  function nudgePractice() {
+    try {
+      const ctrl = window.site && window.site.analysis;
+      const practice = ctrl && ctrl.practice;
+      if (!practice || !practice.running() || practice.isMyTurn()) return;
+      if (!ctrl.node.ceval || !ctrl.node.ceval.bestmove || ctrl.ceval.isComputing) return;
+      if (nudgedPath !== ctrl.path) { nudgedPath = ctrl.path; nudges = 0; }
+      if (nudges++ < 5) practice.onCeval();
+    } catch { /* Lichess changed: Practice is simply left as it is */ }
+  }
+  clearInterval(window.__oxPracticeNudge);
+  window.__oxPracticeNudge = setInterval(nudgePractice, 400);
 })();

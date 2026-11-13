@@ -2,7 +2,7 @@
 
 Both platforms expose public game archives that need no login (a configured
 Lichess token only raises the rate limit). Each game is normalized to the shape
-``database.save_imported_game`` expects and tagged with its owning account, so
+``database.save_imported_games`` expects and tagged with its owning account, so
 the personal opening tree can be filtered per-account or combined. Mirrors the
 field conventions of the pre-existing imported games (ISO end_time, PGN-derived
 ECO code, humanized opening name). See [[chess-data-apis]].
@@ -61,6 +61,8 @@ def _opening_from_eco_url(url):
     # Drop the trailing move list, e.g. "...-Variation-3.Bf4-Bg4-4.e3".
     slug = re.split(r"-\d", slug, maxsplit=1)[0]
     name = slug.replace("-", " ").strip()
+    # "Modern-Defense-with-1-d4" leaves a dangling "with" once the moves go.
+    name = re.sub(r"\s+with$", "", name)
     return name or None
 
 

@@ -8,17 +8,26 @@
   const KEY = 'ox.game';
 
   // The analysis-board address of one of your games (its moves in the URL).
-  OX.gamePath = async gameId => {
-    const game = await OX.bridge.api('GET', `/games/${gameId}`);
+  function gamePath(game) {
     const chess = new globalThis.OXChess();
     chess.loadPgn(game.pgn || '', { strict: false });
     const sans = chess.history().map(san => san.replace(/[+#]/g, ''));
     return { path: `/analysis/pgn/${sans.map(encodeURIComponent).join('_')}`, plies: sans.length };
-  };
+  }
 
-  // Opens your game on Lichess's analysis board, at `ply` (default: the end).
+  // Opens your game at `ply` (default: the end). A game played on Lichess
+  // opens on its own Lichess page, from your side, with everything Lichess
+  // keeps for it (computer analysis, the eval graph, your notes, the chat). A
+  // chess.com game has no Lichess page, so it opens on the analysis board.
   OX.openMyGame = async (gameId, ply) => {
-    const { path, plies } = await OX.gamePath(gameId);
+    const game = await OX.bridge.api('GET', `/games/${gameId}`);
+    const lichessId = game.source === 'lichess'
+      && /\[(?:GameId "|Site "https?:\/\/lichess\.org\/(?:game\/)?)([A-Za-z0-9]{8})"/.exec(game.pgn || '')?.[1];
+    if (lichessId) {
+      location.href = `/${lichessId}${game.user_color === 'black' ? '/black' : ''}${ply == null ? '' : `#${ply}`}`;
+      return;
+    }
+    const { path, plies } = gamePath(game);
     try { localStorage.setItem(KEY, JSON.stringify({ id: gameId, path })); } catch { /* blocked */ }
     location.href = `${path}#${ply ?? plies}`;
   };
@@ -32,12 +41,12 @@
     if (syncing) return syncing;
     syncing = (async () => {
       const accounts = await OX.bridge.api('GET', '/accounts');
-      if (!accounts.length) throw new Error('No accounts in the app yet: add one in the app first.');
+      if (!accounts.length) throw new Error('No game accounts yet. Click the extension icon to add one.');
       onProgress('Syncing your games…');
       let jobs = await Promise.all(accounts.map(a => OX.bridge.api('POST', `/accounts/${a.id}/sync`)));
       const started = Date.now();
       while (jobs.some(j => j.status === 'queued' || j.status === 'running')) {
-        if (Date.now() - started > 5 * 60 * 1000) throw new Error('The sync is taking long; it carries on in the app.');
+        if (Date.now() - started > 5 * 60 * 1000) throw new Error('The sync is taking longer than expected. Check its progress in extension settings.');
         await new Promise(resolve => setTimeout(resolve, 1500));
         jobs = await Promise.all(jobs.map(j => (j.status === 'queued' || j.status === 'running'
           ? OX.bridge.api('GET', `/sync-jobs/${j.id}`) : j)));
@@ -52,6 +61,10 @@
   };
   OX.syncedText = count => (count ? `${count} new game${count === 1 ? '' : 's'} synced` : 'Up to date: no new games');
   OX.syncErrorText = error => (error.offline ? OX.offlineText() : error.status ? "Couldn't sync your games." : error.message);
+
+  const moveLabel = (ply, san) => `${Math.floor(ply / 2) + 1}${ply % 2 ? '…' : '.'} ${san}`;
+  const pawns = cp => (cp >= 9000 ? 'winning' : cp <= -9000 ? 'lost'
+    : `${cp > 0 ? '+' : cp < 0 ? '−' : ''}${(Math.abs(cp) / 100).toFixed(1)}`);
 
   function current() {
     try {
@@ -72,32 +85,38 @@
     pages: ['analyse'],
     anchors: ['side'],
     order: 2,
-    place: { anchor: 'side', where: 'append', zeroHeightOk: true },
+    place: { anchor: 'side', where: 'append', zeroHeightOk: true, tab: true },
 
     create(host, root) {
       root.classList.add('card');
       const saved = current();
       // A Lichess game page: /abcd1234, /abcd1234/black, /game/abcd1234.
-      const onLichessGame = !saved && /^\/(game\/)?[A-Za-z0-9]{8}(\/(white|black))?\/?$/.test(location.pathname);
+      const onLichessGame = !saved && !!OX.lichessGameId();
       root.style.display = 'none';
       if (!saved && !onLichessGame) return {};
-      const title = OX.el('span', { class: 'title' }, onLichessGame ? 'Your mistakes in this game' : 'Your game');
-      const body = OX.el('div', { class: 'row dim', text: 'Loading your game…' });
-      root.append(OX.el('div', { class: 'head' }, title), body);
+      const body = OX.el('div', { class: 'dim', text: 'Loading your game…' });
+      root.append(body);
+      // Its tab (features/sidetabs.js) appears once there is something to show.
+      let alive = true;
+      const show = () => { root.style.display = ''; OX.sidePanel.set('game', { available: true }); };
       let gameId = saved?.id;
       let polling = null;
+      let wanted = true; // load() is still to run (first time, or again once the app is back)
 
       async function find() {
         if (gameId) return gameId;
         try {
-          gameId = (await OX.bridge.api('GET', `/games/by-link?url=${encodeURIComponent(location.href)}`)).id;
-        } catch { gameId = null; } // not one of your imported games: show nothing
+          gameId = (await OX.bridge.api('GET', `/games/by-link?url=${encodeURIComponent(location.origin + location.pathname)}`)).id;
+        } catch (error) {
+          if (error.offline) wanted = true;
+          gameId = null; // not one of your imported games: show nothing
+        }
         return gameId;
       }
 
       async function checkThisGame(button) {
         button.disabled = true;
-        button.textContent = 'Your Stockfish is checking this game…';
+        button.textContent = 'Checking…';
         try {
           await OX.bridge.api('POST', '/analysis', { game_id: gameId });
         } catch (error) {
@@ -107,6 +126,7 @@
         // Reload the card when the check is done (about 30–60 s a game).
         const wait = async () => {
           const status = await OX.bridge.api('GET', '/analysis').catch(() => null);
+          if (!alive) return;
           if (status?.running) { polling = setTimeout(wait, 3000); return; }
           load();
         };
@@ -118,12 +138,13 @@
       async function offerSync() {
         let accounts;
         try { accounts = await OX.bridge.api('GET', '/accounts'); } catch { return; }
+        if (!alive) return;
         const names = accounts.filter(a => a.platform === 'lichess').map(a => a.username.toLowerCase());
         const players = [...document.querySelectorAll('a.user-link[href^="/@/"]')]
           .map(a => decodeURIComponent(a.getAttribute('href').slice(3)).split(/[/?#]/)[0].toLowerCase());
         if (!names.some(name => players.includes(name))) return; // not one of your games
         const button = OX.el('button', { class: 'btn primary', text: 'Sync games' });
-        const note = OX.el('div', { class: 'dim', text: "This game isn't in your app yet." });
+        const note = OX.el('div', { class: 'dim', text: "This game isn't in My games yet." });
         button.addEventListener('click', async () => {
           button.disabled = true;
           try {
@@ -136,70 +157,76 @@
           }
           button.disabled = false;
         });
-        root.style.display = '';
+        show();
         body.className = '';
         body.replaceChildren(note, OX.el('div', { class: 'btns' }, button));
       }
 
       async function load() {
+        wanted = false;
         if (!(await find())) {
-          if (onLichessGame) offerSync();
+          if (onLichessGame && !wanted && alive) offerSync();
           return;
         }
         let game;
         try {
           game = await OX.bridge.api('GET', `/games/${gameId}`);
         } catch (error) {
-          root.style.display = '';
+          if (!alive) return;
+          if (error.offline) wanted = true;
+          show();
           body.replaceChildren(OX.el('span', { class: 'offline', text: error.offline ? OX.offlineText() : "Couldn't load the game." }));
           return;
         }
-        root.style.display = '';
+        if (!alive) return;
+        show();
         if (!onLichessGame) OX.lichess.showSide(game.user_color);
-        const white = `${game.white}${game.user_color === 'white' ? ' (you)' : ''} ${game.user_color === 'white' ? game.user_rating ?? '' : game.opp_rating ?? ''}`;
-        const black = `${game.black}${game.user_color === 'black' ? ' (you)' : ''} ${game.user_color === 'black' ? game.user_rating ?? '' : game.opp_rating ?? ''}`;
         const result = resultFor(game);
-        const opponent = game.user_color === 'white' ? game.black : game.white;
+        const opponent = (game.user_color === 'white' ? game.black : game.white) || 'the computer';
         const label = `vs ${opponent}`;
         const mistakes = game.mistakes || [];
-        const list = mistakes.map((m, i) => OX.el('div', {
-          class: 'mistake',
-          title: 'Go to the position before this move',
+        // A row jumps to the position before the mistake.
+        const list = mistakes.map(m => OX.el('div', {
+          class: 'mistake', title: 'Go to the position before this move',
           onclick: () => OX.lichess.jumpToPly(m.ply),
         },
-        OX.el('span', { class: 'san', text: OX.mistakeMoveLabel(m.ply, m.played_san) }),
-        OX.el('span', { class: 'dim grow', text: `${OX.pawns(m.cp_before)} → ${OX.pawns(m.cp_after)} · best ${m.best_san}` }),
-        OX.el('button', {
-          class: 'chip', title: 'Train this mistake',
-          onclick: event => {
-            event.stopPropagation();
-            OX.startMistake(m, mistakes.slice(i + 1).map(next => ({ mistake: next, label })), label).catch(() => {});
-          },
-          text: 'Train',
-        })));
-        const check = OX.el('button', { class: 'btn primary', text: 'Check this game with your Stockfish' });
+        OX.el('span', { class: 'san', text: moveLabel(m.ply, m.played_san) }),
+        OX.el('span', { class: 'dim grow', text: `${pawns(m.cp_before)} → ${pawns(m.cp_after)}` }),
+        OX.el('span', { class: 'dim', text: `best ${m.best_san}` })));
+        const check = OX.el('button', { class: 'btn primary', text: 'Check with your Stockfish' });
         check.addEventListener('click', () => checkThisGame(check));
+        const rating = value => (value ? ` (${value})` : '');
         body.className = '';
         body.replaceChildren(
+          // Lichess's own game page already says who played and when.
           ...(onLichessGame ? [] : [
-            OX.el('div', { class: 'row' }, OX.el('span', { text: `${white.trim()} – ${black.trim()} · ` }),
+            OX.el('div', { class: 'head' },
+              OX.el('span', { class: 'title grow ellipsis', text: `${label}${rating(game.opp_rating)}` }),
               OX.el('b', { class: result.cls, text: result.text })),
-            OX.el('div', { class: 'dim', text: [game.time_class, game.date, game.opening].filter(Boolean).join(' · ') }),
-            OX.el('div', { class: 'row title', text: 'Your mistakes' }),
-          ]),
+            OX.el('div', { class: 'dim small', text: [`You${rating(game.user_rating)} as ${game.user_color}`, game.time_class, game.date].filter(Boolean).join(' · ') }),
+            game.opening ? OX.el('div', { class: 'dim small ellipsis', title: OX.openingName(game.opening), text: OX.openingName(game.opening) }) : null,
+          ].filter(Boolean)),
+          OX.el('div', { class: 'subhead', style: onLichessGame ? 'margin-top: 0' : null }, 'Your mistakes',
+            mistakes.length ? OX.el('span', { class: 'dim', text: String(mistakes.length) }) : null),
           mistakes.length
-            ? OX.el('div', { class: 'mistakes' }, list)
-            : game.mistakes_analyzed_at
-              ? OX.el('div', { class: 'dim', text: 'Your Stockfish found no mistakes in this game.' })
-              : OX.el('div', {}, OX.el('div', { class: 'dim', text: 'Not checked for mistakes yet.' }), OX.el('div', { class: 'btns' }, check)),
-          OX.el('div', { class: 'btns' }, OX.el('button', {
-            class: 'btn', onclick: () => OX.lichess.practice(), text: 'Practice from here vs your Stockfish',
-          })),
+            ? OX.el('div', { class: 'list' }, list)
+            : OX.el('div', { class: 'dim row', text: game.mistakes_analyzed_at ? 'Your Stockfish found none in this game.' : 'Not checked yet.' }),
+          // Stays in view while a long list of mistakes scrolls.
+          OX.el('div', { class: 'btns sticky' },
+            game.mistakes_analyzed_at ? null : check,
+            OX.el('button', {
+              class: 'btn', title: "Lichess's Practice with computer, on your Stockfish, from the position on the board",
+              onclick: () => OX.lichess.practice(), text: 'Practice from here',
+            })),
         );
       }
 
-      load();
-      return { update() {}, destroy() { clearTimeout(polling); } };
+      return {
+        // Runs once the box is on the page, on every move, and when the app
+        // comes back after being down: only load when there is something to.
+        update() { if (wanted) load(); },
+        destroy() { alive = false; clearTimeout(polling); OX.sidePanel.set('game', { available: false }); },
+      };
     },
   });
 })();

@@ -28,8 +28,8 @@
       return res.data;
     },
 
-
     report(report) { send({ type: 'ox-health', report }).catch(() => {}); },
+    openSettings() { return send({ type: 'ox-open-settings' }); },
     setPlaying(playing) { return send({ type: 'ox-playing', playing }).catch(() => null); },
     status() { return send({ type: 'ox-status' }); },
     onPaused(callback) {
@@ -42,6 +42,5 @@
       return settings;
     },
     saveSettings(settings) { return alive() ? ext.storage.local.set({ settings }).catch(() => {}) : Promise.resolve(); },
-
   };
 })();

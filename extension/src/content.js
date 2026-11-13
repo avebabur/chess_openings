@@ -1,9 +1,6 @@
 // Starts the extension on a lichess.org page.
 (async () => {
   const OX = globalThis.OX;
-  if (OX.booted) return;
-  OX.booted = true;
-  try { OX.injectPageStyle(); } catch (error) { console.warn('[openings]', error); }
   try {
     OX.settings = { ...OX.defaultSettings, ...(await OX.bridge.loadSettings()) };
   } catch { /* defaults */ }

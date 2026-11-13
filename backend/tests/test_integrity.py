@@ -1,7 +1,6 @@
 import importlib
 import json
 import os
-import sqlite3
 import sys
 import tempfile
 import unittest
@@ -48,39 +47,6 @@ class IntegrityMigrationTests(unittest.TestCase):
             os.environ["CHESS_DB_PATH"] = self.old_db_path
         self.temp_dir.cleanup()
 
-    def test_terminal_miss_remains_due_after_branch_result(self):
-        branch = self.db.save_repertoire_branch("white", "One move", "e4")
-        tree = self.db.get_repertoire_tree("white")
-        node = tree["root"]["children"][0]
-
-        self.db.record_repertoire_node_drill(
-            node["id"], False,
-            {"source": "practice", "expected_san": "e4", "played_san": "d4"},
-        )
-        self.db.record_repertoire_branch_drill(branch["id"], False, {"source": "practice"})
-
-        after = self.db.get_repertoire_tree("white")
-        shown = after["root"]["children"][0]
-        self.assertEqual((shown["drill_count"], shown["drill_missed"]), (1, 1))
-        self.assertIn(node["id"], {item["id"] for item in after["due"]})
-
-    def test_counter_migration_preserves_direct_terminal_attempts(self):
-        branch = self.db.save_repertoire_branch("white", "One move", "e4")
-        node = self.db.get_repertoire_tree("white")["root"]["children"][0]
-        self.db.record_repertoire_node_drill(node["id"], False, {"source": "practice"})
-        self.db.record_repertoire_branch_drill(branch["id"], False, {"source": "practice"})
-
-        conn = self.db.get_db()
-        conn.execute(
-            "DELETE FROM schema_migrations WHERE version = ?",
-            (self.db.INTEGRITY_MIGRATIONS[0],),
-        )
-        conn.commit()
-        conn.close()
-        self.db._run_integrity_migrations()
-
-        node_after = self.db.get_repertoire_node(node["id"])
-        self.assertEqual((node_after["drill_count"], node_after["drill_missed"]), (1, 1))
 
     def test_legacy_duplicate_merge_preserves_analysis_and_references(self):
         conn = self.db.get_db()

@@ -1,6 +1,5 @@
 import sqlite3
 import os
-import json
 import io
 from datetime import datetime, timezone
 
@@ -1023,14 +1022,12 @@ from account_game_repository import (  # noqa: E402,F401
     get_sync_job,
     list_accounts,
     list_games,
-    find_game_by_chesscom_id,
     find_game_by_external_id,
     list_queued_sync_jobs,
     mark_account_synced,
     migrate_games_to_accounts,
     recover_sync_jobs,
     request_sync_job_cancel,
-    save_imported_game,
     save_imported_games,
     set_setting,
     sync_job_cancel_requested,
@@ -1038,36 +1035,18 @@ from account_game_repository import (  # noqa: E402,F401
 )
 
 from evaluation_repository import (  # noqa: E402,F401
-    delete_saved_eval,
-    get_cloud_eval_cached,
-    get_explorer_cached,
-    get_saved_eval,
     get_tablebase_cached,
-    put_cloud_eval,
-    put_explorer,
-    put_saved_eval,
     put_tablebase,
 )
 
 # Re-export the active repertoire repository for compatibility with existing
 # callers while keeping the runtime implementation out of this module.
 from repertoire_repository import (  # noqa: E402,F401
-    create_repertoire_opening,
     delete_repertoire_branch,
-    delete_repertoire_opening,
-    get_repertoire_branch,
     get_repertoire_branches,
-    get_repertoire_drill_attempts,
-    get_repertoire_node,
     get_repertoire_tree,
-    list_repertoire_openings,
     migrate_branch_openings_to_entities,
     migrate_repertoire_lines_to_tree,
-    record_repertoire_branch_drill,
-    record_repertoire_drill_attempt,
-    record_repertoire_node_drill,
     save_repertoire_branch,
     update_repertoire_branch,
-    update_repertoire_node,
-    update_repertoire_opening,
 )

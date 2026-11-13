@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Openings for Lichess · Settings</title>
+  <link rel="stylesheet" href="settings.css">
+</head>
+<body>
+  <main>
+    <header>
+      <img src="icons/icon48.png" alt="" width="40" height="40">
+      <div><h1>Openings for Lichess</h1><p>Accounts, engine connection, and your local data</p></div>
+    </header>
+    <p id="connection" role="status">Connecting to the local service…</p>
+    <section aria-labelledby="accounts-heading">
+      <div class="section-head"><h2 id="accounts-heading">Game accounts</h2><button id="refresh" type="button">Refresh</button></div>
+      <p>Imported Lichess and Chess.com games appear together in My games.</p>
+      <ul id="accounts"></ul>
+      <form id="add-account">
+        <label>Site <select id="platform"><option value="lichess">Lichess</option><option value="chesscom">Chess.com</option></select></label>
+        <label>Username <input id="username" required autocomplete="off" spellcheck="false"></label>
+        <button type="submit">Add and import</button>
+      </form>
+      <p id="account-message" role="status"></p>
+    </section>
+    <section aria-labelledby="engine-heading">
+      <h2 id="engine-heading">Lichess engine token</h2>
+      <p id="token-state"></p>
+      <p><a href="https://lichess.org/account/oauth/token/create?scopes[]=engine:read&amp;scopes[]=engine:write&amp;description=Openings+for+Lichess" target="_blank" rel="noopener">Create a token with engine access</a>, then paste it below. The token stays in your local database.</p>
+      <form id="token-form"><label>Token <input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="lip_…"></label><button type="submit">Save token</button></form>
+      <button id="remove-token" type="button" class="danger" hidden>Remove saved token</button>
+      <p id="token-message" role="status"></p>
+    </section>
+    <section aria-labelledby="backup-heading">
+      <h2 id="backup-heading">Data backup</h2>
+      <p>Download a consistent copy of your local games, repertoire, and settings. The backup contains your Lichess token, so keep it private.</p>
+      <a id="backup" href="http://127.0.0.1:8001/api/backup" download>Download SQLite backup</a>
+    </section>
+  </main>
+  <script src="settings.js"></script>
+</body>
+</html>

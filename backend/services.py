@@ -2,8 +2,6 @@
 import httpx
 
 import database
-import lichess_cloud
-import lichess_explorer
 import lichess_tablebase
 
 
@@ -30,16 +28,6 @@ class ExternalApiClients:
 
     def __init__(self):
         self.http = httpx.Client(follow_redirects=True)
-
-    def cloud_eval(self, fen, multipv=1, allow_network=True):
-        return lichess_cloud.get_cloud_eval(
-            fen, multipv, allow_network, client=self.http,
-        )
-
-    def opening_explorer(self, fen, allow_network=True, filters=None):
-        return lichess_explorer.get_opening_explorer(
-            fen, allow_network, client=self.http, filters=filters,
-        )
 
     def tablebase(self, fen, allow_network=True):
         return lichess_tablebase.get_tablebase(fen, allow_network, client=self.http)

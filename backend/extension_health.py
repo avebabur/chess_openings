@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 OPENINGS_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_PATH = os.path.join(OPENINGS_ROOT, "extension", "health-report.json")
 
-PAGE_KINDS = ("analyse", "round", "puzzle", "other")
+PAGE_KINDS = ("analyse", "round", "other")
 BROKEN_STATUSES = ("missing", "hidden", "error")
 MAX_TEXT = 300
 

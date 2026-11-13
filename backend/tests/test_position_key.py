@@ -13,7 +13,6 @@ from position_key import (
     START_KEY,
     key_from_fen,
     key_from_san_path,
-    keys_along_san_path,
     position_key,
 )
 
@@ -101,21 +100,6 @@ class PositionKeyTests(unittest.TestCase):
     def test_key_from_san_path_returns_none_for_an_illegal_line(self):
         self.assertIsNone(key_from_san_path("e4 e5 Qxf7"))
         self.assertIsNone(key_from_san_path("zzzz"))
-
-    def test_keys_along_san_path_chains_before_to_after(self):
-        steps = keys_along_san_path("e4 e5 Nf3")
-        self.assertEqual([san for san, _, _ in steps], ["e4", "e5", "Nf3"])
-        self.assertEqual(steps[0][1], START_KEY)
-        for earlier, later in zip(steps, steps[1:]):
-            self.assertEqual(earlier[2], later[1])
-
-    def test_keys_along_san_path_stops_at_the_first_illegal_move(self):
-        steps = keys_along_san_path("e4 e5 Qxf7 Nf3")
-        self.assertEqual([san for san, _, _ in steps], ["e4", "e5"])
-
-    def test_keys_along_san_path_canonicalizes_san(self):
-        steps = keys_along_san_path("e4 d5 exd5 c6 dxc6 Nf6 cxb7 Ng4 bxa8Q")
-        self.assertEqual(steps[-1][0], "bxa8=Q")
 
 
 class ChessJsAgreementTests(unittest.TestCase):

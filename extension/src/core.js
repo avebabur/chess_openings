@@ -5,8 +5,10 @@
 // Safety rules every feature relies on:
 //  * A game in progress (in any tab) pauses everything. Fail-closed: a game
 //    page counts as live until its result box shows.
-//  * The extension only ADDS elements next to Lichess's; it never edits,
-//    hides or moves Lichess's own, and never blocks its events.
+//  * Features only ADD elements next to Lichess's and never block its
+//    events. The few changes to Lichess's own layout (hiding the WikiBook and
+//    the explorer's Player tab, the board colours, where the explorer and the
+//    chat sit) are all in src/page.css and features/explorerleft.js.
 //  * A missing anchor means the feature is simply left out, never an error on
 //    the page. Any exception inside a feature removes just that feature.
 (() => {
@@ -31,7 +33,11 @@
   };
 
   const listeners = {};
-  OX.on = (name, callback) => { (listeners[name] = listeners[name] || []).push(callback); };
+  // Returns a function that stops listening.
+  OX.on = (name, callback) => {
+    (listeners[name] = listeners[name] || []).push(callback);
+    return () => { listeners[name] = listeners[name].filter(other => other !== callback); };
+  };
   OX.emit = (name, data) => {
     for (const callback of listeners[name] || []) {
       try { callback(data); } catch (error) { console.warn('[openings]', error); }
@@ -39,13 +45,14 @@
   };
 
   OX.state = { paused: false, position: null, offline: false, autostart: null };
-  OX.defaultSettings = { gamesColor: null };
+  // mineOpen: the explorer's My games tab is the chosen one. mineColor: the side last looked at there.
+  OX.defaultSettings = { mineOpen: false, mineColor: null };
 
-  // What to say while the app is down. With the auto-start helper installed
+  // What to say while the local service is down. With the auto-start helper installed
   // the background script is already starting it.
   OX.offlineText = () => (OX.state.autostart === 'unavailable'
-    ? "Your openings app isn't running. Start it with ./start.sh."
-    : 'Starting your openings app…');
+    ? "The local extension service isn't running. Start it with ./start.sh."
+    : 'Starting the local extension service…');
   OX.settings = { ...OX.defaultSettings };
   OX.setSetting = (key, value) => {
     OX.settings[key] = value;
@@ -67,6 +74,10 @@
     return (value > 0 ? '+' : '') + value.toFixed(2);
   };
 
+  // Opening names imported from chess.com before the importer was fixed can
+  // end in a dangling "with" ("Modern Defense with" for "…with 1.d4").
+  OX.openingName = name => (name || '').replace(/\s+with$/i, '');
+
   // SAN moves with numbers, starting from the position in fen.
   OX.numberMoves = (fen, sans) => {
     const parts = fen.split(' ');
@@ -86,7 +97,6 @@
   OX.pageKind = () => {
     if (OX.$(A.roundPage.selector)) return 'round';
     if (OX.$(A.analysePage.selector)) return 'analyse';
-    if (OX.$(A.puzzlePage.selector)) return 'puzzle';
     return 'other';
   };
 
@@ -94,15 +104,20 @@
 
   OX.isStudy = () => /^\/study\/[A-Za-z0-9]{8}/.test(location.pathname);
 
+  // The id of the Lichess game this page is about (/abcd1234, /abcd1234/black,
+  // /game/abcd1234, or the 12-character address of a game you played), or
+  // null. "/analysis" has the same shape as a game id and is not one.
+  OX.lichessGameId = () => {
+    const id = /^\/(?:game\/)?([A-Za-z0-9]{8})(?:[A-Za-z0-9]{4})?(?:\/(?:white|black))?\/?$/.exec(location.pathname)?.[1];
+    return id && id !== 'analysis' ? id : null;
+  };
+
   // Pages where the analysis features are expected, so a missing anchor there
   // means Lichess changed: the analysis board, finished games and studies.
   // Other analysis-style pages (broadcasts…) get the features when the
   // anchors happen to exist, but are never reported as broken.
   OX.analysisExpected = () =>
-    OX.isStudy() ||
-    /^\/analysis(\/|$)/.test(location.pathname) ||
-    /^\/(game\/)?[A-Za-z0-9]{8}(\/(white|black))?\/?$/.test(location.pathname) ||
-    /^\/[A-Za-z0-9]{12}\/?$/.test(location.pathname);
+    OX.isStudy() || /^\/analysis(\/|$)/.test(location.pathname) || !!OX.lichessGameId();
 
   OX.standardVariant = () => {
     const main = OX.$(A.analysePage.selector);
@@ -205,7 +220,7 @@
     // Typing in our boxes must not trigger Lichess's keyboard shortcuts.
     for (const type of ['keydown', 'keypress', 'keyup']) {
       shadowRoot.addEventListener(type, event => {
-        if (event.target?.matches?.('textarea, input')) event.stopPropagation();
+        if (event.target?.matches?.('input, select')) event.stopPropagation();
       });
     }
     return { host, root };
@@ -219,7 +234,27 @@
   let lastKind = null;
   let lastReport = '';
   let lastPlaying = null;
+  let playingSentAt = 0;
   let lastPositionKey = null;
+  const PLAYING_AGAIN_MS = 5000;
+
+  // Tells the background script whether this page shows a game in progress.
+  // Sent on every change, again every few seconds while a game is live (so a
+  // lock the background lost comes back by itself), and again whenever the
+  // answer didn't arrive.
+  function reportPlaying(playing) {
+    const due = playing !== lastPlaying || (playing && Date.now() - playingSentAt > PLAYING_AGAIN_MS);
+    if (!due) return;
+    lastPlaying = playing;
+    playingSentAt = Date.now();
+    OX.bridge.setPlaying(playing).then(res => {
+      if (res && typeof res.paused === 'boolean') OX.state.paused = res.paused;
+      else setTimeout(() => { lastPlaying = null; }, 1000); // not heard: say it again shortly
+    });
+  }
+  // A page brought back by the browser's Back button keeps its scripts but the
+  // background script has forgotten it: report again.
+  addEventListener('pageshow', event => { if (event.persisted) lastPlaying = null; });
 
   function teardown(id) {
     const entry = run.get(id);
@@ -277,7 +312,9 @@
     const anchorShown = anchorEl && anchorEl.getClientRects().length > 0;
     const shown = entry.host.getClientRects().length > 0 &&
       (entry.host.getBoundingClientRect().height > 0 || feature.place.zeroHeightOk);
-    if (!anchorShown || shown) { entry.hiddenSince = null; return true; }
+    // A panel tab that isn't the open one (features/sidetabs.js) is fine.
+    const closedTab = feature.place.tab && entry.host.style.display === 'none';
+    if (!anchorShown || shown || closedTab) { entry.hiddenSince = null; return true; }
     entry.hiddenSince = entry.hiddenSince || Date.now();
     return Date.now() - entry.hiddenSince < HIDDEN_MS;
   }
@@ -286,22 +323,19 @@
   // This copy was cut off by an extension update: remove everything it added
   // and stop. The background script has already put the new copy in.
   function retire() {
+    if (OX.retired) return;
+    OX.retired = true;
     clearInterval(timer);
     for (const feature of features) teardown(feature.id);
-    OX.retired = true;
   }
 
   function tick() {
+    if (OX.retired) return;
     if (OX.bridge.alive && !OX.bridge.alive()) return retire();
     const kind = OX.pageKind();
     if (kind !== lastKind) { lastKind = kind; pageStart = Date.now(); }
     const playing = OX.liveGameOnPage();
-    if (playing !== lastPlaying) {
-      lastPlaying = playing;
-      OX.bridge.setPlaying(playing).then(res => {
-        if (res && typeof res.paused === 'boolean') OX.state.paused = res.paused;
-      });
-    }
+    reportPlaying(playing);
     const paused = OX.state.paused || playing;
     const inGrace = Date.now() - pageStart < GRACE_MS;
     const position = kind === 'analyse' && !paused && OX.standardVariant() ? OX.readPosition() : null;
@@ -382,7 +416,8 @@
       try {
         if (entry.needsUpdate || positionChanged) {
           entry.needsUpdate = false;
-          entry.instance.update?.(position);
+          // update() may be async: a rejection takes just this feature out too.
+          Promise.resolve(entry.instance.update?.(position)).catch(error => fail(feature, error));
         }
         entry.instance.tick?.(position);
       } catch (error) { fail(feature, error); continue; }
@@ -393,7 +428,7 @@
     }
 
     recoverWhenBack();
-    maybeReport(kind, inGrace);
+    maybeReport(kind);
   }
 
   // A box that said "app isn't running" must come back by itself once it is.
@@ -408,7 +443,7 @@
     }).catch(() => {});
   }
 
-  function maybeReport(kind, inGrace) {
+  function maybeReport(kind) {
     const statuses = features.map(f => [f.id, run.get(f.id)?.status || 'n/a']);
     if (statuses.some(([, s]) => s === 'waiting')) return; // never report a moment mid-redraw
     const report = {
@@ -428,13 +463,14 @@
     const signature = JSON.stringify([kind, report.features]);
     if (signature === lastReport) return;
     lastReport = signature;
-    OX.lastReport = report;
     OX.bridge.report(report);
   }
 
   OX.runner = {
     tick,
+    retire,
     start() {
+      if (OX.retired || timer) return;
       tick();
       timer = setInterval(tick, 300);
     },

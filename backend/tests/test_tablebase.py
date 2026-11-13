@@ -4,10 +4,8 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
 import httpx
-from fastapi.testclient import TestClient
 
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
@@ -129,86 +127,6 @@ class TablebaseTests(unittest.TestCase):
         self.assertTrue(result["fifty_move"])
         self.assertEqual(result["moves"][0]["outcome"], "draw")
         self.assertTrue(result["moves"][0]["fifty_move"])
-
-
-class PlayReplyApiTests(unittest.TestCase):
-    def setUp(self):
-        self.temp_dir = tempfile.TemporaryDirectory()
-        self.old_db_path = os.environ.get("CHESS_DB_PATH")
-        os.environ["CHESS_DB_PATH"] = str(Path(self.temp_dir.name) / "play.db")
-        import database
-        import sync_service
-        import main
-        importlib.reload(database)
-        importlib.reload(sync_service)
-        self.main = importlib.reload(main)
-        self.client_context = TestClient(self.main.app)
-        self.client = self.client_context.__enter__()
-
-    def tearDown(self):
-        self.client_context.__exit__(None, None, None)
-        if self.old_db_path is None:
-            os.environ.pop("CHESS_DB_PATH", None)
-        else:
-            os.environ["CHESS_DB_PATH"] = self.old_db_path
-        self.temp_dir.cleanup()
-
-    def test_with_seven_or_fewer_pieces_the_tablebase_move_is_played(self):
-        table = {"available": True, "outcome": "win", "moves": [
-            {"uci": "f1e1", "san": "Re1+", "outcome": "win"},
-            {"uci": "f1h1", "san": "Rh1", "outcome": "draw"},
-        ]}
-        clients = self.main.app.state.external_clients
-        engine = self.main.app.state.live_engine
-        with patch.object(clients, "tablebase", return_value=table), \
-                patch.object(engine, "best_move") as best_move:
-            response = self.client.post("/api/play/reply", json={"fen": LUCENA})
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), {
-            "uci": "f1e1", "san": "Re1+", "source": "tablebase", "outcome": "win", "cp": None,
-        })
-        best_move.assert_not_called()
-
-    def test_otherwise_stockfish_chooses_within_the_requested_time(self):
-        clients = self.main.app.state.external_clients
-        engine = self.main.app.state.live_engine
-        reply = {"uci": "e2e4", "san": "e4", "eval": 0.3, "depth": 20}
-        with patch.object(clients, "tablebase", return_value={"available": False, "reason": "pieces"}), \
-                patch.object(engine, "best_move", return_value=reply) as best_move:
-            response = self.client.post("/api/play/reply", json={"fen": START, "seconds": 2})
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), {**reply, "source": "stockfish", "outcome": None, "cp": 30})
-        best_move.assert_called_once_with(START, 2.0)
-
-    def test_a_finished_game_and_a_silent_engine_are_errors(self):
-        mated = "rnb1kbnr/pppp1ppp/8/4p3/6Pq/5P2/PPPPP2P/RNBQKBNR w KQkq - 1 3"
-        self.assertEqual(self.client.post("/api/play/reply", json={"fen": mated}).status_code, 400)
-        self.assertEqual(self.client.post("/api/play/reply", json={"fen": "nonsense"}).status_code, 400)
-
-        clients = self.main.app.state.external_clients
-        engine = self.main.app.state.live_engine
-        with patch.object(clients, "tablebase", return_value={"available": False, "reason": "pieces"}), \
-                patch.object(engine, "best_move", return_value=None):
-            response = self.client.post("/api/play/reply", json={"fen": START})
-        self.assertEqual(response.status_code, 503)
-
-    def test_a_position_no_game_can_reach_never_gets_to_the_engine(self):
-        # python-chess parses this (Black in check, White to move); Stockfish 19
-        # would exit on it.
-        impossible = "4k3/8/8/8/8/8/4R3/4K3 w - - 0 1"
-        engine = self.main.app.state.live_engine
-        with patch.object(engine, "best_move") as best_move:
-            response = self.client.post("/api/play/reply", json={"fen": impossible})
-        self.assertEqual(response.status_code, 400)
-        best_move.assert_not_called()
-
-    def test_tablebase_route_validates_the_fen(self):
-        self.assertEqual(self.client.get("/api/tablebase", params={"fen": "nonsense"}).status_code, 400)
-        clients = self.main.app.state.external_clients
-        with patch.object(clients, "tablebase", return_value={"available": False, "reason": "pieces"}) as lookup:
-            response = self.client.get("/api/tablebase", params={"fen": START})
-        self.assertEqual(response.json(), {"available": False, "reason": "pieces"})
-        lookup.assert_called_once()
 
 
 if __name__ == "__main__":

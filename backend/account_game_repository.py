@@ -339,41 +339,6 @@ def migrate_games_to_accounts():
 
 # --- Imported games (chess.com) ---
 
-def save_imported_game(meta):
-    """Insert one imported game; dedups on (source, external_id).
-
-    Returns (game_id, inserted_bool)."""
-    conn = get_db()
-    try:
-        cur = conn.execute(
-            """INSERT INTO games
-               (white, black, result, date, pgn, source, external_id, user_color,
-                user_rating, opp_rating, time_class, time_control, end_time, eco,
-                opening, account_id, analyzed, analysis)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,NULL)
-               ON CONFLICT(account_id, source, external_id) DO NOTHING""",
-            (meta.get("white", ""), meta.get("black", ""), meta.get("result", ""),
-             meta.get("date", ""), meta["pgn"], meta.get("source", "chesscom"),
-             meta.get("external_id"), meta.get("user_color"), meta.get("user_rating"),
-             meta.get("opp_rating"), meta.get("time_class"), meta.get("time_control"),
-             meta.get("end_time"), meta.get("eco"), meta.get("opening"),
-             meta.get("account_id")),
-        )
-        conn.commit()
-        if cur.rowcount:
-            return cur.lastrowid, True
-        row = conn.execute(
-            "SELECT id FROM games WHERE account_id = ? AND source = ? AND external_id = ?",
-            (meta.get("account_id"), meta.get("source", "chesscom"), meta.get("external_id")),
-        ).fetchone()
-        return (row["id"] if row else None), False
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
-
-
 def save_imported_games(items):
     """Batch imported games in one transaction; return inserted and seen counts."""
     rows = [item for item in (items or []) if item.get("external_id") and item.get("account_id")]
@@ -541,24 +506,3 @@ def find_game_by_external_id(source, external_id):
     finally:
         conn.close()
     return dict(row) if row else None
-
-
-def find_game_by_chesscom_id(number, kind=None):
-    """`{id, ...metadata}` of the game whose PGN links to chess.com game
-    `number` ("live" or "daily" if the address said which), or None."""
-    kinds = [kind] if kind else ["live", "daily"]
-    conn = get_db()
-    try:
-        for k in kinds:
-            row = conn.execute(
-                "SELECT id, white, black, result, date, end_time, user_color, user_rating, "
-                "opp_rating, time_class, time_control, eco, opening, source, analyzed "
-                "FROM games WHERE source = 'chesscom' AND merged_into_game_id IS NULL "
-                "AND instr(pgn, ?) > 0 LIMIT 1",
-                (f'chess.com/game/{k}/{number}"',),
-            ).fetchone()
-            if row:
-                return dict(row)
-        return None
-    finally:
-        conn.close()

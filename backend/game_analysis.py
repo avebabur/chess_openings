@@ -30,7 +30,7 @@ import chess.engine
 import chess.pgn
 
 import lichess_tablebase
-import live_engine
+import stockfish
 from database import get_db
 
 log = logging.getLogger(__name__)
@@ -90,7 +90,7 @@ def classify(loss):
 
 
 def new_engine():
-    engine = chess.engine.SimpleEngine.popen_uci(live_engine.STOCKFISH_PATH)
+    engine = chess.engine.SimpleEngine.popen_uci(stockfish.STOCKFISH_PATH)
     engine.configure({"Threads": ANALYSIS_THREADS, "Hash": ANALYSIS_HASH_MB})
     return engine
 
@@ -356,56 +356,6 @@ CHECK_SECONDS = float(os.environ.get("OPENINGS_MISTAKE_CHECK_SECONDS", "2.0"))
 _CASTLE_ALIAS = {"e1h1": "e1g1", "e1a1": "e1c1", "e8h8": "e8g8", "e8a8": "e8c8"}
 
 
-def check_answer(mistake_id, uci, seconds=None, engine_factory=None):
-    """Grade one answer to a mistake exercise and count it, as the app's Play
-    tab does: solved when the move is Stockfish's best, or Stockfish rates the
-    position after it at least the exercise's target for you. Returns None for
-    an unknown mistake; raises ValueError for an illegal move."""
-    conn = get_db()
-    try:
-        row = conn.execute("SELECT * FROM game_mistakes WHERE id = ?", (mistake_id,)).fetchone()
-    finally:
-        conn.close()
-    if row is None:
-        return None
-    mistake = _mistake_dict(row)
-    board = chess.Board(mistake["fen"])
-    try:
-        move = chess.Move.from_uci(uci)
-    except ValueError:
-        raise ValueError("Not a move")
-    if move not in board.legal_moves and uci in _CASTLE_ALIAS:
-        move = chess.Move.from_uci(_CASTLE_ALIAS[uci])  # castling written as king takes rook
-    if move not in board.legal_moves:
-        raise ValueError("Not a legal move in this position")
-    played_san = board.san(move)
-    best_uci = _CASTLE_ALIAS.get(row["best_uci"], row["best_uci"])
-    cp = None
-    if move.uci() == best_uci:
-        solved = True
-    else:
-        board.push(move)
-        if board.is_checkmate():
-            cp = 100000
-        else:
-            factory = engine_factory or (lambda: chess.engine.SimpleEngine.popen_uci(live_engine.STOCKFISH_PATH))
-            try:
-                engine = factory()
-            except (OSError, chess.engine.EngineError):
-                raise AnalysisError("Stockfish is not installed")
-            try:
-                info = engine.analyse(board, chess.engine.Limit(time=seconds or CHECK_SECONDS))
-            finally:
-                engine.quit()
-            color = chess.WHITE if mistake["user_color"] == "white" else chess.BLACK
-            cp = info["score"].pov(color).score(mate_score=100000)
-        solved = cp >= mistake["target_cp"]
-    progress = record_attempt(mistake_id, solved)
-    return {"solved": solved, "cp": cp, "played_san": played_san,
-            "best_san": mistake["best_san"], "target_cp": mistake["target_cp"],
-            "progress": progress}
-
-
 def mistakes_for_game(game_id):
     conn = get_db()
     try:
@@ -415,48 +365,6 @@ def mistakes_for_game(game_id):
     finally:
         conn.close()
     return [_mistake_dict(row) for row in rows]
-
-
-def list_mistakes(account_id=None, game_limit=30):
-    """Mistakes grouped by game, newest game first, with the totals the Play
-    tab shows. Only the `game_limit` newest analysed games are listed."""
-    where, params = _account_filter(account_id)
-    conn = get_db()
-    try:
-        games = conn.execute(
-            "SELECT g.id, g.white, g.black, g.result, g.date, g.user_color, g.time_class, "
-            "g.opening, g.eco FROM games g WHERE g.mistakes_analyzed_at IS NOT NULL "
-            "AND g.merged_into_game_id IS NULL" + where +
-            " ORDER BY g.end_time DESC, g.id DESC LIMIT ?",
-            (*params, game_limit),
-        ).fetchall()
-        ids = [g["id"] for g in games]
-        rows = conn.execute(
-            f"SELECT * FROM game_mistakes WHERE game_id IN ({','.join('?' * len(ids))}) "
-            "ORDER BY ply", ids,
-        ).fetchall() if ids else []
-        counts = conn.execute(
-            "SELECT COUNT(*) AS total, "
-            "COALESCE(SUM(g.mistakes_analyzed_at IS NOT NULL), 0) AS analysed "
-            "FROM games g WHERE g.user_color IN ('white', 'black') "
-            "AND g.merged_into_game_id IS NULL" + where, params,
-        ).fetchone()
-    finally:
-        conn.close()
-
-    by_game = {}
-    for row in rows:
-        by_game.setdefault(row["game_id"], []).append(_mistake_dict(row))
-    listed = [{**dict(g), "mistakes": by_game.get(g["id"], [])} for g in games]
-    every = [m for g in listed for m in g["mistakes"]]
-    return {
-        "games": listed,
-        "report": report(account_id),
-        "total": len(every),
-        "solved": sum(1 for m in every if m["progress"]["last_result"] == "solved"),
-        "games_total": counts["total"],
-        "games_analysed": counts["analysed"],
-    }
 
 
 # --- Weakness report -----------------------------------------------------
@@ -567,28 +475,6 @@ def report(account_id=None):
     }
 
 
-def record_attempt(mistake_id, solved):
-    """Count one finished try. Returns the new progress, or None if unknown."""
-    conn = get_db()
-    try:
-        with conn:
-            done = conn.execute(
-                """UPDATE game_mistakes SET attempts = attempts + 1,
-                     solved_count = solved_count + ?, failed_count = failed_count + ?,
-                     last_result = ?, last_played_at = datetime('now')
-                   WHERE id = ?""",
-                (1 if solved else 0, 0 if solved else 1,
-                 "solved" if solved else "failed", mistake_id),
-            )
-            if not done.rowcount:
-                return None
-            row = conn.execute(
-                "SELECT * FROM game_mistakes WHERE id = ?", (mistake_id,)).fetchone()
-    finally:
-        conn.close()
-    return _mistake_dict(row)["progress"]
-
-
 # --- Background job ------------------------------------------------------
 
 class GameAnalyzer:
@@ -626,7 +512,7 @@ class GameAnalyzer:
                 if queue or game_ids:
                     self._queued.append((account_id, count, game_ids))
                 return dict(self._state)
-            if not live_engine.availability()["available"] and self._engine_factory is new_engine:
+            if not stockfish.availability()["available"] and self._engine_factory is new_engine:
                 raise AnalysisError("Stockfish is not installed")
             games = games_to_check(game_ids) if game_ids else pending_games(account_id, count)
             self._stop.clear()

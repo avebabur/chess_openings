@@ -12,13 +12,8 @@ chess_review.db-wal
 *.db.bak-*
 backups/
 
-# --- Frontend (Node / Vite) ---
-frontend/node_modules/
-frontend/dist/
-frontend/test-results/
-frontend/playwright-report/
-frontend/blob-report/
-frontend/.vite/
+# --- Optional browser-check tooling ---
+extension/scripts/node_modules/
 
 # --- Runtime / tooling state ---
 .runtime/
@@ -28,7 +23,6 @@ frontend/.vite/
 .claude/settings.local.json
 .vscode/
 .idea/
-frontend/playwright.chrome.config.js
 extension/health-report.json
 extension/check-output/
 extension/native/openings-host

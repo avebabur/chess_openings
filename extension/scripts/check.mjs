@@ -19,7 +19,7 @@ import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const extensionDir = join(here, '..');
-const require = createRequire(join(extensionDir, '..', 'frontend', 'package.json'));
+const require = createRequire(import.meta.url);
 const { chromium } = require('playwright');
 
 const BACKEND = process.env.OX_BACKEND || 'http://127.0.0.1:8001';
@@ -52,8 +52,9 @@ const harnessBridge = `
       return res.data;
     },
     report(report) { H.reports.push(report); },
+    async openSettings() { return { ok: true }; },
     async setPlaying(playing) { H.playing.push(playing); return { paused: H.paused || playing }; },
-    async status() { return { paused: H.paused, appUrl: 'http://localhost:5174/' }; },
+    async status() { return { paused: H.paused }; },
     onPaused(callback) { onPaused = callback; },
     // Kept between pages, like the real extension's storage.
     async loadSettings() { try { return JSON.parse(localStorage.getItem('ox.check.settings') || '{}'); } catch { return {}; } },
@@ -61,7 +62,18 @@ const harnessBridge = `
   };
 })();`;
 
+// src/page.css is put in by Chrome itself (manifest "css"); here by a script.
+const pageStyle = `(() => {
+  const add = () => {
+    const style = document.createElement('style');
+    style.textContent = ${JSON.stringify(read('src/page.css'))};
+    (document.head || document.documentElement).append(style);
+  };
+  if (document.documentElement) add(); else document.addEventListener('DOMContentLoaded', add, { once: true });
+})();`;
+
 const injected = [
+  pageStyle,
   read('src/backend-client.js'),
   read('src/page-bridge.js'), // the real extension runs it in Lichess's page world
   ...contentFiles.map(file => (file === 'src/bridge-extension.js' ? harnessBridge : read(file))),
@@ -171,13 +183,19 @@ console.log('\nLichess analysis board');
 await open(`https://lichess.org/analysis/pgn/${process.env.OX_CHECK_MOVES || 'e4_e5_Nf3_Nc6_Bb5'}`);
 await page.waitForTimeout(3500); // let the engine and the app's answers arrive
 const analysis = await statuses();
-expectStatuses('analysis', analysis, { engine: 'ok', repertoire: 'ok', mistake: 'ok', game: 'ok', mine: 'n/a' });
+expectStatuses('analysis', analysis, { engine: 'ok', repertoire: 'ok', game: 'ok', mine: 'n/a' });
 record('analysis', await page.evaluate(() => getComputedStyle(document.querySelector('#wikibook-field, .analyse__wiki')).display === 'none'),
   "analysis: Lichess's WikiBook is hidden");
 const shown = await hosts();
-for (const id of ['repertoire']) {
-  const host = shown.find(h => h.id === id);
-  record('analysis', !!host && host.h > 0, `analysis: ${id} is on the page (${host ? `${host.w}×${host.h}px` : 'absent'})`);
+const repertoireHost = shown.find(h => h.id === 'repertoire');
+record('analysis', !!repertoireHost && repertoireHost.h > 0, `analysis: repertoire is on the page (${repertoireHost ? `${repertoireHost.w}×${repertoireHost.h}px` : 'absent'})`);
+{
+  const fit = await page.evaluate(() => {
+    const side = document.querySelector('aside.analyse__side').getBoundingClientRect();
+    const board = document.querySelector('main.analyse .cg-wrap').getBoundingClientRect();
+    return { side: Math.round(side.bottom), board: Math.round(board.bottom), beside: side.right <= board.left };
+  });
+  record('analysis', !fit.beside || fit.side <= fit.board + 2, `analysis: the left column is no taller than the board (${fit.side} vs ${fit.board})`);
 }
 const engineState = await (await fetch(`${BACKEND}/api/lichess-engine`)).json();
 const engineText = await page.evaluate(() =>
@@ -229,22 +247,12 @@ if (await page.evaluate(() => globalThis.OX.interactiveLesson())) {
 console.log('\nLichess home page');
 await open('https://lichess.org/');
 const home = await statuses();
-expectStatuses('home', home, { engine: 'n/a', repertoire: 'n/a', puzzles: 'n/a' });
+expectStatuses('home', home, { engine: 'n/a', repertoire: 'n/a' });
+record('home', (await hosts()).length === 0, 'home: nothing of the extension is on the page');
 await page.screenshot({ path: join(outDir, 'home.png'), clip: { x: 0, y: 0, width: 1440, height: 160 } });
 realReports.push(await lastReport());
 
-// 4. The puzzle page: Your mistakes.
-console.log('\nLichess puzzles');
-await open('https://lichess.org/training');
-await page.waitForTimeout(1500);
-expectStatuses('puzzles', await statuses(), { puzzles: 'ok', repertoire: 'n/a' });
-const puzzleText = await page.evaluate(() =>
-  document.querySelector('[data-ox-host=puzzles]')?.shadowRoot?.querySelector('.ox')?.textContent || '');
-record('puzzles', /mistakes|checked/i.test(puzzleText), `puzzles: Your mistakes box (“${puzzleText.slice(0, 80)}”)`);
-await page.screenshot({ path: join(outDir, 'puzzles.png') });
-realReports.push(await lastReport());
-
-// 5. Your game, opened from My games: the game card in the left column.
+// 4. Your game, opened from My games: the game card in the left column.
 console.log('\nOpening one of your games');
 const someGame = (await (await fetch(`${BACKEND}/api/games?limit=1`)).json()).games?.[0];
 if (someGame) {
@@ -253,45 +261,27 @@ if (someGame) {
   await page.waitForTimeout(3000);
   await waitSettled();
   const card = await page.evaluate(() => document.querySelector('[data-ox-host=game]')?.shadowRoot?.querySelector('.ox')?.textContent || '');
-  record('your game', card.includes(someGame.white) && card.includes(someGame.black),
+  record('your game', card.includes(`vs ${someGame.user_color === 'white' ? someGame.black : someGame.white}`),
     `your game: opens on Lichess's board with its card (“${card.slice(0, 70)}”)`);
-if (process.env.OX_DEBUG) console.log('DEBUG', page.url(), JSON.stringify(await page.evaluate(() => ({ st: globalThis.OX?.runner?.status(), fen: globalThis.OX?.state?.position?.fen, main: document.querySelector('main')?.className, title: document.title, playing: globalThis.__oxHarness?.playing }))));
   record('your game', (await page.evaluate(() => globalThis.OX.state.position?.fen?.split(' ')[5])) === '4',
     'your game: opened at the requested move');
   await page.screenshot({ path: join(outDir, 'your-game.png') });
 }
 
-// 6. One of your mistakes as an exercise, answered with Stockfish's move.
-const mistakeGame = (await (await fetch(`${BACKEND}/api/mistakes`)).json()).games?.find(g => g.mistakes.length);
-if (mistakeGame) {
-  console.log('\nTraining one of your mistakes');
-  const m = mistakeGame.mistakes[0];
-  await open('https://lichess.org/training');
-  await Promise.all([page.waitForNavigation({ waitUntil: 'domcontentloaded' }), page.evaluate(mm => globalThis.OX.startMistake(mm, [], 'check'), m)]);
-  await page.waitForTimeout(3000);
-  await waitSettled();
-  if (process.env.OX_DEBUG) console.log('DEBUG', page.url(), JSON.stringify(await page.evaluate(() => ({ st: globalThis.OX?.runner?.status(), saved: localStorage.getItem('ox.mistake')?.slice(0, 160), path: location.pathname, main: document.querySelector('main')?.className }))));
-  const before = await page.evaluate(() => document.querySelector('[data-ox-host=mistake]')?.shadowRoot?.querySelector('.ox')?.textContent || '');
-  record('mistake', before.includes('Find a better move'), `mistake: the exercise is shown (“${before.slice(0, 70)}”)`);
-  const best = await page.evaluate(mm => { const c = new globalThis.OXChess(mm.fen); const mv = c.move(mm.best_san); return mv.from + mv.to + (mv.promotion || ''); }, m);
-  record('mistake', await page.evaluate(uci => globalThis.OX.lichess.playUci(uci), best), "mistake: a move is played through Lichess's own controller");
-  await page.waitForFunction(() => /✓|✗/.test(document.querySelector('[data-ox-host=mistake]')?.shadowRoot?.textContent || ''), null, { timeout: 15000 }).catch(() => {});
-  const after = await page.evaluate(() => document.querySelector('[data-ox-host=mistake]')?.shadowRoot?.querySelector('.ox')?.textContent || '');
-  record('mistake', after.includes('✓'), `mistake: Stockfish's move is graded as solved (“${after.slice(0, 90)}”)`);
-  await page.screenshot({ path: join(outDir, 'mistake.png') });
-} else {
-  console.log('\n(no analysed mistakes yet: skipping the mistake exercise check)');
-}
-
-// 7. Safety self-tests on local copies of Lichess's game page.
+// 5. Safety self-tests on local copies of Lichess's game page.
 console.log('\nSafety self-tests');
 await open('https://lichess.org/ox-fixture/live');
-if (process.env.OX_DEBUG) console.log('DEBUG', page.url(), JSON.stringify(await page.evaluate(() => ({ st: globalThis.OX?.runner?.status(), fen: globalThis.OX?.state?.position?.fen, main: document.querySelector('main')?.className, title: document.title, playing: globalThis.__oxHarness?.playing }))));
 const live = await statuses();
-expectStatuses('live game', live, { engine: 'n/a', repertoire: 'n/a', puzzles: 'n/a' });
+expectStatuses('live game', live, { engine: 'n/a', repertoire: 'n/a' });
 record('live game', (await page.evaluate(() => globalThis.__oxHarness.playing.at(-1))) === true,
   'live game: the game page locks every Lichess tab');
-record('live game', (await hosts()).every(h => h.id === 'puzzlemenu'), 'live game: nothing of the extension is on the page but the Puzzles-menu link');
+record('live game', (await hosts()).length === 0, 'live game: nothing of the extension is on the page');
+
+// While the game stays on screen the page keeps saying so (a lock the
+// background script lost must come back by itself).
+await page.waitForTimeout(6000);
+record('live game', (await page.evaluate(() => globalThis.__oxHarness.playing.filter(Boolean).length)) >= 2,
+  'live game: the lock is reported again while the game is on');
 
 await open('https://lichess.org/ox-fixture/game');
 const game = await statuses();
@@ -332,10 +322,21 @@ await page.evaluate(() => globalThis.__oxHarness.setPaused(true)); // a game sta
 await page.waitForTimeout(800);
 const paused = await statuses();
 expectStatuses('paused', paused, { engine: 'paused', repertoire: 'paused', mine: 'paused' });
-record('paused', (await hosts()).every(h => h.id === 'puzzlemenu'), 'paused: the boxes are removed while a game runs elsewhere (only the Puzzles-menu link stays)');
+record('paused', (await hosts()).length === 0, 'paused: the boxes are removed while a game runs elsewhere');
 await page.evaluate(() => globalThis.__oxHarness.setPaused(false));
 await page.waitForTimeout(800);
 record('paused', (await statuses()).engine === 'ok', 'paused: everything returns when the game ends');
+
+// An extension update puts a second copy into the same page: the first must
+// step aside completely, and the new one must take over (once, not twice).
+await page.evaluate(code => { (0, eval)(code); }, injected);
+await page.waitForTimeout(1500);
+await waitSettled();
+{
+  const ids = (await hosts()).map(h => h.id);
+  record('update', ids.length > 0 && new Set(ids).size === ids.length && (await statuses()).repertoire === 'ok',
+    `update: a second copy replaces the first, nothing twice (${ids.join(', ')})`);
+}
 
 // A simulated Lichess change: the left column is renamed. The features there
 // must drop out and be reported; the page and the rest keep working.

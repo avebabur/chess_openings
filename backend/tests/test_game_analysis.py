@@ -218,49 +218,12 @@ class VerifyAndTagTest(unittest.TestCase):
 
 
 class StorageTest(DatabaseCase):
-    def test_report_weighs_mistakes_by_what_they_cost(self):
-        game_id = self.add_game(QUEEN_HANG)
-        base = {"user_color": "white", "played_san": "a3", "played_uci": "a2a3",
-                "best_san": "Nf3", "best_uci": "g1f3", "target_cp": 0, "source": "stockfish"}
-        self.ga.store_mistakes(game_id, [
-            {**base, "ply": 0, "fen": chess.STARTING_FEN, "cp_before": 20, "cp_after": -120,
-             "loss": 10.0, "kind": "mistake", "tag": "quiet"},
-            {**base, "ply": 80, "fen": "8/5pk1/8/8/8/8/R4PK1/3r4 w - - 0 41", "cp_before": 400,
-             "cp_after": 0, "loss": 30.0, "kind": "blunder", "tag": "lost_material"},
-        ])
-        result = self.ga.list_mistakes()["report"]
-        self.assertEqual((result["mistakes"], result["games"]), (2, 1))
-        phase, situation, tag = result["sections"]
-        self.assertEqual([(r["key"], r["count"], r["share"]) for r in phase["rows"]],
-                         [("rook_endgame", 1, 75), ("opening", 1, 25)])
-        self.assertEqual(phase["rows"][0]["theme"], "rookEndgame")
-        self.assertEqual([r["key"] for r in situation["rows"]], ["winning", "level"])
-        self.assertEqual([r["key"] for r in tag["rows"]], ["lost_material", "quiet"])
-        self.assertIsNone(tag["rows"][1]["theme"])
 
     def test_an_empty_report(self):
         result = self.ga.report()
         self.assertEqual(result["mistakes"], 0)
         self.assertEqual([s["rows"] for s in result["sections"]], [[], [], []])
 
-
-    def test_reanalysis_keeps_the_practice_record(self):
-        game_id = self.add_game(QUEEN_HANG)
-        found = self.ga.find_mistakes(QUEEN_HANG, "white", FakeEngine())
-        self.ga.store_mistakes(game_id, found)
-        mistake_id = self.ga.mistakes_for_game(game_id)[0]["id"]
-        self.assertEqual(self.ga.record_attempt(mistake_id, True)["last_result"], "solved")
-
-        self.ga.store_mistakes(game_id, found)
-        again = self.ga.mistakes_for_game(game_id)
-        self.assertEqual([m["id"] for m in again], [mistake_id])
-        self.assertEqual(again[0]["progress"]["solved"], 1)
-
-        self.ga.store_mistakes(game_id, [])
-        self.assertEqual(self.ga.mistakes_for_game(game_id), [])
-
-    def test_unknown_mistake(self):
-        self.assertIsNone(self.ga.record_attempt(999, True))
 
     def test_pending_games_are_newest_first_and_skip_analysed_ones(self):
         old = self.add_game(QUEEN_HANG, end_time="2026-01-01T00:00:00")
@@ -269,6 +232,7 @@ class StorageTest(DatabaseCase):
         self.assertEqual([g["id"] for g in self.ga.pending_games(limit=5)], [new, old])
         self.ga.store_mistakes(new, [])
         self.assertEqual([g["id"] for g in self.ga.pending_games(limit=5)], [old])
+
 
     def test_analyzer_runs_through_the_pending_games(self):
         first = self.add_game(QUEEN_HANG, end_time="2026-06-01T00:00:00")
@@ -285,10 +249,7 @@ class StorageTest(DatabaseCase):
         self.assertEqual((status["done"], status["mistakes"]), (2, 1))
         self.assertTrue(engine.closed)
 
-        listing = self.ga.list_mistakes()
-        self.assertEqual(listing["total"], 1)
-        self.assertEqual(listing["games_analysed"], 2)
-        self.assertEqual(listing["games"][0]["id"], first)
+        self.assertEqual(len(self.ga.mistakes_for_game(first)), 1)
         self.assertFalse(analyzer.start(count=4)["running"])  # nothing left
 
     def test_a_request_made_during_a_run_is_served_after_it(self):
@@ -322,24 +283,17 @@ class ApiTest(DatabaseCase):
         import main
         self.main = importlib.reload(main)
 
-    def test_mistakes_endpoints(self):
+    def test_a_game_comes_with_its_mistakes(self):
         game_id = self.add_game(QUEEN_HANG)
         self.ga = sys.modules["game_analysis"]
         self.ga.store_mistakes(
             game_id, self.ga.find_mistakes(QUEEN_HANG, "white", FakeEngine()))
         with TestClient(self.main.app) as client:
-            listing = client.get("/api/mistakes").json()
-            self.assertEqual(listing["total"], 1)
-            mistake = listing["games"][0]["mistakes"][0]
-            self.assertEqual(mistake["played_san"], "Qxf7+")
-
             game = client.get(f"/api/games/{game_id}").json()
             self.assertEqual([m["ply"] for m in game["mistakes"]], [4])
-
-            done = client.post(f"/api/mistakes/{mistake['id']}/attempts", json={"solved": False})
-            self.assertEqual(done.json()["last_result"], "failed")
-            self.assertEqual(
-                client.post("/api/mistakes/999/attempts", json={"solved": True}).status_code, 404)
+            self.assertEqual(game["mistakes"][0]["played_san"], "Qxf7+")
+            # The puzzle endpoints (training your mistakes) are gone.
+            self.assertEqual(client.get("/api/mistakes").status_code, 404)
             self.assertFalse(client.get("/api/analysis").json()["running"])
 
 

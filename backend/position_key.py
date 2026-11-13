@@ -78,25 +78,3 @@ def key_from_san_path(sans):
     return board.epd()
 
 
-def keys_along_san_path(sans):
-    """Walk a SAN line, yielding ``(san, epd_before, epd_after)`` per ply.
-
-    Stops at the first illegal move and returns what it got, matching how the
-    rest of the app replays possibly-imperfect lines (a truncated PGN should
-    still contribute the moves it does have). Callers that need an illegal move
-    to be an error should validate the line themselves.
-    """
-    board = chess.Board()
-    out = []
-    for san in _san_tokens(sans):
-        before = board.epd()
-        try:
-            move = board.parse_san(san)
-        except ValueError:
-            break
-        # Re-derive the SAN from the parsed move so the caller gets the
-        # canonical spelling ("e8=Q+" not "e8Q") regardless of what came in.
-        canonical = board.san(move)
-        board.push(move)
-        out.append((canonical, before, board.epd()))
-    return out

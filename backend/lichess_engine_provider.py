@@ -31,7 +31,7 @@ import time
 
 import httpx
 
-import live_engine
+import stockfish
 
 log = logging.getLogger(__name__)
 
@@ -315,7 +315,7 @@ class LichessEngineProvider:
                  transport=None, poll_pause=5.0):
         self._token_getter = token_getter or _setting_getter("lichess_token")
         self._secret_store = secret_store or _secret_store
-        self._stockfish_path = stockfish_path or live_engine.STOCKFISH_PATH
+        self._stockfish_path = stockfish_path or stockfish.STOCKFISH_PATH
         self._transport = transport
         self._poll_pause = poll_pause
         self._task = None

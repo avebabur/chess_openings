@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Openings for Lichess",
-  "version": "0.6.0",
-  "description": "Lichess plus your openings app: your Stockfish in Lichess's own analysis, your repertoire, your games and your mistakes, paused during live games. Chrome only.",
+  "version": "0.10.0",
+  "description": "Your repertoire, games, and local Stockfish inside Lichess. Paused during live games. Chrome only.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA1fQrF1871JJms13zyTXyNUuf1kuYERMmFZItgmrtKm3mfFUYj4NhyZoDzQdFsAI7lb/AnGE9TbColKK/Ob462QzQT9n3Y4JsnbT9IuUg00QlY/GYDFRJqzt/oGZym7ngzF/mROJ3+iqYU8Cos8juOSTimJf+UGt/CCKUdmUIpfNWk045s43leu/8pDMlUmJzGuUf1J8zdW1Uw07Ngx/oVyK0BvLYX7N7wE3Kr5KW6ITRQr5dbDYVf7iqejHrU7Mvost0Qrk6w5syDfHOlquPFJbYjTjpUBV5eYztr+fuygUGQxoxLdbW2YrTh0AOEnUmhfRYnAOynuSDQ7LjPiN3cwIDAQAB",
   "icons": {
     "16": "icons/icon16.png",
@@ -22,6 +22,7 @@
   "background": {
     "service_worker": "src/background.js"
   },
+  "options_page": "settings.html",
   "action": {
     "default_title": "Openings for Lichess",
     "default_icon": {
@@ -35,6 +36,9 @@
         "https://lichess.org/*"
       ],
       "run_at": "document_start",
+      "css": [
+        "src/page.css"
+      ],
       "js": [
         "src/engine-select.js"
       ]
@@ -61,15 +65,12 @@
         "src/bridge-extension.js",
         "src/core.js",
         "src/styles.js",
-        "src/page-style.js",
+        "src/features/sidetabs.js",
         "src/features/engine.js",
-        "src/features/mistake.js",
         "src/features/game.js",
         "src/features/repertoire.js",
-        "src/features/mine.js",
         "src/features/explorerleft.js",
-        "src/features/puzzles.js",
-        "src/features/puzzlemenu.js",
+        "src/features/mine.js",
         "src/content.js"
       ]
     }

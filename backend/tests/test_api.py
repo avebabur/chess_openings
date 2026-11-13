@@ -38,15 +38,27 @@ class ApiContractTests(unittest.TestCase):
             os.environ["CHESS_DB_PATH"] = self.old_db_path
         self.temp_dir.cleanup()
 
-    def test_the_lichess_extension_may_call_the_app_but_websites_may_not(self):
-        preflight = {"Access-Control-Request-Method": "POST",
-                     "Access-Control-Request-Headers": "content-type"}
-        res = self.client.options("/api/extension/health",
-                                  headers={"Origin": "moz-extension://1f2e-3d4c", **preflight})
+    def test_websites_cannot_read_or_change_anything(self):
+        # No CORS headers at all: a browser refuses to hand the answer to a page,
+        # and refuses to send anything that needs a preflight.
+        res = self.client.get("/api/accounts", headers={"Origin": "https://example.com"})
+        self.assertNotIn("access-control-allow-origin", res.headers)
+        res = self.client.options("/api/accounts", headers={
+            "Origin": "https://example.com",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type"})
+        self.assertNotIn("access-control-allow-origin", res.headers)
+        self.assertGreaterEqual(res.status_code, 400)
+
+    def test_only_the_local_address_is_answered(self):
+        # A website whose own domain name points at 127.0.0.1 (DNS rebinding).
+        res = self.client.get("/api/backup", headers={"Host": "evil.example"})
+        self.assertEqual(res.status_code, 400)
+        res = self.client.get("/api/health", headers={"Host": "127.0.0.1:8001"})
         self.assertEqual(res.status_code, 200)
-        self.assertEqual(res.headers["access-control-allow-origin"], "moz-extension://1f2e-3d4c")
-        res = self.client.options("/api/extension/health",
-                                  headers={"Origin": "https://example.com", **preflight})
+
+    def test_an_address_that_is_not_a_lichess_game_is_refused(self):
+        res = self.client.get("/api/games/by-link", params={"url": "https://www.chess.com/game/live/123456"})
         self.assertEqual(res.status_code, 400)
 
     def test_a_lichess_game_page_finds_the_imported_game(self):
@@ -66,7 +78,7 @@ class ApiContractTests(unittest.TestCase):
         enqueue.assert_not_called()
         self.assertEqual(self.client.get("/api/accounts").json(), [])
 
-    def test_validated_branch_and_idempotent_drill_contract(self):
+    def test_branches_are_validated_and_a_changed_line_resets_training(self):
         invalid = self.client.post("/api/repertoire/tree/branches", json={
             "color": "green", "name": "bad", "moves_san": "e4",
         })
@@ -75,30 +87,11 @@ class ApiContractTests(unittest.TestCase):
         branch = self.client.post("/api/repertoire/tree/branches", json={
             "color": "white", "name": "line", "moves_san": "e4",
         }).json()
-        self.assertEqual(
-            self.client.get("/api/repertoire/openings", params={"color": "white"}).status_code,
-            200,
-        )
-        tree = self.client.get("/api/repertoire/tree", params={"color": "white"}).json()
-        node_id = tree["root"]["children"][0]["id"]
-        payload = {
-            "event_key": "api-event-1", "source": "practice", "solved": False,
-            "node_id": node_id, "expected_san": "e4", "played_san": "d4",
-        }
-        first = self.client.post("/api/repertoire/drill-attempts", json=payload)
-        second = self.client.post("/api/repertoire/drill-attempts", json=payload)
-        self.assertEqual(first.status_code, 200)
-        self.assertFalse(first.json()["duplicate"])
-        self.assertTrue(second.json()["duplicate"])
-        self.assertEqual(
-            self.client.post(f"/api/repertoire/tree/nodes/{node_id}/drill", json={"solved": True}).status_code,
-            404,
-        )
-
         updated = self.client.patch(
             f"/api/repertoire/tree/branches/{branch['id']}", json={"moves_san": "d4"},
         )
         self.assertTrue(updated.json()["training_reset"])
+
 
     def test_backup_download_is_a_valid_database(self):
         response = self.client.get("/api/backup")
@@ -109,43 +102,6 @@ class ApiContractTests(unittest.TestCase):
         self.assertEqual(conn.execute("PRAGMA integrity_check").fetchone()[0], "ok")
         conn.close()
 
-    def test_desktop_spa_blocks_encoded_path_traversal(self):
-        # In desktop mode the SPA catch-all serves built static files. Encoded
-        # traversal (httpx leaves %2F undecoded, so it bypasses ../ normalization)
-        # must never escape frontend/dist to read the DB or backend source.
-        dist_index = self.main.DIST_DIR and Path(self.main.DIST_DIR) / "index.html"
-        if not (dist_index and dist_index.is_file()):
-            self.skipTest("frontend/dist not built; desktop SPA route is not mounted")
-
-        had_flag = "CHESS_OPENINGS_DESKTOP" in os.environ
-        prev_flag = os.environ.get("CHESS_OPENINGS_DESKTOP")
-        os.environ["CHESS_OPENINGS_DESKTOP"] = "1"
-        try:
-            desktop_app = self.main.create_app()
-            # No `with` (no lifespan): the static SPA route needs no runtime services.
-            client = TestClient(desktop_app)
-            for attempt in (
-                "/..%2F..%2Fchess_review.db",
-                "/%2e%2e/%2e%2e/chess_review.db",
-                "/..%2f..%2fbackend%2fmain.py",
-            ):
-                resp = client.get(attempt)
-                head = resp.content[:32]
-                self.assertFalse(
-                    head.startswith(b"SQLite format 3"),
-                    f"{attempt} leaked database bytes",
-                )
-                self.assertNotIn(b"\"\"\"Chess Openings", head, f"{attempt} leaked source")
-                # Allowed outcomes: SPA fallback (index.html) or a hard 404.
-                self.assertIn(resp.status_code, (200, 404))
-                if resp.status_code == 200:
-                    self.assertTrue(head.lstrip().startswith(b"<!doctype html>"))
-        finally:
-            if had_flag:
-                os.environ["CHESS_OPENINGS_DESKTOP"] = prev_flag
-            else:
-                os.environ.pop("CHESS_OPENINGS_DESKTOP", None)
-
     def test_app_factory_owns_distinct_runtime_services(self):
         second_app = self.main.create_app()
         with TestClient(second_app):
@@ -153,7 +109,7 @@ class ApiContractTests(unittest.TestCase):
                 self.main.app.state.opening_tree_cache,
                 second_app.state.opening_tree_cache,
             )
-            self.assertIsNot(self.main.app.state.live_engine, second_app.state.live_engine)
+            self.assertIsNot(self.main.app.state.sync_service, second_app.state.sync_service)
             self.assertIsNot(self.main.app.state.sync_service, second_app.state.sync_service)
             self.assertIsNot(self.main.app.state.database, second_app.state.database)
             self.assertIsNot(

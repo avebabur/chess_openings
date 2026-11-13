@@ -1,0 +1,45 @@
+/* Styles that change Lichess's own layout (everything else lives in shadow
+   roots). Kept small and namespaced with "ox". Declared in the manifest, so
+   Chrome applies them before the page is drawn. */
+/* Your board colours (#EAE9D2 / #4B729A)
+   on every Lichess board, whatever board theme Lichess is set to. Lichess
+   paints its theme in cg-board::before, so that layer is replaced too. */
+cg-board::before, cg-board { background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 8 8%22 shape-rendering=%22crispEdges%22%3E%3Crect width=%228%22 height=%228%22 fill=%22%23EAE9D2%22/%3E%3Cpath fill=%22%234B729A%22 d=%22M1 0h1v1h-1zM3 0h1v1h-1zM5 0h1v1h-1zM7 0h1v1h-1zM0 1h1v1h-1zM2 1h1v1h-1zM4 1h1v1h-1zM6 1h1v1h-1zM1 2h1v1h-1zM3 2h1v1h-1zM5 2h1v1h-1zM7 2h1v1h-1zM0 3h1v1h-1zM2 3h1v1h-1zM4 3h1v1h-1zM6 3h1v1h-1zM1 4h1v1h-1zM3 4h1v1h-1zM5 4h1v1h-1zM7 4h1v1h-1zM0 5h1v1h-1zM2 5h1v1h-1zM4 5h1v1h-1zM6 5h1v1h-1zM1 6h1v1h-1zM3 6h1v1h-1zM5 6h1v1h-1zM7 6h1v1h-1zM0 7h1v1h-1zM2 7h1v1h-1zM4 7h1v1h-1zM6 7h1v1h-1z%22/%3E%3C/svg%3E") !important; background-size: cover !important; }
+
+/* The WikiBook is not needed; your repertoire and game take its place. */
+#wikibook-field, main.analyse .analyse__wiki { display: none !important; }
+
+/* The opening explorer shown in the left column (features/explorerleft.js):
+   out of the right column's flow, drawn over the space reserved for it. */
+main.analyse .analyse__tools:has(> section.explorer-box.ox-left) { overflow: visible !important; }
+main.analyse section.explorer-box.ox-left { position: absolute !important; z-index: 2; margin: 0 !important;
+  max-height: none !important; border-radius: 15px; overflow-y: auto; scrollbar-width: thin;
+  box-shadow: 0 2px 2px 0 rgba(0,0,0,.08), 0 3px 1px -2px rgba(0,0,0,.18), 0 1px 5px 0 rgba(0,0,0,.1); }
+.ox-explorer-space { display: block; }
+/* Lichess's chat, given the room left beside the board (explorerleft.js). */
+main.analyse > .mchat.ox-fit { display: flex; flex-direction: column; overflow: hidden; }
+main.analyse > .mchat.ox-fit > .mchat__content { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+
+/* My games replaces Lichess's Player tab: it holds the same Lichess games
+   (imported by the app) plus chess.com, as one history. */
+.explorer-title .player { display: none !important; }
+
+/* "My games" tab inside Lichess's opening explorer: while it is chosen,
+   Lichess's own tables give way to yours (the tab row stays). */
+.explorer-box.ox-mine .data > :not(.explorer-title):not(.ox-mine-content) { display: none !important; }
+.explorer-box:not(.ox-mine) .ox-mine-content { display: none !important; }
+.explorer-box.ox-mine .explorer-title .active { opacity: .6; }
+.explorer-box.ox-mine .explorer-title .active strong { font-weight: normal; }
+.explorer-title .ox-tab.ox-active { font-weight: bold; color: var(--c-font-clear, var(--c-font)); text-decoration: none; }
+.ox-mine-content .ox-mine-head { display: flex; gap: .8em; align-items: baseline; justify-content: space-between;
+  padding: .45em .7em; font-size: .9em; color: var(--c-font-dim); }
+.ox-mine-content .ox-mine-head span { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.ox-mine-content .ox-mine-head button { flex: none; white-space: nowrap; color: var(--c-primary); background: none; border: 0; cursor: pointer; padding: 0; font: inherit; }
+.ox-mine-content .ox-mine-head .ox-sync:disabled { opacity: .5; cursor: default; }
+.ox-mine-content tbody tr { cursor: pointer; }
+.ox-mine-content .ox-empty { padding: 1.2em 1em; text-align: center; color: var(--c-font-dim); font-style: italic; }
+/* The tables themselves (moves, bars, games, result pills) are Lichess's own
+   markup inside its explorer, so Lichess's explorer styles draw them. */
+.ox-mine-content .ox-more { display: block; width: 100%; padding: .6em; text-align: center; text-transform: uppercase;
+  font-size: .85em; color: var(--c-primary); background: none; border: 0; cursor: pointer; }
+.ox-mine-content .ox-more:hover { background: var(--c-bg-zebra); }

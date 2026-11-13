@@ -1,6 +1,5 @@
-// "My games" — a tab in Lichess's own opening explorer, next to Masters and
-// Lichess, in place of Lichess's Player tab (hidden): it holds your Lichess
-// games (imported by the app) and your chess.com games as one history. It shows, like Lichess's Player tab, the moves you played
+// "My games" replaces Lichess's Player tab in the opening explorer. It combines
+// imported Lichess and chess.com games, showing the moves you played
 // from this position and your games that reached it (newest first, so at the
 // start position it is your whole history). Built from Lichess's own markup
 // (table.moves, table.games, div.bar) so it looks the same. A move plays on
@@ -88,6 +87,7 @@
       const leave = event => {
         if (!host.contains(event.target) && open()) { OX.setSetting('mineOpen', false); sync(); }
       };
+      let listeningTitle = null;
 
       function sync() {
         host.classList.toggle('ox-active', open());
@@ -96,9 +96,10 @@
         if (!box) return;
         box.classList.toggle('ox-mine', open());
         const title = OX.$(A.explorerTitle.selector);
-        if (title && !title.dataset.oxListening) {
+        if (title && title !== listeningTitle) {
+          listeningTitle?.removeEventListener('click', leave, true);
           title.addEventListener('click', leave, true);
-          title.dataset.oxListening = '1';
+          listeningTitle = title;
         }
         const data = title?.parentElement;
         if (data && content.parentNode !== data) data.append(content);
@@ -110,7 +111,7 @@
       let syncNote = '';
       const syncButton = OX.el('button', {
         type: 'button', class: 'ox-sync text', 'data-icon': '\ue078', // Lichess's reload icon
-        title: 'Bring in your newest games from chess.com and Lichess', text: 'Sync games',
+        title: 'Bring in your newest games from chess.com and Lichess', text: 'Sync',
       });
       const showNote = text => {
         syncNote = text;
@@ -135,9 +136,12 @@
         label();
         const node = nodes[color];
         const s = node.summary || {};
+        // At the starting position there is no opening yet (the app would
+        // name the one you play most).
+        const opening = position?.fen.startsWith('rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w') ? '' : OX.openingName(s.opening);
         const head = OX.el('div', { class: 'ox-mine-head' },
-          OX.el('span', { text: syncNote || (node.total_games
-            ? `${node.total_games} game${node.total_games === 1 ? '' : 's'} · your score ${Math.round(s.score)}%${s.opening ? ` · ${s.opening}` : ''}`
+          OX.el('span', { title: opening || null, text: syncNote || (node.total_games
+            ? `${node.total_games} game${node.total_games === 1 ? '' : 's'} · you score ${Math.round(s.score)}%${opening ? ` · ${opening}` : ''}`
             : '') }),
           syncButton);
         if (!node.total_games) {
@@ -162,7 +166,7 @@
             const you = g.user_color;
             const ratings = you === 'white' ? [g.user_rating, g.opp_rating] : [g.opp_rating, g.user_rating];
             return OX.el('tr', {
-              'data-id': g.id, title: 'Open this game on the analysis board, at this position',
+              'data-id': g.id, title: 'Open this game at this position',
               onclick: () => OX.openMyGame(g.id, g.ply).catch(() => {}),
             },
             OX.el('td', { class: 'game-rating' }, OX.el('span', { text: ratings[0] ?? '' }), OX.el('span', { text: ratings[1] ?? '' })),
@@ -172,7 +176,7 @@
             OX.el('td', { class: 'game-type' }, speedIcon(g.time_class)));
           }))) : null;
         const more = games.length < total
-          ? OX.el('button', { class: 'button button-empty ox-more', onclick: loadMore, text: 'More games' })
+          ? OX.el('button', { class: 'ox-more', onclick: loadMore, text: 'More games' })
           : null;
         content.replaceChildren(...[head, moves, list, more].filter(Boolean));
       }
@@ -193,11 +197,16 @@
         } catch { /* keep what is shown */ }
       }
 
+      let loadingMore = false;
       async function loadMore() {
+        if (loadingMore) return; // a second click would add the same games twice
+        loadingMore = true;
         const mine = token;
         const res = await fetchGames(games.length).catch(() => null);
+        loadingMore = false;
         if (!res || mine !== token) return;
         games.push(...res.games);
+        total = res.total;
         render();
       }
 
@@ -230,8 +239,8 @@
           if (open() && next && next.key !== loadedKey) load(next);
         },
         tick() {
-          // Lichess's Player tab is hidden (My games replaces it). If Lichess
-          // was left on it, show My games instead of its single-site data.
+          // The native Player tab is hidden. If Lichess selected it, show the
+          // combined My games view instead of an inaccessible tab's content.
           if (!open() && OX.$('main.analyse .explorer-title .active.player')) {
             OX.setSetting('mineOpen', true);
             if (position && loadedKey !== position.key) load(position);
@@ -240,6 +249,7 @@
         },
         destroy() {
           token++;
+          listeningTitle?.removeEventListener('click', leave, true);
           content.remove();
           OX.$(A.explorerBox.selector)?.classList.remove('ox-mine');
         },

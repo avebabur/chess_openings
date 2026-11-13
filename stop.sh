@@ -1,11 +1,10 @@
 #!/bin/bash
 # Stop Chess Openings — thoroughly, leaving nothing dangling.
 #
-#   ./stop.sh        stop every instance of THIS app: backend, dev frontend
-#                    (npm + vite), and any Stockfish engine it spawned/leaked.
+#   ./stop.sh        stop this extension’s local backend and its Stockfish child.
 #
 # Scoped to THIS checkout so it is safe to run with other projects (or other
-# Stockfish) alive: it only stops uvicorn/vite/npm whose working dir is this repo
+# Stockfish) alive: it only stops uvicorn whose working dir is this repo
 # (or that hold this app's ports), plus Stockfish children of those backends and
 # orphaned Stockfish for this repo's engine binary. It does NOT touch unrelated
 # servers or a Stockfish you launched yourself.
@@ -14,7 +13,6 @@ set -u
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 RUNTIME_DIR="$ROOT/.runtime"
 BACKEND_PORT="${OPENINGS_BACKEND_PORT:-8001}"
-FRONTEND_PORT="${OPENINGS_FRONTEND_PORT:-5174}"
 
 resolve_stockfish() {
   if [ -n "${STOCKFISH_PATH:-}" ]; then echo "$STOCKFISH_PATH"; return; fi
@@ -34,11 +32,11 @@ under_root() { case "$1" in "$ROOT"|"$ROOT"/*) return 0;; *) return 1;; esac; }
 TARGETS=""
 add_target() { case " $TARGETS " in *" $1 "*) ;; *) TARGETS="$TARGETS $1";; esac; }
 
-# 1) Whoever is holding our ports, if it looks like one of our servers.
-for port in "$BACKEND_PORT" "$FRONTEND_PORT"; do
+# 1) A server holding our port, only when it runs from this checkout.
+for port in "$BACKEND_PORT"; do
   for pid in $(lsof -ti "tcp:$port" -sTCP:LISTEN 2>/dev/null); do
     case "$(cmd_of "$pid")" in
-      *uvicorn*|*vite*|*node*|*python*|*Python*) add_target "$pid" ;;
+      *uvicorn*|*python*|*Python*) under_root "$(cwd_of "$pid")" && add_target "$pid" ;;
     esac
   done
 done
@@ -52,15 +50,7 @@ for pid in $(pgrep -f 'backend\.main:app' 2>/dev/null); do
   under_root "$(cwd_of "$pid")" && add_target "$pid"
 done
 
-# 3) This repo's vite / npm dev server (command line or cwd points at this repo).
-for pid in $(pgrep -f "$ROOT/frontend" 2>/dev/null) $(pgrep -f "$ROOT/node_modules" 2>/dev/null); do
-  case "$(cmd_of "$pid")" in *vite*|*npm*|*node*) add_target "$pid" ;; esac
-done
-for pid in $(pgrep -f 'npm run dev' 2>/dev/null); do
-  under_root "$(cwd_of "$pid")" && add_target "$pid"
-done
-
-# 4) Stockfish engines that are children of any backend we're about to stop
+# 3) Stockfish engines that are children of any backend we're about to stop
 #    (captured now, before we orphan them).
 for bpid in $TARGETS; do
   for child in $(pgrep -P "$bpid" 2>/dev/null); do
@@ -68,11 +58,16 @@ for bpid in $TARGETS; do
   done
 done
 
-# 5) Honour the pidfiles too (covers a server whose port probe raced/failed).
-for pf in "$RUNTIME_DIR/backend.pid" "$RUNTIME_DIR/frontend.pid"; do
+# 4) Honour our pidfile when it still points at this checkout's server.
+for pf in "$RUNTIME_DIR/backend.pid"; do
   [ -f "$pf" ] || continue
   pid="$(cat "$pf" 2>/dev/null || true)"
-  case "$pid" in ''|*[!0-9]*) ;; *) kill -0 "$pid" 2>/dev/null && add_target "$pid" ;; esac
+  case "$pid" in
+    ''|*[!0-9]*) ;;
+    *) case "$(cmd_of "$pid")" in
+         *uvicorn*) under_root "$(cwd_of "$pid")" && add_target "$pid" ;;
+       esac ;;
+  esac
 done
 
 # Trim leading space.
@@ -97,14 +92,16 @@ else
   echo "Stopped:$TARGETS"
 fi
 
-# 6) Last resort — Stockfish orphaned (reparented to init) for THIS engine binary,
+# 5) Last resort — Stockfish orphaned (reparented to init) for THIS engine binary,
 #    leaked by a crashed backend. Scoped to our binary so your own Stockfish is safe.
-for pid in $(pgrep -x stockfish 2>/dev/null); do
-  [ "$(ppid_of "$pid")" = "1" ] || continue
-  case "$(cmd_of "$pid")" in
-    *"$SF_BIN"*) kill -KILL "$pid" 2>/dev/null && echo "Killed orphaned Stockfish (PID $pid)" ;;
-  esac
-done
+case "$SF_BIN" in
+  /*) for pid in $(pgrep -x stockfish 2>/dev/null); do
+        [ "$(ppid_of "$pid")" = "1" ] || continue
+        case "$(cmd_of "$pid")" in
+          "$SF_BIN"|"$SF_BIN "*) kill -KILL "$pid" 2>/dev/null && echo "Killed orphaned Stockfish (PID $pid)" ;;
+        esac
+      done ;;
+esac
 
-rm -f "$RUNTIME_DIR/backend.pid" "$RUNTIME_DIR/frontend.pid"
+rm -f "$RUNTIME_DIR/backend.pid"
 echo "Done."

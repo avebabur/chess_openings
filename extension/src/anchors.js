@@ -5,7 +5,13 @@
 // matching. Fix the selector HERE; nothing else should need to change.
 // See extension/REPAIR.md.
 (() => {
-  const OX = (globalThis.OX = globalThis.OX || {});
+  // First script of every injection. After an extension update Chrome puts the
+  // new copy into the SAME script world as the old one, so start from a fresh
+  // OX: the old copy keeps its own object (and its dead line to the old
+  // background script, which makes it remove itself), and nothing of it is
+  // mistaken for this copy's state.
+  try { globalThis.OX?.runner?.retire?.(); } catch { /* an older copy without retire() */ }
+  const OX = (globalThis.OX = {});
 
   OX.anchors = {
     analysePage: {
@@ -42,7 +48,7 @@
     },
     side: {
       selector: 'main.analyse aside.analyse__side',
-      what: "The left column (where Lichess's WikiBook was, which the extension hides). Your game / your mistake and Your repertoire go here.",
+      what: "The left column (where Lichess's WikiBook was, which the extension hides). Your game and Your repertoire go here.",
     },
     explorerBox: {
       selector: 'main.analyse section.explorer-box',
@@ -51,18 +57,6 @@
     explorerTitle: {
       selector: 'main.analyse section.explorer-box .explorer-title',
       what: "The explorer's tab row (Masters / Lichess / Player). The My games tab is added before its gear button. Only exists while the explorer is open and has data, so its absence is normal.",
-    },
-    puzzleMenu: {
-      selector: '#topnav section:has(> a[href="/training"]) > div[role="group"]',
-      what: "The dropdown under PUZZLES in Lichess's top bar. \"From my games\" is added at its end.",
-    },
-    puzzlePage: {
-      selector: 'main.puzzle',
-      what: "Lichess's puzzle page (/training).",
-    },
-    puzzleTools: {
-      selector: 'main.puzzle .puzzle__tools',
-      what: "The puzzle page's right panel (the one with \"Your turn\"). Your mistakes box goes at its end. Not the left column: Lichess's Zen mode hides that.",
     },
   };
 

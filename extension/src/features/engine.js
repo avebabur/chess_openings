@@ -47,19 +47,23 @@
           if (!needsReload) return show();
           return show(OX.el('div', { class: 'head' },
             OX.el('span', { class: 'grow', text: 'Your Stockfish is connected to Lichess.' }),
-            OX.el('button', { class: 'chip main', onclick: () => location.reload(), text: 'Reload to use it' })));
+            OX.el('button', { class: 'link', onclick: () => location.reload(), text: 'Reload to use it' })));
         }
         if (state === 'app_offline') return show(OX.el('div', { class: 'offline', text: OX.offlineText() }));
         if (state === 'no_token' || state === 'missing_scope') {
           return show(
             OX.el('div', { class: 'title', text: 'Use your Stockfish here instead of Lichess’s' }),
             OX.el('div', { class: 'dim' },
-              state === 'missing_scope' ? 'Your app’s Lichess token has no engine access. ' : '',
+              state === 'missing_scope' ? 'Your Lichess token has no engine access. ' : '',
               OX.el('a', { href: status.token_url, target: '_blank', rel: 'noopener', text: 'Create a Lichess token' }),
-              ' (engine access is pre-ticked), then paste it in your app: account menu → Manage accounts → Lichess token.'));
+              ' (engine access is pre-ticked), then ',
+              OX.el('button', { class: 'link', onclick: () => OX.bridge.openSettings(), text: 'open extension settings' }),
+              ' to save it.'));
         }
         if (state === 'no_stockfish') return show(OX.el('div', { class: 'offline', text: 'Stockfish is not installed on this Mac.' }));
         if (state === 'off') return show();
+        // Lichess can't be reached (the app keeps trying) or the app answered with an error.
+        if (state === 'error') return show(OX.el('div', { class: 'offline', text: "Your Stockfish isn't connected to Lichess right now. Trying again…" }));
         return show(OX.el('div', { class: 'dim', text: 'Connecting your Stockfish to Lichess…' }));
       }
 
