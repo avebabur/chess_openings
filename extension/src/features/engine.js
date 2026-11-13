@@ -18,6 +18,11 @@
       for (const variant of VARIANT_KEYS) localStorage.setItem(`ceval.engine.${variant}`, id);
     } catch { /* storage blocked: the user can pick it in Lichess's engine menu */ }
   };
+  // Your Stockfish is no longer registered (token removed, Stockfish gone):
+  // stop putting its id back on every page load, so Lichess's own choice holds.
+  OX.forgetLichessEngine = () => {
+    try { localStorage.removeItem('ox.engineId'); } catch { /* nothing saved then */ }
+  };
 
   OX.defineFeature({
     id: 'engine',
@@ -50,6 +55,7 @@
             OX.el('button', { class: 'link', onclick: () => location.reload(), text: 'Reload to use it' })));
         }
         if (state === 'app_offline') return show(OX.el('div', { class: 'offline', text: OX.offlineText() }));
+        if (state === 'no_token' || state === 'missing_scope' || state === 'no_stockfish') OX.forgetLichessEngine();
         if (state === 'no_token' || state === 'missing_scope') {
           return show(
             OX.el('div', { class: 'title', text: 'Use your Stockfish here instead of Lichess’s' }),

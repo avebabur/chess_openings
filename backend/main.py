@@ -95,9 +95,7 @@ class LichessTokenInput(BaseModel):
 
 
 class AnalysisStartInput(BaseModel):
-    account_id: int | None = Field(default=None, gt=0)
-    count: int = Field(default=4, ge=1, le=50)
-    game_id: int | None = Field(default=None, gt=0)  # check just this game
+    game_id: int = Field(gt=0)  # the game to check
 
 
 # The names this service answers to ("testserver" is the test client's).
@@ -259,15 +257,12 @@ def cancel_sync_job(
 
 
 @api.delete("/accounts/{account_id}")
-def remove_account(
-    request: Request,
-    account_id: int = Path(gt=0),
-    delete_games: bool = True,
-):
+def remove_account(request: Request, account_id: int = Path(gt=0)):
+    """Removes the account together with its imported games."""
     account = db.get_account(account_id)
     if account and (account.get("sync_job") or {}).get("status") in ("queued", "running"):
         raise HTTPException(409, "Cancel the active sync before removing this account")
-    if not db.delete_account(account_id, delete_games=delete_games):
+    if not db.delete_account(account_id):
         raise HTTPException(404, "Account not found")
     request.app.state.opening_tree_cache.invalidate()
     return {"success": True}
@@ -284,24 +279,13 @@ def set_lichess_token(input: LichessTokenInput):
 async def opening_tree(
     request: Request,
     color: Literal["white", "black"] = "white",
-    path: str = Query(default="", max_length=4000),
-    time_class: str = Query(default="", max_length=64),
-    account_id: int | None = Query(default=None, gt=0),
-    fen: str = Query(default="", max_length=128),
+    fen: str = Query(min_length=4, max_length=128),
 ):
-    """Your games through one position: by ``path`` (SAN moves from the start)
-    or, when ``fen`` is given, by the position itself (the Lichess extension
-    only knows the board, not the move order)."""
-    if fen:
-        _validate_fen(fen)
-    path_moves = path.split()
-    time_classes = [t for t in time_class.split(",") if t] or None
-    allowed_time_classes = {"bullet", "blitz", "rapid", "daily"}
-    if time_classes and any(t not in allowed_time_classes for t in time_classes):
-        raise HTTPException(400, "Invalid time_class")
+    """Your games through one position, whatever the move order: the moves you
+    played from it and how they scored (the explorer's My games tab)."""
+    _validate_fen(fen)
     return await run_in_threadpool(
-        request.app.state.opening_tree_cache.node_for_filter,
-        color, path_moves, time_classes, account_id, fen or None,
+        request.app.state.opening_tree_cache.node_for_filter, color, [], None, None, fen,
     )
 
 
@@ -368,13 +352,12 @@ def position_games(
     color: Literal["white", "black", "both"] = "both",
     limit: int = Query(default=15, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
-    account_id: int | None = Query(default=None, gt=0),
 ):
     """Your games that reached this position (any move order), newest first,
     with the ply where each got there. At the start position: all your games."""
     _validate_fen(fen)
     found = request.app.state.opening_tree_cache.games_through(
-        fen, None if color == "both" else color, None, account_id)
+        fen, None if color == "both" else color)
     page = found[offset:offset + limit]
     details = db.get_game_summaries([game["id"] for game, _ in page])
     games = [{**details[game["id"]], "ply": ply} for game, ply in page if game["id"] in details]
@@ -389,37 +372,16 @@ def analysis_status(request: Request):
 
 @api.post("/analysis", status_code=202)
 def analysis_start(input: AnalysisStartInput, request: Request):
-    """Search the newest `count` games that have not been analysed yet for the
-    user's mistakes, in the background. Poll GET /analysis for progress."""
+    """Search one game for the user's mistakes, in the background (after the
+    games already being searched). Poll GET /analysis for progress."""
     clients = request.app.state.external_clients
     allow_network = _external_network_allowed()
     try:
         return request.app.state.game_analyzer.start(
             tablebase=lambda fen: clients.tablebase(fen, allow_network),
-            account_id=input.account_id, count=input.count,
-            game_ids=[input.game_id] if input.game_id else None)
+            game_ids=[input.game_id])
     except game_analysis.AnalysisError as exc:
         raise HTTPException(503, str(exc))
-
-
-@api.get("/games")
-def list_games(
-    account_id: int | None = Query(default=None, gt=0),
-    color: Literal["", "white", "black"] = "",
-    time_class: str = Query(default="", max_length=64),
-    limit: int = Query(default=50, ge=1, le=200),
-    offset: int = Query(default=0, ge=0),
-):
-    """Game metadata, newest first, paginated."""
-    color = color or None
-    time_classes = [t for t in time_class.split(",") if t] or None
-    allowed_time_classes = {"bullet", "blitz", "rapid", "daily"}
-    if time_classes and any(t not in allowed_time_classes for t in time_classes):
-        raise HTTPException(400, "Invalid time_class")
-    games = db.list_games(account_id=account_id, color=color,
-                          time_classes=time_classes, limit=limit, offset=offset)
-    total = db.count_games(account_id=account_id, color=color, time_classes=time_classes)
-    return {"games": games, "total": total, "limit": limit, "offset": offset}
 
 
 @api.get("/games/{game_id}")
@@ -443,7 +405,7 @@ def repertoire_tree(color: str = "white"):
 def classify_opening(moves_san: str = ""):
     """Name the opening a SAN line reaches, or null if unrecognized.
 
-    Used by the editor to pre-fill the opening of a line you're about to save."""
+    Pre-fills the name of a line you're about to save to your repertoire."""
     return eco_openings.classify(moves_san)
 
 

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Openings for Lichess",
-  "version": "0.10.0",
+  "version": "0.10.1",
   "description": "Your repertoire, games, and local Stockfish inside Lichess. Paused during live games. Chrome only.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA1fQrF1871JJms13zyTXyNUuf1kuYERMmFZItgmrtKm3mfFUYj4NhyZoDzQdFsAI7lb/AnGE9TbColKK/Ob462QzQT9n3Y4JsnbT9IuUg00QlY/GYDFRJqzt/oGZym7ngzF/mROJ3+iqYU8Cos8juOSTimJf+UGt/CCKUdmUIpfNWk045s43leu/8pDMlUmJzGuUf1J8zdW1Uw07Ngx/oVyK0BvLYX7N7wE3Kr5KW6ITRQr5dbDYVf7iqejHrU7Mvost0Qrk6w5syDfHOlquPFJbYjTjpUBV5eYztr+fuygUGQxoxLdbW2YrTh0AOEnUmhfRYnAOynuSDQ7LjPiN3cwIDAQAB",
   "icons": {

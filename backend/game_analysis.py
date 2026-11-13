@@ -10,14 +10,11 @@ is the one that counts. With seven pieces or fewer the Lichess tablebase decides
 move is a mistake exactly when it changes the result of the game, whatever the
 engine thinks of it.
 
-Each mistake is stored with the position before it, the move played, the best
-move, and `target_cp`: how good the position must still be, from the user's
-side, after a different move for that move to count as a fix. The Play tab
-turns these into one-move exercises.
+Each mistake is stored with the position before it, the move played and the
+best move; the Lichess extension lists them on the game's card.
 
-The search runs on its own Stockfish process, not the live one, so analysing
-games in the background does not interrupt the analysis panel or a game in
-the Play tab.
+The search runs on its own Stockfish process, not the one serving Lichess's
+analysis, so checking a game does not interrupt the engine bar.
 """
 import io
 import logging
@@ -130,7 +127,7 @@ def _material_after(board, line, plies):
 
 
 def mistake_tag(before, move, best_line, reply_line, cp_before, cp_after):
-    """What kind of mistake an engine-judged move was, for the weakness report:
+    """What kind of mistake an engine-judged move was:
 
     missed_mate      there was a forced mate and the move let it go
     lost_material    the opponent's best reply wins a pawn or more at once
@@ -352,10 +349,6 @@ def _mistake_dict(row):
     }
 
 
-CHECK_SECONDS = float(os.environ.get("OPENINGS_MISTAKE_CHECK_SECONDS", "2.0"))
-_CASTLE_ALIAS = {"e1h1": "e1g1", "e1a1": "e1c1", "e8h8": "e8g8", "e8a8": "e8c8"}
-
-
 def mistakes_for_game(game_id):
     conn = get_db()
     try:
@@ -365,114 +358,6 @@ def mistakes_for_game(game_id):
     finally:
         conn.close()
     return [_mistake_dict(row) for row in rows]
-
-
-# --- Weakness report -----------------------------------------------------
-
-# Each row: key, label, and the Lichess puzzle theme that trains it (or None).
-_PHASES = (
-    ("opening", "Opening (first 10 moves)", "opening"),
-    ("middlegame", "Middlegame", "middlegame"),
-    ("rook_endgame", "Rook endgames", "rookEndgame"),
-    ("pawn_endgame", "Pawn endgames", "pawnEndgame"),
-    ("minor_endgame", "Bishop and knight endgames", "bishopEndgame"),
-    ("queen_endgame", "Queen endgames", "queenEndgame"),
-    ("other_endgame", "Other endgames", "endgame"),
-)
-_SITUATIONS = (
-    ("winning", "You were winning (+3 or more)", "crushing"),
-    ("better", "You were better (+1 to +3)", "advantage"),
-    ("level", "The position was level", None),
-    ("worse", "You were worse (-1 or less)", "defensiveMove"),
-)
-_TAGS = (
-    ("lost_material", "Lost material to the next move", "hangingPiece"),
-    ("missed_material", "Missed a chance to win material", "fork"),
-    ("missed_mate", "Missed a forced mate", "mate"),
-    ("technique", "Endgame technique (the tablebase result changed)", "endgame"),
-    ("quiet", "Quiet mistakes: nothing was lost on the spot", None),
-)
-# Endgame, as Lichess draws the line: six or fewer pieces besides kings and pawns.
-ENDGAME_PIECES = 6
-
-
-def phase_of(fen):
-    board = chess.Board(fen)
-    kinds = {
-        kind for kind in (chess.KNIGHT, chess.BISHOP, chess.ROOK, chess.QUEEN)
-        if board.pieces(kind, chess.WHITE) or board.pieces(kind, chess.BLACK)
-    }
-    count = sum(
-        len(board.pieces(kind, color)) for kind in kinds for color in (chess.WHITE, chess.BLACK))
-    if count > ENDGAME_PIECES:
-        return "opening" if board.fullmove_number <= 10 else "middlegame"
-    if not kinds:
-        return "pawn_endgame"
-    if kinds == {chess.ROOK}:
-        return "rook_endgame"
-    if kinds == {chess.QUEEN}:
-        return "queen_endgame"
-    if kinds <= {chess.BISHOP, chess.KNIGHT}:
-        return "minor_endgame"
-    return "other_endgame"
-
-
-def situation_of(cp_before):
-    if cp_before >= 300:
-        return "winning"
-    if cp_before >= 100:
-        return "better"
-    if cp_before > -100:
-        return "level"
-    return "worse"
-
-
-def report(account_id=None):
-    """Where the user's mistakes happen, over every analysed game: by phase,
-    by how the position stood, and by what went wrong. `count` is the number
-    of mistakes; `share` is the part (0-100) of all the winning chances lost
-    that those mistakes account for, so a few blunders outweigh many slips."""
-    where, params = _account_filter(account_id)
-    conn = get_db()
-    try:
-        rows = conn.execute(
-            "SELECT m.fen, m.cp_before, m.loss, m.tag FROM game_mistakes m "
-            "JOIN games g ON g.id = m.game_id WHERE g.merged_into_game_id IS NULL" + where,
-            params,
-        ).fetchall()
-        games = conn.execute(
-            "SELECT COUNT(*) AS n FROM games g WHERE g.mistakes_analyzed_at IS NOT NULL "
-            "AND g.merged_into_game_id IS NULL" + where, params,
-        ).fetchone()["n"]
-    finally:
-        conn.close()
-
-    total_loss = sum(row["loss"] for row in rows) or 1.0
-
-    def section(key, title, catalogue, classify_row):
-        tally = {}
-        for row in rows:
-            entry = tally.setdefault(classify_row(row), [0, 0.0])
-            entry[0] += 1
-            entry[1] += row["loss"]
-        listed = [
-            {"key": k, "label": label, "theme": theme, "count": tally[k][0],
-             "share": round(100 * tally[k][1] / total_loss)}
-            for k, label, theme in catalogue if k in tally
-        ]
-        listed.sort(key=lambda item: (-item["share"], -item["count"]))
-        return {"key": key, "title": title, "rows": listed}
-
-    return {
-        "mistakes": len(rows),
-        "games": games,
-        "sections": [
-            section("phase", "When in the game", _PHASES, lambda r: phase_of(r["fen"])),
-            section("situation", "How you stood before the mistake", _SITUATIONS,
-                    lambda r: situation_of(r["cp_before"])),
-            section("tag", "What went wrong", _TAGS, lambda r: r["tag"] or "quiet"),
-        ],
-    }
 
 
 # --- Background job ------------------------------------------------------
@@ -523,10 +408,6 @@ class GameAnalyzer:
                     target=self._run, args=(games, tablebase), name="game-analysis", daemon=True)
                 self._thread.start()
             return dict(self._state)
-
-    def stop(self):
-        self._stop.set()
-        return self.status()
 
     def _next_queued(self):
         """The games of the next waiting request that still has any, counted

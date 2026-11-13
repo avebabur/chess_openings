@@ -254,7 +254,8 @@ realReports.push(await lastReport());
 
 // 4. Your game, opened from My games: the game card in the left column.
 console.log('\nOpening one of your games');
-const someGame = (await (await fetch(`${BACKEND}/api/games?limit=1`)).json()).games?.[0];
+const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
+const someGame = (await (await fetch(`${BACKEND}/api/position-games?${new URLSearchParams({ fen: START_FEN, limit: 1 })}`)).json()).games?.[0];
 if (someGame) {
   await open('https://lichess.org/analysis');
   await Promise.all([page.waitForNavigation({ waitUntil: 'domcontentloaded' }), page.evaluate(id => globalThis.OX.openMyGame(id, 6), someGame.id)]);

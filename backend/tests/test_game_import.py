@@ -63,6 +63,41 @@ class GameImportTests(unittest.TestCase):
         self.assertEqual([g["result"] for g in saved], ["1/2-1/2", "0-1"])
         self.assertEqual(result["seen"], 2)
 
+    def test_a_later_sync_only_asks_for_what_is_new(self):
+        module = importlib.reload(game_import)
+        asked = []
+
+        def handler(request):
+            asked.append(str(request.url))
+            if request.url.path.endswith("/games/archives"):
+                base = "https://api.chess.com/pub/player/me/games"
+                return httpx.Response(200, json={"archives": [
+                    f"{base}/2026/08", f"{base}/2026/09", f"{base}/2026/10", f"{base}/2026/11"]})
+            if "api.chess.com" in request.url.host:
+                return httpx.Response(200, json={"games": []})
+            return httpx.Response(200, text="")
+
+        account = {"id": 1, "username": "me", "last_synced_at": "2026-11-10 08:00:00"}
+        with httpx.Client(transport=httpx.MockTransport(handler)) as client, \
+                patch.object(module.time, "sleep"), \
+                patch.object(module.db, "get_setting", return_value=None), \
+                patch.object(module.db, "mark_account_synced"), \
+                patch.object(module.db, "save_imported_games", return_value={"imported": 0}), \
+                patch.object(module.db, "newest_game_end", return_value="2026-11-09T20:00:00+00:00"):
+            module.sync_account({**account, "platform": "chesscom"}, client=client)
+            months = [url[-7:] for url in asked if url[-8:-3].startswith("/20")]
+            # The newest game's month and the one before; older months are left alone.
+            self.assertEqual(months, ["2026/11", "2026/10"])
+
+            asked.clear()
+            module.sync_account({**account, "platform": "lichess"}, client=client)
+            self.assertIn("since=", asked[0])
+
+            # Never fully synced (a first import that was cancelled): everything again.
+            asked.clear()
+            module.sync_account({**account, "platform": "lichess", "last_synced_at": None}, client=client)
+            self.assertNotIn("since=", asked[0])
+
     def test_account_exists_distinguishes_missing_from_unreachable(self):
         module = importlib.reload(game_import)
 

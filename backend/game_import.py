@@ -11,7 +11,7 @@ import json
 import re
 import time
 from contextlib import nullcontext
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
 
@@ -20,6 +20,11 @@ import database as db
 USER_AGENT = "ChessOpenings/1.0"
 _TIMEOUT = httpx.Timeout(30.0, connect=10.0)
 _MAX_GAMES = 6000  # safety ceiling per sync so one account can't run away
+# A later sync only asks for what is new. Lichess filters by when a game
+# STARTED, so reach back far enough for a correspondence game that started long
+# before it ended; chess.com files a game under the month it ended.
+_LICHESS_OVERLAP = timedelta(days=90)
+_ARCHIVE_MONTH_RE = re.compile(r"/(\d{4})/(\d{2})$")
 
 _HEADER_RE = re.compile(r'^\[(\w+)\s+"(.*)"\]\s*$', re.M)
 # Lichess "speed" → the time-class vocabulary the UI filters on (chess.com's).
@@ -70,8 +75,19 @@ def _newest_first(items):
     return reversed(list(items or []))
 
 
-def import_chesscom(username, account_id, progress=None, cancelled=None, client=None):
-    """Fetch every standard game from chess.com's public monthly archives."""
+def _archive_before(url, since):
+    """Is this monthly archive older than the month before `since`? (The month
+    before is kept: a cheap margin around the month boundary.)"""
+    match = _ARCHIVE_MONTH_RE.search(url.rstrip("/"))
+    if not match:
+        return False
+    months = int(match.group(1)) * 12 + int(match.group(2))
+    return months < since.year * 12 + since.month - 1
+
+
+def import_chesscom(username, account_id, progress=None, cancelled=None, client=None, since=None):
+    """Fetch standard games from chess.com's public monthly archives: all of
+    them, or with `since` (a datetime) only the months that can hold newer games."""
     headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
     uname = username.lower()
     imported = seen = 0
@@ -95,7 +111,7 @@ def import_chesscom(username, account_id, progress=None, cancelled=None, client=
         for url in _newest_first(archives):
             if cancelled and cancelled():
                 raise SyncCancelled()
-            if seen >= _MAX_GAMES:
+            if seen >= _MAX_GAMES or (since and _archive_before(url, since)):
                 break
             ar = http.get(url, **request_options)
             if ar.status_code != 200:
@@ -146,8 +162,10 @@ def import_chesscom(username, account_id, progress=None, cancelled=None, client=
     return {"imported": imported, "seen": seen, "warnings": warnings}
 
 
-def import_lichess(username, account_id, progress=None, cancelled=None, client=None):
-    """Stream a player's standard games from the Lichess export API (NDJSON)."""
+def import_lichess(username, account_id, progress=None, cancelled=None, client=None, since=None):
+    """Stream a player's standard games from the Lichess export API (NDJSON):
+    all of them, or with `since` (a datetime) only those started around or
+    after it."""
     headers = {"User-Agent": USER_AGENT, "Accept": "application/x-ndjson"}
     token = db.get_setting("lichess_token")
     if token:
@@ -155,6 +173,8 @@ def import_lichess(username, account_id, progress=None, cancelled=None, client=N
     uname = username.lower()
     params = {"max": _MAX_GAMES, "pgnInJson": "true", "opening": "true",
               "clocks": "false", "evals": "false"}
+    if since:
+        params["since"] = int((since - _LICHESS_OVERLAP).timestamp() * 1000)
     imported = seen = 0
     batch = []
     manager = nullcontext(client) if client is not None else httpx.Client(
@@ -263,17 +283,33 @@ def account_exists(platform, username, client=None):
     return None
 
 
+def _newest_imported(account):
+    """When the newest game already imported ended, once the account's whole
+    history is in; None means "fetch everything". A first import that failed or
+    was cancelled part-way never set last_synced_at, so it is done again in full."""
+    if not account.get("last_synced_at"):
+        return None
+    try:
+        newest = datetime.fromisoformat(db.newest_game_end(account["id"]) or "")
+    except ValueError:
+        return None
+    return newest if newest.tzinfo else newest.replace(tzinfo=timezone.utc)
+
+
 def sync_account(account, progress=None, cancelled=None, client=None):
-    """Import (or re-import) one account's games. Returns {imported, seen}."""
+    """Import one account's games: everything the first time, afterwards only
+    what is new (it used to download the whole history again on every sync,
+    every 30 minutes). Returns {imported, seen, warnings}."""
     platform = account["platform"]
     try:
+        since = _newest_imported(account)
         if platform == "chesscom":
             result = import_chesscom(
-                account["username"], account["id"], progress, cancelled, client,
+                account["username"], account["id"], progress, cancelled, client, since,
             )
         elif platform == "lichess":
             result = import_lichess(
-                account["username"], account["id"], progress, cancelled, client,
+                account["username"], account["id"], progress, cancelled, client, since,
             )
         else:
             raise ImportError_(f"unknown platform “{platform}”")
@@ -283,5 +319,6 @@ def sync_account(account, progress=None, cancelled=None, client=None):
         raise ImportError_(f"{platform} could not be reached — try again") from exc
     except ValueError as exc:
         raise ImportError_(f"{platform} returned an invalid response") from exc
-    db.mark_account_synced(account["id"])
+    # An archive that could not be fetched must be asked for again next time.
+    db.mark_account_synced(account["id"], complete=not result.get("warnings"))
     return result

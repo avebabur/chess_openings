@@ -109,10 +109,25 @@ def create_account(platform, username, label=""):
         conn.close()
 
 
-def mark_account_synced(account_id):
+def newest_game_end(account_id):
+    """When the account's newest imported game ended (ISO-8601), or None."""
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT MAX(end_time) AS newest FROM games WHERE account_id = ?", (account_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    return row["newest"] if row else None
+
+
+def mark_account_synced(account_id, complete=True):
+    """Records a finished sync. `complete=False` (part of the history could not
+    be fetched) clears the mark instead, so the next sync fetches everything."""
     conn = get_db()
     conn.execute(
-        "UPDATE accounts SET last_synced_at = datetime('now') WHERE id = ?", (account_id,),
+        "UPDATE accounts SET last_synced_at = CASE WHEN ? THEN datetime('now') END WHERE id = ?",
+        (1 if complete else 0, account_id),
     )
     conn.commit()
     conn.close()
@@ -423,40 +438,8 @@ def get_games_for_tree(color=None, time_classes=None, account_id=None):
     return [dict(r) for r in rows]
 
 
-def _games_filter(account_id, color, time_classes):
-    """Shared WHERE clause + params for the games browser (list + count)."""
-    q = " AND merged_into_game_id IS NULL"
-    params = []
-    if account_id:
-        q += " AND account_id = ?"
-        params.append(account_id)
-    if color in ("white", "black"):
-        q += " AND user_color = ?"
-        params.append(color)
-    if time_classes:
-        q += f" AND time_class IN ({','.join('?' * len(time_classes))})"
-        params.extend(time_classes)
-    return q, params
-
-
-def list_games(account_id=None, color=None, time_classes=None, limit=50, offset=0):
-    """Game metadata (no PGN) for the games browser, newest first.
-
-    `end_time` is ISO-8601 so it sorts lexicographically; NULLs (rare manual
-    games) sort last in DESC order, which is fine. account_id None ⇒ all accounts."""
-    conn = get_db()
-    where, params = _games_filter(account_id, color, time_classes)
-    q = ("SELECT id, white, black, result, date, end_time, user_color, "
-         "user_rating, opp_rating, time_class, time_control, eco, opening, "
-         "source, analyzed FROM games WHERE 1=1" + where +
-         " ORDER BY end_time DESC, id DESC LIMIT ? OFFSET ?")
-    rows = conn.execute(q, [*params, limit, offset]).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
-
-
 def get_game_summaries(game_ids):
-    """{id: metadata} for the given games (the same fields as list_games)."""
+    """{id: metadata (no PGN)} for the given games."""
     if not game_ids:
         return {}
     conn = get_db()
@@ -468,13 +451,14 @@ def get_game_summaries(game_ids):
     return {r["id"]: dict(r) for r in rows}
 
 
-def count_games(account_id=None, color=None, time_classes=None):
-    """Total games matching the browser filter (for the header + paging end)."""
+def count_games():
+    """How many games are imported (merged duplicates not counted)."""
     conn = get_db()
-    where, params = _games_filter(account_id, color, time_classes)
-    row = conn.execute("SELECT COUNT(*) AS n FROM games WHERE 1=1" + where, params).fetchone()
-    conn.close()
-    return row["n"] if row else 0
+    try:
+        return conn.execute(
+            "SELECT COUNT(*) FROM games WHERE merged_into_game_id IS NULL").fetchone()[0]
+    finally:
+        conn.close()
 
 
 def get_game(game_id):

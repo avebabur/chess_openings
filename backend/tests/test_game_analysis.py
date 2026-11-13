@@ -203,27 +203,7 @@ class VerifyAndTagTest(unittest.TestCase):
             self.ga.mistake_tag(board, quiet_move, win_queen, [], 500, -300), "missed_material")
         self.assertEqual(self.ga.mistake_tag(board, quiet_move, [], [], 50, -80), "quiet")
 
-    def test_phase_and_situation(self):
-        self.assertEqual(self.ga.phase_of(chess.STARTING_FEN), "opening")
-        self.assertEqual(self.ga.phase_of(
-            "r1bq1rk1/pp2bppp/2n1pn2/3p4/3P4/2N1PN2/PP2BPPP/R1BQ1RK1 w - - 0 14"), "middlegame")
-        self.assertEqual(self.ga.phase_of("8/5pk1/8/8/8/8/R4PK1/3r4 w - - 0 40"), "rook_endgame")
-        self.assertEqual(self.ga.phase_of("8/5pk1/8/8/8/8/5PK1/8 w - - 0 40"), "pawn_endgame")
-        self.assertEqual(self.ga.phase_of("8/5pk1/8/3b4/8/2N5/5PK1/8 w - - 0 40"), "minor_endgame")
-        self.assertEqual(self.ga.phase_of("8/5pk1/8/3q4/8/2Q5/5PK1/8 w - - 0 40"), "queen_endgame")
-        self.assertEqual(self.ga.phase_of("8/5pk1/8/3r4/8/2N5/5PK1/8 w - - 0 40"), "other_endgame")
-        self.assertEqual(
-            [self.ga.situation_of(cp) for cp in (300, 299, 100, 99, -99, -100)],
-            ["winning", "better", "better", "level", "level", "worse"])
-
-
 class StorageTest(DatabaseCase):
-
-    def test_an_empty_report(self):
-        result = self.ga.report()
-        self.assertEqual(result["mistakes"], 0)
-        self.assertEqual([s["rows"] for s in result["sections"]], [[], [], []])
-
 
     def test_pending_games_are_newest_first_and_skip_analysed_ones(self):
         old = self.add_game(QUEEN_HANG, end_time="2026-01-01T00:00:00")
