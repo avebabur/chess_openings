@@ -44,14 +44,6 @@ BLUNDER_LOSS = 15.0
 # The quick search may underrate a mistake by this much and still have it
 # looked at again.
 VERIFY_MARGIN = 4.0
-# A fix may lose up to this much against the best move (Lichess's "inaccuracy").
-FIX_TOLERANCE = 5.0
-# A fix is never asked to keep more than this, so "+9 instead of mate" passes.
-MAX_TARGET_CP = 600
-# Targets after a tablebase verdict. Play rates such a position +-MATE_CP or 0
-# from the tablebase, or by Stockfish when the tablebase cannot be reached.
-TABLEBASE_WIN_TARGET = 300
-TABLEBASE_DRAW_TARGET = -100
 
 _OUTCOME_CP = {"win": MATE_CP, "draw": 0, "loss": -MATE_CP}
 _OUTCOME_CHANCE = {"win": 100.0, "draw": 50.0, "loss": 0.0}
@@ -66,16 +58,6 @@ def win_chance(cp):
     """Centipawns for a side -> that side's winning chances, 0 to 100."""
     cp = max(-MATE_CP, min(MATE_CP, cp))
     return 100.0 / (1.0 + math.exp(-_WIN_K * cp))
-
-
-def cp_for_chance(chance):
-    chance = max(0.5, min(99.5, chance))
-    return round(math.log(chance / (100.0 - chance)) / _WIN_K)
-
-
-def target_cp(cp_before):
-    """What a replacement move must keep, from the mover's side."""
-    return min(MAX_TARGET_CP, cp_for_chance(win_chance(cp_before) - FIX_TOLERANCE))
 
 
 def classify(loss):
@@ -103,51 +85,6 @@ def _search(engine, board, seconds):
     return cp, list(info.get("pv") or [])
 
 
-_PIECE_CP = {chess.PAWN: 100, chess.KNIGHT: 300, chess.BISHOP: 300,
-             chess.ROOK: 500, chess.QUEEN: 900}
-
-
-def _material(board, color):
-    """`color`'s material minus the opponent's, in centipawns."""
-    return sum(
-        value * (len(board.pieces(kind, color)) - len(board.pieces(kind, not color)))
-        for kind, value in _PIECE_CP.items()
-    )
-
-
-def _material_after(board, line, plies):
-    """The mover's material balance after the first `plies` moves of `line`."""
-    color = board.turn
-    probe = board.copy()
-    for move in line[:plies]:
-        if move not in probe.legal_moves:
-            break
-        probe.push(move)
-    return _material(probe, color)
-
-
-def mistake_tag(before, move, best_line, reply_line, cp_before, cp_after):
-    """What kind of mistake an engine-judged move was:
-
-    missed_mate      there was a forced mate and the move let it go
-    lost_material    the opponent's best reply wins a pawn or more at once
-    missed_material  the best line won a pawn or more within two moves
-    quiet            none of the above: nothing was lost on the spot
-    """
-    if cp_before >= MATE_CP - 100 and cp_after < MATE_CP - 100:
-        return "missed_mate"
-    now = _material(before, before.turn)
-    after = before.copy()
-    after.push(move)
-    if reply_line:
-        after.push(reply_line[0])
-        if _material(after, before.turn) <= now - 100:
-            return "lost_material"
-    if _material_after(before, best_line, 3) >= now + 100:
-        return "missed_material"
-    return "quiet"
-
-
 def _tablebase_mistake(table, board, move):
     """The tablebase's view of `move`: a mistake dict, or None if it kept the
     result. Raises LookupError when the tablebase cannot judge the move."""
@@ -165,8 +102,7 @@ def _tablebase_mistake(table, board, move):
     return {
         "best_uci": best["uci"], "best_san": best["san"],
         "cp_before": _OUTCOME_CP[before], "cp_after": _OUTCOME_CP[after],
-        "target_cp": TABLEBASE_WIN_TARGET if before == "win" else TABLEBASE_DRAW_TARGET,
-        "loss": loss, "kind": "blunder", "source": "tablebase", "tag": "technique",
+        "loss": loss, "kind": "blunder", "source": "tablebase",
     }
 
 
@@ -200,15 +136,14 @@ def find_mistakes(pgn, user_color, engine, tablebase=None, seconds=None, should_
         return searched[index, time]
 
     def judge(ply, move, time):
-        """`(cp_before, best line, cp_after, reply line, loss)` at one depth,
+        """`(cp_before, best line, cp_after, loss)` at one depth,
         or None when the move played is the engine's own choice."""
         cp_before, best_line = search(ply, time)
         if not best_line or best_line[0] == move:
             return None
         # The position after is searched from the opponent's side.
-        reply_cp, reply_line = search(ply + 1, time)
-        cp_after = -reply_cp
-        return cp_before, best_line, cp_after, reply_line, win_chance(cp_before) - win_chance(cp_after)
+        cp_after = -search(ply + 1, time)[0]
+        return cp_before, best_line, cp_after, win_chance(cp_before) - win_chance(cp_after)
 
     mistakes = []
     for ply, move in enumerate(moves):
@@ -233,13 +168,13 @@ def find_mistakes(pgn, user_color, engine, tablebase=None, seconds=None, should_
                 continue
 
         quick = judge(ply, move, seconds)
-        if quick is None or quick[4] < MISTAKE_LOSS - VERIFY_MARGIN:
+        if quick is None or quick[3] < MISTAKE_LOSS - VERIFY_MARGIN:
             continue
         # Suspected: the deeper search decides, and supplies the numbers.
         verified = judge(ply, move, max(verify_seconds, seconds))
         if verified is None:
             continue
-        cp_before, best_line, cp_after, reply_line, loss = verified
+        cp_before, best_line, cp_after, loss = verified
         kind = classify(loss)
         if not kind:
             continue
@@ -248,9 +183,7 @@ def find_mistakes(pgn, user_color, engine, tablebase=None, seconds=None, should_
             **base,
             "best_uci": best.uci(), "best_san": before.san(best),
             "cp_before": cp_before, "cp_after": cp_after,
-            "target_cp": target_cp(cp_before),
             "loss": round(loss, 1), "kind": kind, "source": "stockfish",
-            "tag": mistake_tag(before, move, best_line, reply_line, cp_before, cp_after),
         })
     return mistakes
 
@@ -258,35 +191,20 @@ def find_mistakes(pgn, user_color, engine, tablebase=None, seconds=None, should_
 # --- Storage -------------------------------------------------------------
 
 def store_mistakes(game_id, mistakes):
-    """Replace a game's mistakes and mark it analysed. A mistake found again at
-    the same move keeps its practice record."""
+    """Replace a game's mistakes and mark it analysed."""
     conn = get_db()
     try:
         with conn:
-            plies = [m["ply"] for m in mistakes]
-            marks = ",".join("?" * len(plies))
-            conn.execute(
-                f"DELETE FROM game_mistakes WHERE game_id = ? AND ply NOT IN ({marks})",
-                (game_id, *plies),
-            )
+            conn.execute("DELETE FROM game_mistakes WHERE game_id = ?", (game_id,))
             for m in mistakes:
                 conn.execute(
                     """INSERT INTO game_mistakes
                        (game_id, ply, fen, user_color, played_san, played_uci, best_san,
-                        best_uci, cp_before, cp_after, target_cp, loss, kind, source, tag)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                       ON CONFLICT(game_id, ply) DO UPDATE SET
-                         fen = excluded.fen, user_color = excluded.user_color,
-                         played_san = excluded.played_san, played_uci = excluded.played_uci,
-                         best_san = excluded.best_san, best_uci = excluded.best_uci,
-                         cp_before = excluded.cp_before, cp_after = excluded.cp_after,
-                         target_cp = excluded.target_cp, loss = excluded.loss,
-                         kind = excluded.kind, source = excluded.source,
-                         tag = excluded.tag""",
+                        best_uci, cp_before, cp_after, loss, kind, source)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (game_id, m["ply"], m["fen"], m["user_color"], m["played_san"],
                      m["played_uci"], m["best_san"], m["best_uci"], m["cp_before"],
-                     m["cp_after"], m["target_cp"], m["loss"], m["kind"], m["source"],
-                     m.get("tag", "")),
+                     m["cp_after"], m["loss"], m["kind"], m["source"]),
                 )
             conn.execute(
                 "UPDATE games SET mistakes_analyzed_at = datetime('now') WHERE id = ?",
@@ -322,7 +240,7 @@ def pending_games(account_id=None, limit=4):
     try:
         rows = conn.execute(
             "SELECT g.id, g.pgn, g.user_color, g.white, g.black FROM games g "
-            "WHERE g.user_color IN ('white', 'black') AND g.merged_into_game_id IS NULL "
+            "WHERE g.user_color IN ('white', 'black') "
             "AND g.mistakes_analyzed_at IS NULL" + where +
             " ORDER BY g.end_time DESC, g.id DESC LIMIT ?",
             (*params, limit),
@@ -339,13 +257,7 @@ def _mistake_dict(row):
         "played_san": row["played_san"], "played_uci": row["played_uci"],
         "best_san": row["best_san"],
         "cp_before": row["cp_before"], "cp_after": row["cp_after"],
-        "target_cp": row["target_cp"], "loss": row["loss"],
-        "kind": row["kind"], "source": row["source"], "tag": row["tag"],
-        "progress": {
-            "attempts": row["attempts"], "solved": row["solved_count"],
-            "failed": row["failed_count"], "last_result": row["last_result"],
-            "last_played_at": row["last_played_at"],
-        },
+        "loss": row["loss"], "kind": row["kind"], "source": row["source"],
     }
 
 

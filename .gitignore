@@ -9,8 +9,6 @@ __pycache__/
 chess_review.db
 chess_review.db-shm
 chess_review.db-wal
-*.db.bak-*
-backups/
 
 # --- Optional browser-check tooling ---
 extension/scripts/node_modules/
@@ -26,4 +24,3 @@ extension/scripts/node_modules/
 extension/health-report.json
 extension/check-output/
 extension/native/openings-host
-venv-old-delete-me/

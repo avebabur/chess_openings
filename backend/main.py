@@ -19,7 +19,7 @@ from fastapi.background import BackgroundTasks
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse
 from starlette.middleware.trustedhost import TrustedHostMiddleware
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -52,36 +52,13 @@ class RepertoireBranchInput(BaseModel):
     color: Literal["white", "black"]
     name: str = Field(default="", max_length=120)
     moves_san: str = Field(min_length=1, max_length=4000)
-    opening: str = Field(default="", max_length=120)
-    opening_id: int | None = Field(default=None, gt=0)
-    tags: list[str] = Field(default_factory=list, max_length=30)
     label: Literal["main", "alternative", "trap", "sideline"] = "main"
-    note: str = Field(default="", max_length=4000)
-
-    @model_validator(mode="after")
-    def validate_tags(self):
-        if any(not tag.strip() or len(tag) > 40 or "," in tag for tag in self.tags):
-            raise ValueError("tags must be non-empty, at most 40 characters, and contain no commas")
-        return self
 
 
 class RepertoireBranchPatch(BaseModel):
-    color: Literal["white", "black"] | None = None
     name: str | None = Field(default=None, max_length=120)
     moves_san: str | None = Field(default=None, min_length=1, max_length=4000)
-    opening: str | None = Field(default=None, max_length=120)
-    opening_id: int | None = Field(default=None, gt=0)
-    tags: list[str] | None = Field(default=None, max_length=30)
     label: Literal["main", "alternative", "trap", "sideline"] | None = None
-    note: str | None = Field(default=None, max_length=4000)
-
-    @model_validator(mode="after")
-    def validate_tags(self):
-        if self.tags is not None and any(
-            not tag.strip() or len(tag) > 40 or "," in tag for tag in self.tags
-        ):
-            raise ValueError("tags must be non-empty, at most 40 characters, and contain no commas")
-        return self
 
 
 class AccountInput(BaseModel):
@@ -195,7 +172,6 @@ def get_profile(request: Request):
     return {
         "accounts": db.list_accounts(),
         "has_lichess_token": bool(db.get_setting("lichess_token")),
-        "games": db.count_games_by_source(),
         "stockfish": stockfish.availability(),
     }
 
@@ -395,9 +371,7 @@ def get_game(game_id: int = Path(gt=0)):
 
 
 @api.get("/repertoire/tree")
-def repertoire_tree(color: str = "white"):
-    if color not in ("white", "black"):
-        raise HTTPException(400, "color must be 'white' or 'black'")
+def repertoire_tree(color: Literal["white", "black"] = "white"):
     return db.get_repertoire_tree(color)
 
 
@@ -413,11 +387,7 @@ def classify_opening(moves_san: str = ""):
 def save_repertoire_branch(input: RepertoireBranchInput):
     try:
         return db.save_repertoire_branch(
-            input.color, input.name, input.moves_san,
-            label=input.label, note=input.note,
-            opening=input.opening, tags=input.tags,
-            opening_id=input.opening_id,
-        )
+            input.color, input.name, input.moves_san, label=input.label)
     except ValueError as e:
         raise HTTPException(400, str(e))
 
@@ -433,16 +403,7 @@ def delete_repertoire_branch(branch_id: int = Path(gt=0)):
 def update_repertoire_branch(input: RepertoireBranchPatch, branch_id: int = Path(gt=0)):
     try:
         branch = db.update_repertoire_branch(
-            branch_id,
-            color=input.color,
-            name=input.name,
-            moves_san=input.moves_san,
-            label=input.label,
-            note=input.note,
-            opening=input.opening,
-            opening_id=input.opening_id,
-            tags=input.tags,
-        )
+            branch_id, name=input.name, moves_san=input.moves_san, label=input.label)
     except ValueError as e:
         raise HTTPException(400, str(e))
     if not branch:

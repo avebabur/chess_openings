@@ -78,7 +78,7 @@ class ApiContractTests(unittest.TestCase):
         enqueue.assert_not_called()
         self.assertEqual(self.client.get("/api/accounts").json(), [])
 
-    def test_branches_are_validated_and_a_changed_line_resets_training(self):
+    def test_branches_are_validated_and_a_changed_line_replaces_its_moves(self):
         invalid = self.client.post("/api/repertoire/tree/branches", json={
             "color": "green", "name": "bad", "moves_san": "e4",
         })
@@ -90,7 +90,9 @@ class ApiContractTests(unittest.TestCase):
         updated = self.client.patch(
             f"/api/repertoire/tree/branches/{branch['id']}", json={"moves_san": "d4"},
         )
-        self.assertTrue(updated.json()["training_reset"])
+        self.assertEqual(updated.json()["moves_san"], "d4")
+        tree = self.client.get("/api/repertoire/tree", params={"color": "white"}).json()
+        self.assertEqual([node["san"] for node in tree["root"]["children"]], ["d4"])
 
 
     def test_backup_download_is_a_valid_database(self):

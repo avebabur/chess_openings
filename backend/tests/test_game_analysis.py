@@ -71,11 +71,14 @@ class DatabaseCase(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def add_game(self, pgn, user_color="white", end_time="2026-11-01T10:00:00"):
+        account = self.db.create_account("lichess", "me")
         conn = self.db.get_db()
         with conn:
+            number = conn.execute("SELECT COUNT(*) FROM games").fetchone()[0]
             cur = conn.execute(
-                "INSERT INTO games (white, black, result, pgn, user_color, end_time) "
-                "VALUES ('me', 'them', '0-1', ?, ?, ?)", (pgn, user_color, end_time))
+                "INSERT INTO games (account_id, source, external_id, white, black, result, "
+                "pgn, user_color, end_time) VALUES (?, 'lichess', ?, 'me', 'them', '0-1', ?, ?, ?)",
+                (account["id"], f"game{number}", pgn, user_color, end_time))
         conn.close()
         return cur.lastrowid
 
@@ -89,11 +92,6 @@ class ScaleTest(unittest.TestCase):
         self.assertAlmostEqual(self.ga.win_chance(0), 50.0)
         self.assertAlmostEqual(self.ga.win_chance(300) + self.ga.win_chance(-300), 100.0)
         self.assertGreater(self.ga.win_chance(self.ga.MATE_CP), 99.9)
-
-    def test_target_allows_a_small_loss_and_is_capped(self):
-        self.assertLess(self.ga.target_cp(100), 100)
-        self.assertGreater(self.ga.target_cp(100), 0)
-        self.assertEqual(self.ga.target_cp(self.ga.MATE_CP), self.ga.MAX_TARGET_CP)
 
     def test_thresholds(self):
         self.assertIsNone(self.ga.classify(9.9))
@@ -115,7 +113,6 @@ class FindMistakesTest(unittest.TestCase):
         self.assertEqual(mistake["source"], "stockfish")
         self.assertEqual(chess.Board(mistake["fen"]).turn, chess.WHITE)
         self.assertGreater(mistake["cp_before"], mistake["cp_after"])
-        self.assertLessEqual(mistake["target_cp"], mistake["cp_before"])
 
     def test_the_opponents_moves_are_not_reported(self):
         self.assertEqual(self.ga.find_mistakes(QUEEN_HANG, "black", FakeEngine()), [])
@@ -185,23 +182,6 @@ class VerifyAndTagTest(unittest.TestCase):
         found = self.ga.find_mistakes(QUEEN_HANG, "white", engine, seconds=0.3, verify_seconds=1.0)
         self.assertEqual([m["played_san"] for m in found], ["Qxf7+"])
         self.assertNotEqual(found[0]["cp_before"], 400)
-
-    def test_tags(self):
-        hung = self.ga.find_mistakes(QUEEN_HANG, "white", FakeEngine())[0]
-        self.assertEqual(hung["tag"], "lost_material")
-
-        board = chess.Board("6k1/5ppp/8/8/8/8/5PPP/3R2K1 w - - 0 1")
-        quiet_move = chess.Move.from_uci("h2h3")
-        mate_line = [chess.Move.from_uci("d1d8")]
-        self.assertEqual(
-            self.ga.mistake_tag(board, quiet_move, mate_line, [], self.ga.MATE_CP - 1, 50),
-            "missed_mate")
-
-        board = chess.Board("6k1/5ppp/8/3q4/8/8/5PPP/3R2K1 w - - 0 1")
-        win_queen = [chess.Move.from_uci("d1d5")]
-        self.assertEqual(
-            self.ga.mistake_tag(board, quiet_move, win_queen, [], 500, -300), "missed_material")
-        self.assertEqual(self.ga.mistake_tag(board, quiet_move, [], [], 50, -80), "quiet")
 
 class StorageTest(DatabaseCase):
 

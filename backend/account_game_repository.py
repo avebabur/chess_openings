@@ -31,12 +31,10 @@ PLATFORMS = ("chesscom", "lichess")
 
 
 def _account_row(conn, row):
-    """An accounts row + its imported/analyzed game counts."""
-    counts = conn.execute(
-        """SELECT COUNT(*) AS total, COALESCE(SUM(analyzed), 0) AS analyzed
-           FROM games WHERE account_id = ? AND merged_into_game_id IS NULL""",
-        (row["id"],),
-    ).fetchone()
+    """An accounts row + how many of its games are imported + its latest sync."""
+    games = conn.execute(
+        "SELECT COUNT(*) FROM games WHERE account_id = ?", (row["id"],),
+    ).fetchone()[0]
     job = conn.execute(
         """SELECT * FROM account_sync_jobs WHERE account_id = ?
            ORDER BY created_at DESC, rowid DESC LIMIT 1""",
@@ -49,8 +47,7 @@ def _account_row(conn, row):
         "label": row["label"] or "",
         "created_at": row["created_at"],
         "last_synced_at": row["last_synced_at"],
-        "games": counts["total"],
-        "analyzed": counts["analyzed"],
+        "games": games,
         "sync_job": _sync_job_row(job),
     }
 
@@ -269,90 +266,18 @@ def recover_sync_jobs():
     return list_queued_sync_jobs()
 
 
-def delete_account(account_id, delete_games=True):
-    """Remove an account. By default its imported games go too (they're only
-    useful in the context of that account); pass delete_games=False to orphan
-    them instead (account_id → NULL, so they drop out of the per-account tree)."""
+def delete_account(account_id):
+    """Remove an account; its imported games and their mistakes go with it."""
     conn = get_db()
     try:
-        if not conn.execute("SELECT id FROM accounts WHERE id = ?", (account_id,)).fetchone():
-            return False
-        if delete_games:
-            game_ids = [
-                row["id"] for row in conn.execute(
-                    "SELECT id FROM games WHERE account_id = ?", (account_id,),
-                ).fetchall()
-            ]
-            if game_ids:
-                placeholders = ",".join("?" * len(game_ids))
-                conn.execute(
-                    f"DELETE FROM puzzles WHERE game_id IN ({placeholders})", game_ids,
-                )
-                conn.execute(
-                    f"DELETE FROM reanalyze_jobs WHERE game_id IN ({placeholders})", game_ids,
-                )
-                conn.execute(
-                    f"DELETE FROM games WHERE merged_into_game_id IN ({placeholders})", game_ids,
-                )
-            conn.execute("DELETE FROM games WHERE account_id = ?", (account_id,))
-        else:
-            conn.execute("UPDATE games SET account_id = NULL WHERE account_id = ?", (account_id,))
-        conn.execute("DELETE FROM accounts WHERE id = ?", (account_id,))
+        cur = conn.execute("DELETE FROM accounts WHERE id = ?", (account_id,))
         conn.commit()
-        return True
-    except Exception:
-        conn.rollback()
-        raise
+        return cur.rowcount > 0
     finally:
         conn.close()
 
 
-def migrate_games_to_accounts():
-    """Back-fill accounts + games.account_id from existing imported games.
-
-    Each game records who the user was (user_color → white/black name) and its
-    source, so we derive one account per (source, owner-username) and tag every
-    game with it. Historical single-account imports become the first account with
-    no re-import. Idempotent: only touches games whose account_id is still NULL."""
-    conn = get_db()
-    try:
-        rows = conn.execute(
-            """SELECT id, white, black, user_color, COALESCE(source, 'manual') AS source
-               FROM games
-               WHERE account_id IS NULL AND merged_into_game_id IS NULL
-                 AND user_color IN ('white', 'black')""",
-        ).fetchall()
-        if not rows:
-            return
-        cache = {}  # (platform, lower-username) -> account_id
-        for r in rows:
-            owner = ((r["white"] if r["user_color"] == "white" else r["black"]) or "").strip()
-            if not owner:
-                continue
-            platform = r["source"] if r["source"] in PLATFORMS else "chesscom"
-            key = (platform, owner.lower())
-            account_id = cache.get(key)
-            if account_id is None:
-                existing = conn.execute(
-                    "SELECT id FROM accounts WHERE platform = ? AND lower(username) = lower(?)",
-                    (platform, owner),
-                ).fetchone()
-                if existing:
-                    account_id = existing["id"]
-                else:
-                    cur = conn.execute(
-                        "INSERT INTO accounts (platform, username) VALUES (?, ?)",
-                        (platform, owner),
-                    )
-                    account_id = cur.lastrowid
-                cache[key] = account_id
-            conn.execute("UPDATE games SET account_id = ? WHERE id = ?", (account_id, r["id"]))
-        conn.commit()
-    finally:
-        conn.close()
-
-
-# --- Imported games (chess.com) ---
+# --- Imported games ---
 
 def save_imported_games(items):
     """Batch imported games in one transaction; return inserted and seen counts."""
@@ -372,8 +297,8 @@ def save_imported_games(items):
                 """INSERT INTO games
                    (white, black, result, date, pgn, source, external_id, user_color,
                     user_rating, opp_rating, time_class, time_control, end_time, eco,
-                    opening, account_id, analyzed, analysis)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,NULL)
+                    opening, account_id)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(account_id, source, external_id) DO UPDATE SET
                      white=excluded.white, black=excluded.black, result=excluded.result,
                      date=excluded.date, pgn=excluded.pgn, user_color=excluded.user_color,
@@ -398,31 +323,12 @@ def save_imported_games(items):
     return {"imported": imported, "seen": len(rows)}
 
 
-def count_games_by_source():
-    conn = get_db()
-    rows = conn.execute(
-        """SELECT COALESCE(source, 'manual') AS source,
-                  COUNT(*) AS total,
-                  COALESCE(SUM(analyzed), 0) AS analyzed
-           FROM games WHERE merged_into_game_id IS NULL
-           GROUP BY COALESCE(source, 'manual')""",
-    ).fetchall()
-    conn.close()
-    out = {"total": 0, "analyzed": 0, "by_source": {}}
-    for r in rows:
-        out["by_source"][r["source"]] = {"total": r["total"], "analyzed": r["analyzed"]}
-        out["total"] += r["total"]
-        out["analyzed"] += r["analyzed"]
-    return out
-
-
 def get_games_for_tree(color=None, time_classes=None, account_id=None):
     """Lightweight rows for opening-tree aggregation — only games where we know
     which side the user played. account_id None ⇒ all accounts combined."""
     conn = get_db()
     q = ("SELECT id, pgn, result, user_color, opp_rating, end_time, opening, eco, "
-         "time_class, analyzed FROM games WHERE user_color IS NOT NULL "
-         "AND merged_into_game_id IS NULL")
+         "time_class FROM games WHERE user_color IS NOT NULL")
     params = []
     if account_id:
         q += " AND account_id = ?"
@@ -445,36 +351,18 @@ def get_game_summaries(game_ids):
     conn = get_db()
     rows = conn.execute(
         "SELECT id, white, black, result, date, end_time, user_color, user_rating, "
-        "opp_rating, time_class, time_control, eco, opening, source, analyzed "
+        "opp_rating, time_class, time_control, eco, opening, source "
         f"FROM games WHERE id IN ({','.join('?' * len(game_ids))})", list(game_ids)).fetchall()
     conn.close()
     return {r["id"]: dict(r) for r in rows}
-
-
-def count_games():
-    """How many games are imported (merged duplicates not counted)."""
-    conn = get_db()
-    try:
-        return conn.execute(
-            "SELECT COUNT(*) FROM games WHERE merged_into_game_id IS NULL").fetchone()[0]
-    finally:
-        conn.close()
 
 
 def get_game(game_id):
     """Full game row including the PGN, or None if it doesn't exist."""
     conn = get_db()
     row = conn.execute("SELECT * FROM games WHERE id = ?", (game_id,)).fetchone()
-    if row and row["merged_into_game_id"]:
-        row = conn.execute(
-            "SELECT * FROM games WHERE id = ?", (row["merged_into_game_id"],),
-        ).fetchone()
     conn.close()
-    if not row:
-        return None
-    result = dict(row)
-    result["analysis"] = json.loads(result["analysis"]) if result["analysis"] else None
-    return result
+    return dict(row) if row else None
 
 
 def find_game_by_external_id(source, external_id):
@@ -484,8 +372,8 @@ def find_game_by_external_id(source, external_id):
     try:
         row = conn.execute(
             "SELECT id, white, black, result, date, end_time, user_color, user_rating, "
-            "opp_rating, time_class, time_control, eco, opening, source, analyzed "
-            "FROM games WHERE source = ? AND external_id = ? AND merged_into_game_id IS NULL LIMIT 1",
+            "opp_rating, time_class, time_control, eco, opening, source "
+            "FROM games WHERE source = ? AND external_id = ? LIMIT 1",
             (source, external_id)).fetchone()
     finally:
         conn.close()

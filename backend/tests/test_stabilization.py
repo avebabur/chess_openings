@@ -51,7 +51,7 @@ class StabilizationTests(unittest.TestCase):
             {**base, "account_id": second["id"], "user_color": "black"},
         ])
         self.assertEqual(result, {"imported": 2, "seen": 2})
-        self.assertEqual(self.db.count_games(), 2)
+        self.assertEqual([a["games"] for a in self.db.list_accounts()], [1, 1])
 
     def test_accounts_are_case_insensitive_and_sync_jobs_cancel(self):
         first = self.db.create_account("chesscom", "Player")
@@ -62,6 +62,50 @@ class StabilizationTests(unittest.TestCase):
         cancelled = self.db.request_sync_job_cancel(job["id"])
         self.assertTrue(cancelled["cancel_requested"])
 
+
+    def test_removing_an_account_removes_its_games(self):
+        account = self.db.create_account("chesscom", "Alpha")
+        self.db.save_imported_games([{
+            "white": "Alpha", "black": "Beta", "result": "1-0", "pgn": PGN,
+            "source": "chesscom", "external_id": "g1", "account_id": account["id"],
+            "user_color": "white",
+        }])
+        self.assertTrue(self.db.delete_account(account["id"]))
+        self.assertEqual(self.db.get_games_for_tree(), [])
+        self.assertFalse(self.db.delete_account(account["id"]))
+
+    def test_lines_share_their_opening_moves_and_deleting_one_keeps_the_other(self):
+        short = self.db.save_repertoire_branch("white", "", "e4 e5 Nf3")
+        long = self.db.save_repertoire_branch("white", "Italian", "e4 e5 Nf3 Nc6 Bc4", label="sideline")
+        self.assertEqual(short["name"], "e4 e5 Nf3")
+        with self.assertRaises(ValueError):
+            self.db.update_repertoire_branch(short["id"], moves_san="e4 e5 Nf3 Nc6 Bc4")
+        with self.assertRaises(ValueError):
+            self.db.save_repertoire_branch("white", "", "e4 Ke2")
+        renamed = self.db.update_repertoire_branch(long["id"], name="Giuoco", label="main")
+        self.assertEqual((renamed["name"], renamed["label"], renamed["moves_san"]),
+                         ("Giuoco", "main", "e4 e5 Nf3 Nc6 Bc4"))
+        # Every move of a main line is main, not only its last; a sideline's own moves are not.
+        side = self.db.save_repertoire_branch("white", "", "e4 e5 Nf3 Nf6", label="sideline")
+        labels = {}
+        stack = list(self.db.get_repertoire_tree("white")["root"]["children"])
+        while stack:
+            node = stack.pop()
+            labels[node["path_san"]] = node["label"]
+            stack.extend(node["children"])
+        self.assertEqual(labels["e4 e5 Nf3 Nc6"], "main")
+        self.assertEqual(labels["e4 e5 Nf3 Nf6"], "sideline")
+        self.assertTrue(self.db.delete_repertoire_branch(side["id"]))
+        self.assertTrue(self.db.delete_repertoire_branch(long["id"]))
+        tree = self.db.get_repertoire_tree("white")
+        self.assertEqual([b["id"] for b in tree["branches"]], [short["id"]])
+        path, node = [], tree["root"]
+        while node["children"]:
+            self.assertEqual(len(node["children"]), 1)
+            node = node["children"][0]
+            path.append(node["san"])
+        self.assertEqual(path, ["e4", "e5", "Nf3"])
+        self.assertEqual(self.db.get_repertoire_tree("black")["branches"], [])
 
     def test_manual_backup_is_integral(self):
         self.db.save_repertoire_branch("white", "Line", "e4")
