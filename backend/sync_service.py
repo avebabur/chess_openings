@@ -17,12 +17,15 @@ CANCEL_POLL_SECS = 0.5
 
 
 class AccountSyncService:
-    def __init__(self, invalidate_cache=None, import_client=None):
+    def __init__(self, invalidate_cache=None, import_client=None, on_imported=None):
         self._queue = queue.Queue()
         self._stopping = threading.Event()
         self._worker = None
         self._invalidate_cache = invalidate_cache
         self._import_client = import_client
+        # Called as on_imported(account_id, count) after a sync that brought
+        # in new games, so they can be analysed without being asked for.
+        self._on_imported = on_imported
 
     def start(self):
         if self._worker and self._worker.is_alive():
@@ -131,6 +134,11 @@ class AccountSyncService:
                 warnings=warnings,
                 error="",
             )
+            if self._on_imported is not None and result.get("imported", 0) > 0:
+                try:
+                    self._on_imported(job["account_id"], result["imported"])
+                except Exception:
+                    log.exception("Follow-up after sync job %s failed", job_id)
         finally:
             self._invalidate(job["account_id"])
 

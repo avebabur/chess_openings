@@ -3437,3 +3437,141 @@
   color: var(--warn, #d9a441);
 }
 .mistake-kind.blunder { color: var(--loss); }
+
+/* Lichess puzzles (Play tab). */
+.puzzle-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px 18px;
+  align-items: flex-end;
+  margin: 10px 0 4px;
+}
+.puzzle-controls .eyebrow { display: block; margin-bottom: 5px; }
+.puzzle-theme { flex: 1 1 150px; min-width: 0; }
+.puzzle-theme select {
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+.puzzle-missed { margin-top: 12px; }
+.puzzle-answer {
+  margin-top: 8px;
+  font-size: 13px;
+}
+.puzzle-answer summary { cursor: pointer; color: var(--accent-2); }
+.puzzle-answer p { margin-top: 6px; }
+
+/* chess.com round trip (Games tab). */
+.chesscom-bookmark {
+  margin: 0 0 12px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.bookmarklet {
+  display: inline-block;
+  padding: 1px 8px;
+  border: 1px dashed var(--accent-line);
+  border-radius: var(--radius-xs);
+  color: var(--accent-2);
+  cursor: grab;
+  text-decoration: none;
+}
+.game-review-source {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--accent-2);
+}
+
+/* Weakness report (Play tab) and play-on from a reviewed game. */
+.weakness-section h4 {
+  margin: 10px 0 4px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+.weakness-section ul {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 6px;
+  display: grid;
+  gap: 4px;
+}
+.weakness-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 56px 64px 52px;
+  gap: 8px;
+  align-items: center;
+  font-size: 13px;
+}
+.weakness-bar {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--line);
+  overflow: hidden;
+}
+.weakness-bar i {
+  display: block;
+  height: 100%;
+  background: var(--loss);
+}
+.weakness-count {
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.game-review-play { margin: 0 0 10px; }
+
+/* Comment on the position (under the board) and comment marks in a game. */
+/* A fixed height: the board is sized from what is left of the column, so a
+   box that grew with its text would resize the board from move to move. */
+.position-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 8px;
+  height: 54px;
+}
+.position-note textarea {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  resize: none;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.4;
+}
+.position-note textarea:focus { outline: none; border-color: var(--accent-line); }
+.position-note-state {
+  min-width: 62px;
+  padding-top: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.note-mark { margin-left: 3px; color: var(--accent-2); font-size: 11px; }
+
+/* Thinking time: presets plus any number of seconds. */
+.think-time { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.think-custom { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); font-size: 12px; }
+.think-custom input {
+  width: 64px;
+  padding: 5px 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}

@@ -157,16 +157,37 @@ export function verdictForMove(table, uci) {
  */
 let sessionCounter = 0
 
-export function createPlaySession({ fen, userColor, seconds = 1, label = '', goal = null, practice = null }) {
+/*
+ * `script`, when set, is a list of UCI moves that replaces the engine: the
+ * opponent answers with `script[moves played so far]` and nothing is asked of
+ * the backend. A puzzle is a scripted session. `startLastMove` is the move
+ * that led to the start position, so it can be highlighted.
+ */
+export const MIN_THINK_SECONDS = 0.1
+export const MAX_THINK_SECONDS = 300
+
+/** A thinking time the backend accepts, or 1 second for anything unreadable. */
+export function clampSeconds(value) {
+  const seconds = Number(value)
+  if (!Number.isFinite(seconds) || seconds <= 0) return 1
+  return Math.min(MAX_THINK_SECONDS, Math.max(MIN_THINK_SECONDS, Math.round(seconds * 10) / 10))
+}
+
+export function createPlaySession({
+  fen, userColor, seconds = 1, label = '', goal = null, practice = null,
+  script = null, startLastMove = null,
+}) {
   sessionCounter += 1
   const session = {
     id: sessionCounter,
     startFen: fen,
     userColor: userColor === 'black' ? 'black' : 'white',
-    seconds,
+    seconds: clampSeconds(seconds),
     label,
     goal,
     practice,
+    script,
+    startLastMove,
     attempt: 1,
     moves: [],
     error: null,
@@ -184,7 +205,9 @@ export function playSans(session) {
 
 export function playLastMove(session) {
   const last = session.moves.at(-1)
-  return last ? [last.from, last.to] : null
+  if (last) return [last.from, last.to]
+  const lead = session.startLastMove
+  return lead && lead.length >= 4 ? [lead.slice(0, 2), lead.slice(2, 4)] : null
 }
 
 function withStatus(session) {
@@ -232,6 +255,19 @@ export function playReducer(state, action) {
       return null
     case 'restart':
       return state ? withStatus({ ...state, moves: [], error: null, attempt: state.attempt + 1 }) : state
+    case 'setSeconds': {
+      // How long the engine thinks can be changed at any point of a game; the
+      // next reply uses it.
+      const seconds = clampSeconds(action.seconds)
+      return state && seconds !== state.seconds ? { ...state, seconds } : state
+    }
+    case 'playOn': {
+      // An exercise is over but the position is not: carry on from it as a
+      // plain game against the engine. The record of the exercise is already
+      // written, so the goal, the script and the link to it are dropped.
+      if (!state || !goalEnded(state) || state.result) return state
+      return withStatus({ ...state, goal: null, practice: null, script: null, error: null })
+    }
     case 'userMove': {
       if (!state || state.status !== PLAY_STATUS.USER_TURN) return state
       const entry = moveEntry('user', action.move, { fenBefore: playFen(state) })

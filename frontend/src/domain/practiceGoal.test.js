@@ -1,13 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import { makeMove } from './chessLine'
-import { createPlaySession, goalEnded, playFen, playReducer } from './playSession'
+import { createPlaySession, goalEnded, playFen, playLastMove, playReducer } from './playSession'
 import {
   assessmentFromReply,
   describeGoal,
   goalLabel,
   goalOutcomeText,
   judgeGoal,
+  castleUci,
   mistakeGoal,
+  puzzleGoal,
   ratingText,
 } from './practiceGoal'
 
@@ -189,6 +191,11 @@ describe('a mistake from your own game', () => {
     expect(goalOutcomeText(g, bad).body).toContain('It would have played Nf3')
   })
 
+  it('ends, instead of waiting forever, when the reply carries no rating', () => {
+    const unrated = [{ by: 'user', uci: 'g1f3', san: 'Nf3', assessment: { cp: null, outcome: null } }]
+    expect(run(unrated)).toMatchObject({ state: 'failed', reason: 'unrated' })
+  })
+
   it('fails the move from the game without waiting', () => {
     expect(run(first('d1h5', 'Qh5', null))).toMatchObject({ state: 'failed', reason: 'same-move' })
   })
@@ -200,5 +207,72 @@ describe('a mistake from your own game', () => {
       goal: { ...g, cp: -100 }, userColor: 'white', moves: first('a2a3', 'a3', null), result: drawn,
     })
     expect(holding.state).toBe('solved')
+  })
+})
+
+describe('a Lichess puzzle', () => {
+  const g = puzzleGoal({
+    solution: ['a7h7', 'h4g4', 'd2g2'], solution_san: ['Rxh7+', 'Kg4', 'Rg2+'],
+    rating: 1190, themes: ['rookEndgame'], url: 'https://lichess.org/training/r162L',
+  })
+  const user = (uci, san) => ({ by: 'user', uci, san })
+  const reply = { by: 'engine', uci: 'h4g4', san: 'Kg4' }
+  const run = (moves, result = null) => judgeGoal({ goal: g, userColor: 'white', moves, result })
+
+  it('follows the solution move by move', () => {
+    expect(describeGoal(g).detail).toContain('2 moves of yours')
+    expect(run([user('a7h7', 'Rxh7+')]).state).toBe('running')
+    const done = run([user('a7h7', 'Rxh7+'), reply, user('d2g2', 'Rg2+')])
+    expect(done).toMatchObject({ state: 'solved', reason: 'puzzle', used: 2 })
+    expect(goalOutcomeText(g, done).body).toBe('You found all 2 moves.')
+  })
+
+  it('fails on the first move that is not the solution', () => {
+    const miss = run([user('a7h7', 'Rxh7+'), reply, user('d2d1', 'Rd1')])
+    expect(miss).toMatchObject({ state: 'failed', reason: 'wrong-move', san: 'Rd1' })
+    expect(goalOutcomeText(g, miss).title).toBe('Rd1 is not the move')
+  })
+
+  it('accepts castling whichever way the solution writes it', () => {
+    const castle = { ...g, solution: ['e1h1'] }
+    const judge = move => judgeGoal({ goal: castle, userColor: 'white', moves: [move], result: null })
+    expect(judge(user('e1g1', 'O-O')).state).toBe('solved')
+    expect(judge(user('e1g1', 'Qg1')).state).toBe('failed')
+    expect(castleUci('e8a8')).toBe('e8c8')
+    expect(castleUci('a7h7')).toBe('a7h7')
+  })
+
+  it('accepts any checkmate, as Lichess does', () => {
+    const mate = run([user('d2d1', 'Rd1#')], { winner: 'white', reason: 'checkmate' })
+    expect(mate.state).toBe('solved')
+  })
+
+  it('highlights the move that led to the puzzle and answers from the script', () => {
+    let session = createPlaySession({
+      fen: '6r1/R6p/p4p2/4p3/1P5k/P4r2/2PR3K/8 w - - 0 1', userColor: 'white',
+      goal: g, script: g.solution, startLastMove: 'g4h4',
+    })
+    expect(playLastMove(session)).toEqual(['g4', 'h4'])
+    session = playReducer(session, { type: 'userMove', move: makeMove(playFen(session), 'a7', 'h7') })
+    expect(session.status).toBe('engineThinking')
+    expect(session.script[session.moves.length]).toBe('h4g4')
+  })
+})
+
+describe('playing on after an exercise', () => {
+  it('turns a finished exercise into a plain game from the same position', () => {
+    const g = mistakeGoal({
+      target_cp: 50, played_san: 'e4', played_uci: 'e2e4', best_san: 'Nf3',
+      cp_before: 30, cp_after: -200, source: 'stockfish',
+    })
+    const start = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1'
+    let session = createPlaySession({ fen: start, userColor: 'white', goal: g, practice: { id: 1 } })
+    expect(playReducer(session, { type: 'playOn' })).toBe(session)
+
+    session = playReducer(session, { type: 'userMove', move: makeMove(start, 'e2', 'e4') })
+    expect(goalEnded(session)).toBe(true)
+    const game = playReducer(session, { type: 'playOn' })
+    expect(game).toMatchObject({ goal: null, practice: null, goalState: null, status: 'engineThinking' })
+    expect(game.moves).toHaveLength(1)
   })
 })

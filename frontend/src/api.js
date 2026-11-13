@@ -55,3 +55,9 @@ api.interceptors.response.use(
     return api(config)
   },
 )
+
+/** The backend's own message for a failed request, or `fallback`. */
+export function errorText(err, fallback) {
+  const detail = err?.response?.data?.detail
+  return typeof detail === 'string' ? detail : (err?.message || fallback)
+}

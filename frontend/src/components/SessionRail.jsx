@@ -1,4 +1,4 @@
-/* What the left rail shows while a drill or review is running.
+/* What the left rail shows while a drill or a game is running.
  *
  * The rail can't show EnginePanel mid-session — Stockfish's best line and the
  * Lichess-players list both give away the move you're being asked for. It used to
@@ -10,10 +10,6 @@
 export default function SessionRail({
   isTraining,
   trainerStrip,
-  isReviewing,
-  review,
-  reviewItem,
-  reviewCompleted,
   playSession,
 }) {
   if (isTraining && trainerStrip) {
@@ -30,23 +26,6 @@ export default function SessionRail({
     )
   }
 
-  if (isReviewing) {
-    return (
-      <div className="op-practice-strip review" role="status">
-        <div className="op-practice-strip-head">
-          <span>Reviewing · find the move for {reviewItem.color === 'white' ? 'White' : 'Black'}</span>
-          <span>{review.idx + 1}/{review.queue.length}</span>
-        </div>
-        <div className="op-practice-progress">
-          <div
-            className="op-practice-progress-fill"
-            style={{ width: `${Math.round((reviewCompleted / review.queue.length) * 100)}%` }}
-          />
-        </div>
-      </div>
-    )
-  }
-
   if (playSession) {
     const userMoves = playSession.moves.filter(move => move.by === 'user')
     const judged = userMoves.filter(move => move.verdict)
@@ -54,13 +33,15 @@ export default function SessionRail({
     return (
       <div className="op-practice-strip" role="status">
         <div className="op-practice-strip-head">
-          <span>Playing Stockfish as {playSession.userColor === 'white' ? 'White' : 'Black'}</span>
+          <span>{playSession.script ? 'Puzzle' : 'Playing Stockfish'} as {playSession.userColor === 'white' ? 'White' : 'Black'}</span>
           <span>{userMoves.length} move{userMoves.length === 1 ? '' : 's'}</span>
         </div>
         <p className="play-rail-note">
           {judged.length
             ? `Tablebase: ${judged.length - mistakes} of ${judged.length} moves kept the result.`
-            : 'The engine panel is hidden during a game, like the answers in a drill.'}
+            : playSession.script
+              ? 'The engine panel is hidden while you solve.'
+              : 'The engine panel is hidden during a game, like the answers in a drill.'}
         </p>
       </div>
     )

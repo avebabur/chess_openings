@@ -1,17 +1,14 @@
 /* eslint-disable react-hooks/set-state-in-effect */
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { api } from '../api'
+import { api, errorText } from '../api'
 
 const POLL_MS = 1500
-
-function errorText(err, fallback) {
-  const detail = err?.response?.data?.detail
-  return typeof detail === 'string' ? detail : (err?.message || fallback)
-}
+// With nothing running, look now and then for an analysis that a sync started.
+const IDLE_POLL_MS = 10000
 
 /**
  * The user's mistakes in their own games, and the background analysis that
- * finds them. The analysis runs on the backend (about 20 seconds a game), so
+ * finds them. The analysis runs on the backend (up to a minute a game), so
  * this polls its status until it ends and then reloads the list.
  */
 export function useMistakes({ enabled, accountId }) {
@@ -19,12 +16,18 @@ export function useMistakes({ enabled, accountId }) {
   const [loadError, setLoadError] = useState('')
   const [job, setJob] = useState(null)
 
+  // Only the newest request may answer, so switching account quickly cannot
+  // leave the previous account's list on screen.
+  const latestLoad = useRef(0)
   const load = useCallback(async () => {
+    const request = ++latestLoad.current
     try {
       const res = await api.get('/mistakes', { params: accountId ? { account_id: accountId } : {} })
+      if (request !== latestLoad.current) return
       setData(res.data)
       setLoadError('')
     } catch (err) {
+      if (request !== latestLoad.current) return
       setLoadError(errorText(err, 'Could not load your mistakes'))
     }
   }, [accountId])
@@ -48,10 +51,10 @@ export function useMistakes({ enabled, accountId }) {
   const running = Boolean(job?.running)
   const done = job?.done ?? 0
   useEffect(() => {
-    if (!running) return undefined
-    const timer = window.setTimeout(fetchJob, POLL_MS)
+    if (!enabled) return undefined
+    const timer = window.setTimeout(fetchJob, running ? POLL_MS : IDLE_POLL_MS)
     return () => window.clearTimeout(timer)
-  }, [running, job, fetchJob])
+  }, [enabled, running, job, fetchJob])
   const seen = useRef({ running: false, done: 0 })
   useEffect(() => {
     const before = seen.current

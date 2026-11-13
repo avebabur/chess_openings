@@ -163,7 +163,7 @@ export default function PracticeTab({
             <p>
               {trainer.lineMisses.length === 0
                 ? 'No misses on that line.'
-                : `${trainer.lineMisses.length} miss${trainer.lineMisses.length > 1 ? 'es' : ''} added to Review.`}
+                : `${trainer.lineMisses.length} miss${trainer.lineMisses.length > 1 ? 'es' : ''} in this line.`}
               {lastLine ? ' That was the last line in this run.' : ''}
             </p>
             <div className="practice-done-actions">

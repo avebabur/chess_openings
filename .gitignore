@@ -29,3 +29,7 @@ frontend/.vite/
 .vscode/
 .idea/
 frontend/playwright.chrome.config.js
+extension/health-report.json
+extension/check-output/
+extension/native/openings-host
+venv-old-delete-me/

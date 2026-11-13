@@ -1,3 +1,5 @@
+import { useCallback } from 'react'
+
 /** Result from the user's point of view → 'win' | 'draw' | 'loss' | null. */
 function resultPov(result, userColor) {
   if (result === '1/2-1/2') return 'draw'
@@ -9,6 +11,27 @@ function resultPov(result, userColor) {
 
 const POV_LABEL = { win: 'W', draw: 'D', loss: 'L' }
 
+/**
+ * A bookmark that, clicked on a chess.com game page, opens that game here in
+ * the same tab. React refuses `javascript:` links, so the address is set on
+ * the element directly.
+ */
+function ChesscomBookmark() {
+  const setHref = useCallback((el) => {
+    if (!el) return
+    const target = JSON.stringify(`${window.location.origin}/?game=`)
+    el.setAttribute('href', `javascript:location.href=${target}+encodeURIComponent(location.href)`)
+  }, [])
+  return (
+    <p className="chesscom-bookmark">
+      Drag{' '}
+      <a ref={setHref} className="bookmarklet" onClick={event => event.preventDefault()}>Open in Chess Openings</a>
+      {' '}to your bookmarks bar. Clicked on a chess.com game page, it opens that game here;
+      the game&apos;s review has a link back.
+    </p>
+  )
+}
+
 export default function GamesTab({
   games,
   total,
@@ -19,6 +42,7 @@ export default function GamesTab({
   onOpenGame,
   onLoadMore,
   onReload,
+  notice,
 }) {
   return (
     <div className="tab-pane" role="tabpanel">
@@ -28,6 +52,9 @@ export default function GamesTab({
           <p>{accountName ? `${accountName} · newest first` : 'Click a game to review it move by move.'}</p>
         </div>
       </div>
+
+      {notice && <p className="play-fen-error" role="alert">{notice}</p>}
+      <ChesscomBookmark />
 
       {error ? (
         <div className="op-empty">

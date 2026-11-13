@@ -14,11 +14,13 @@ import { useRepertoire } from './hooks/useRepertoire'
 import { useAccountManager } from './hooks/useAccountManager'
 import { useOpeningNavigation } from './hooks/useOpeningNavigation'
 import { useTrainingSession } from './hooks/useTrainingSession'
-import { useReviewSession } from './hooks/useReviewSession'
 import { usePlaySession } from './hooks/usePlaySession'
 import { nextPositionAfter, usePracticeLibrary } from './hooks/usePracticeLibrary'
 import { moveLabel, nextMistakeAfter, opponentOf, useMistakes } from './hooks/useMistakes'
-import { mistakeGoal } from './domain/practiceGoal'
+import { mistakeGoal, puzzleGoal } from './domain/practiceGoal'
+import { themeLabels, usePuzzles } from './hooks/usePuzzles'
+import { usePositionNotes } from './hooks/usePositionNotes'
+import PositionNote from './components/PositionNote'
 import {
   START_FEN,
   applySanMove,
@@ -45,12 +47,6 @@ import {
   trainerExpectedChild,
 } from './domain/openingTrainer'
 import {
-  REVIEW_STATUS,
-  reviewCompletedCount,
-  reviewDisplayPath,
-  reviewPriorPath as getReviewPriorPath,
-} from './domain/reviewSession'
-import {
   PLAY_STATUS,
   gameResult,
   parseStartFen,
@@ -68,7 +64,6 @@ import ExploreTab from './components/tabs/ExploreTab'
 import RepertoireTab from './components/tabs/RepertoireTab'
 import PracticeTab from './components/tabs/PracticeTab'
 import PlayTab from './components/tabs/PlayTab'
-import ReviewTab from './components/tabs/ReviewTab'
 import GamesTab from './components/tabs/GamesTab'
 import GameReviewPanel from './components/tabs/GameReviewPanel'
 import { formatMoveLine, openingFamily, shortMoves } from './utils/formatUtils'
@@ -90,7 +85,6 @@ const TABS = [
   { id: 'Repertoire', hint: 'Saved variations' },
   { id: 'Practice', label: 'Train', hint: 'Drill openings with random branching' },
   { id: 'Play', hint: 'Play the position against Stockfish' },
-  { id: 'Review', hint: 'Spaced repetition' },
   { id: 'Games', hint: 'Browse and review full games' },
 ]
 
@@ -142,19 +136,17 @@ export default function OpeningsExplorer() {
     trainer, trainerPath, dispatchTrainer, drillWrite,
     stopTrainer, clearTimer: clearTrainerTimer,
   } = useTrainingSession({ activeTab, repertoire, reloadRepertoire: reloadAfterDrill })
-  const {
-    review, reviewItem, reviewWrite, dispatchReview,
-    recordReview, retryReviewWrite, resetReviewWrite,
-  } = useReviewSession(loadRepertoire)
   const play = usePlaySession()
   const practiceLibrary = usePracticeLibrary({ enabled: activeTab === 'Play' })
   const mistakes = useMistakes({ enabled: activeTab === 'Play', accountId: selectedAccountId })
+  const puzzles = usePuzzles({ enabled: activeTab === 'Play' })
+  const positionNotes = usePositionNotes()
   const playSession = play.session
   const stopPlay = play.stop
   const beginPlay = play.start
   const { tree, loading, error, reload: reloadTree } = useOpeningTree({
     color, pathKey: activeLineKey, timeClass, accountId: selectedAccountId,
-    enabled: activeTab === 'Explore' && !trainer && !reviewItem && !playSession,
+    enabled: activeTab === 'Explore' && !trainer && !playSession,
   })
   // The games list is fetched the first time the tab is opened, not on every
   // page load; after that it stays loaded (and keeps any "Load more" pages).
@@ -164,10 +156,9 @@ export default function OpeningsExplorer() {
     games: gameRows, total: gamesTotal, loading: gamesLoading, error: gamesError,
     hasMore: gamesHasMore, loadMore: loadMoreGames, reload: reloadGames,
   } = useGames({ accountId: selectedAccountId, timeClass, enabled: gamesTabOpened })
+  const [gameLinkNotice, setGameLinkNotice] = useState('')
   const cancelPromotion = useCallback(() => setPendingPromotion(null), [])
   const resetBoardPosition = useCallback(() => setBoardResetKey((key) => key + 1), [])
-
-  const stopReview = useCallback(() => dispatchReview({ type: 'clear' }), [dispatchReview])
 
   const closeGame = useCallback(() => {
     setReviewGame(null)
@@ -179,10 +170,11 @@ export default function OpeningsExplorer() {
   const openGame = useCallback(async (game) => {
     clearTrainerTimer()
     dispatchTrainer({ type: 'stop' })
-    dispatchReview({ type: 'clear' })
     stopPlay()
     setActiveTab('Games')
     setFlipped(false)
+    // Show the repertoire for the side you played in this game.
+    if (game.user_color === 'white' || game.user_color === 'black') setColor(game.user_color)
     try {
       const res = await api.get(`/games/${game.id}`)
       const sans = sansFromPgn(res.data?.pgn)
@@ -192,7 +184,38 @@ export default function OpeningsExplorer() {
       setReviewGame({ ...game, sans: [], error: true })
       setLine({ path: [], future: [] })
     }
-  }, [clearTrainerTimer, dispatchReview, dispatchTrainer, stopPlay, setFlipped, setLine])
+  }, [clearTrainerTimer, dispatchTrainer, stopPlay, setFlipped, setLine])
+
+  // Arriving from the chess.com bookmark: /?game=<address of the game page>.
+  // The address is taken off the URL so a reload does not reopen the game.
+  const linkHandled = useRef(false)
+  useEffect(() => {
+    if (linkHandled.current) return
+    linkHandled.current = true
+    const params = new URLSearchParams(window.location.search)
+    const link = params.get('game')
+    // Arriving from the Lichess extension's menu: /?tab=Train opens that tab.
+    const tabParam = params.get('tab')
+    const wantedTab = TABS.find(t => t.id === tabParam || t.label === tabParam)
+    if (!link && wantedTab) {
+      window.history.replaceState(null, '', window.location.pathname)
+      setActiveTab(wantedTab.id)
+      return
+    }
+    if (!link) return
+    window.history.replaceState(null, '', window.location.pathname)
+    setActiveTab('Games')
+    api.get('/games/by-link', { params: { url: link } })
+      .then(res => openGame(res.data))
+      .catch((err) => {
+        const status = err.response?.status
+        setGameLinkNotice(status === 404
+          ? 'That chess.com game is not imported yet. Sync your account from the account menu, then use the bookmark again.'
+          : status === 400
+            ? 'That address is not a chess.com game.'
+            : 'Could not look that game up. Check that the app is running, then use the bookmark again.')
+      })
+  }, [openGame])
 
   const exploreBoard = useMemo(() => boardFromPath(path), [path])
   // How many of the open game's moves are currently on the board (leading prefix
@@ -206,12 +229,6 @@ export default function OpeningsExplorer() {
   }, [reviewGame, path])
   const trainerBoard = useMemo(() => boardFromPath(trainerPath), [trainerPath])
   const isTraining = Boolean(trainer)
-  const isReviewing = Boolean(reviewItem)
-  const reviewPriorPath = useMemo(() => getReviewPriorPath(review), [review])
-  const reviewBoard = useMemo(() => {
-    if (!reviewItem) return { fen: START_FEN, last: null }
-    return boardFromPath(reviewDisplayPath(review))
-  }, [reviewItem, review])
 
   const isPlaying = Boolean(playSession)
   const playBoard = useMemo(() => (
@@ -219,7 +236,7 @@ export default function OpeningsExplorer() {
   ), [playSession])
   const playPath = useMemo(() => (playSession ? playSans(playSession) : []), [playSession])
 
-  const inSession = isTraining || isReviewing || isPlaying
+  const inSession = isTraining || isPlaying
   const pastedStart = useMemo(() => parseStartFen(playFenDraft), [playFenDraft])
   // While the Play tab is open with a valid pasted position and no game running,
   // the board shows that position so you can see what you are about to play.
@@ -228,14 +245,10 @@ export default function OpeningsExplorer() {
     activeTab === 'Play' && !inSession && pastedStart.fen ? { fen: pastedStart.fen, last: null } : null
   ), [activeTab, inSession, pastedStart.fen])
   const boardSize = useBoardSize(shellRef, boardColumnRef)
-  const display = isReviewing
-    ? reviewBoard
-    : isTraining ? trainerBoard : isPlaying ? playBoard : (playPreview || exploreBoard)
-  const displayPath = isReviewing
-    ? reviewPriorPath
-    : isTraining ? trainerPath : isPlaying ? playPath : (playPreview ? [] : path)
+  const display = isTraining ? trainerBoard : isPlaying ? playBoard : (playPreview || exploreBoard)
+  const displayPath = isTraining ? trainerPath : isPlaying ? playPath : (playPreview ? [] : path)
   // A game can start from any position, so its move numbers come from the FEN.
-  const displayStartPly = isPlaying && !isReviewing && !isTraining ? startPlyOf(playSession.startFen) : 0
+  const displayStartPly = isPlaying && !isTraining ? startPlyOf(playSession.startFen) : 0
   const {
     localEval, cloud, target, actionError: evalActionError, fetchCloud,
     deepen, shallow, goInfinite, resetDepth, freeze, saveEval, clearSaved,
@@ -307,15 +320,13 @@ export default function OpeningsExplorer() {
 
   const shapes = inSession ? [] : exploreShapes
 
-  const canMoveBoard = isReviewing
-    ? activeTab === 'Review' && review.status === REVIEW_STATUS.ASKING
-    : isTraining
-      ? activeTab === 'Practice'
-        && !drillWrite.pending && !drillWrite.error
-        && [TRAINER_STATUS.AWAITING_USER_MOVE, TRAINER_STATUS.WRONG_MOVE_FEEDBACK].includes(trainer?.status)
-      : isPlaying
-        ? activeTab === 'Play' && playSession.status === PLAY_STATUS.USER_TURN
-        : !playPreview
+  const canMoveBoard = isTraining
+    ? activeTab === 'Practice'
+      && !drillWrite.pending && !drillWrite.error
+      && [TRAINER_STATUS.AWAITING_USER_MOVE, TRAINER_STATUS.WRONG_MOVE_FEEDBACK].includes(trainer?.status)
+    : isPlaying
+      ? activeTab === 'Play' && playSession.status === PLAY_STATUS.USER_TURN
+      : !playPreview
   const movableDests = useMemo(
     () => (canMoveBoard ? legalDests(display.fen) : null),
     [canMoveBoard, display.fen],
@@ -324,19 +335,16 @@ export default function OpeningsExplorer() {
   // In a drill one colour is yours, so the board is told which: that is what lets
   // you queue a premove while the opponent's reply is still being played. Everywhere
   // else both sides are moved by hand and the mover is simply the side to move.
-  const sessionColor = isReviewing
-    ? null
-    : isTraining
-      ? (activeTab === 'Practice' ? trainer.userColor : null)
-      : isPlaying
-        ? (activeTab === 'Play' ? playSession.userColor : null)
-        : null
+  const sessionColor = isTraining
+    ? (activeTab === 'Practice' ? trainer.userColor : null)
+    : isPlaying
+      ? (activeTab === 'Play' ? playSession.userColor : null)
+      : null
   const premove = Boolean(sessionColor)
   const movableColor = sessionColor || sideToMove(display.fen)
   const summary = tree?.summary
   const moves = tree?.moves || []
   const branches = useMemo(() => repertoire?.branches || [], [repertoire?.branches])
-  const dueNodes = useMemo(() => repertoire?.due || [], [repertoire?.due])
   // Repertoire replies are looked up by the position on the board, not by the
   // move order that reached it, so a transposed line offers the same
   // continuations instead of looking empty.
@@ -357,15 +365,13 @@ export default function OpeningsExplorer() {
   const openingTitle = reviewGame
     ? (reviewGame.opening || '')
     : (classifiedOpening?.name || tree?.summary?.opening || tree?.moves?.[0]?.opening || '')
-  // During a drill or review the board is not the explored line, so naming the
+  // During a drill or a game the board is not the explored line, so naming the
   // explored line's opening up here contradicted the board.
   const headerTitle = isTraining
     ? `Training · ${trainer.scope?.label || 'Openings'}`
-    : isReviewing
-      ? 'Spaced review'
-      : isPlaying
-        ? 'Playing Stockfish'
-        : !path.length
+    : isPlaying
+      ? (playSession.script ? 'Lichess puzzle' : 'Playing Stockfish')
+      : !path.length
         ? 'Starting position'
         : (openingTitle || formatMoveLine(path, 10))
   const headerIsPlaceholder = !inSession && !path.length
@@ -413,12 +419,9 @@ export default function OpeningsExplorer() {
     total: trainer.linesTotal,
     progress: trainer.linesTotal ? Math.round((trainer.linesDone / trainer.linesTotal) * 100) : 0,
   } : null
-  const trainedBranches = branches.filter(branch => branch.drill_count > 0)
   const ungroupedBranches = useMemo(() => branches.filter(b => !b.opening_id), [branches])
   const currentLineTitle = path.length ? formatMoveLine(path, 12) : 'Starting position'
   const positionOver = useMemo(() => gameResult(START_FEN, path) !== null, [path])
-  const duePreview = dueNodes.slice(0, 12)
-  const reviewCompleted = reviewCompletedCount(review)
 
   const allTags = useMemo(() => {
     const seen = new Map()
@@ -510,16 +513,21 @@ export default function OpeningsExplorer() {
   }, [saveTarget, inheritedOpening])
 
   const selectColor = useCallback((nextColor) => {
-    if (nextColor === color && !path.length && !trainer && !review && !reviewGame) return
+    // While a game is open, White/Black only chooses whose repertoire is shown
+    // beside it. The game and the move you are on stay where they are.
+    if (reviewGame) {
+      setColor(nextColor)
+      return
+    }
+    if (nextColor === color && !path.length && !trainer) return
     clearTrainerTimer()
     dispatchTrainer({ type: 'stop' })
-    dispatchReview({ type: 'clear' })
     setReviewGame(null)
     setEditingBranchId(null)
     setEditorOpen(false)
     setColor(nextColor)
     setLine({ path: [], future: [] })
-  }, [clearTrainerTimer, color, dispatchReview, dispatchTrainer, path.length, review, reviewGame, setLine, trainer])
+  }, [clearTrainerTimer, color, dispatchTrainer, path.length, reviewGame, setLine, trainer])
 
   // Filters narrow the stats for the position you're on; they don't send you
   // back to the start (lichess's explorer behaves the same way).
@@ -532,10 +540,9 @@ export default function OpeningsExplorer() {
   const selectAccount = useCallback((id) => {
     clearTrainerTimer()
     dispatchTrainer({ type: 'stop' })
-    dispatchReview({ type: 'clear' })
     setReviewGame(null)
     setSelectedAccountId(id)
-  }, [clearTrainerTimer, dispatchReview, dispatchTrainer])
+  }, [clearTrainerTimer, dispatchTrainer])
 
   const addAccount = useCallback(async (platform, username) => {
     const res = await accountManager.add(platform, username)
@@ -745,7 +752,6 @@ export default function OpeningsExplorer() {
   const loadBranch = (branch) => {
     clearTrainerTimer()
     dispatchTrainer({ type: 'stop' })
-    dispatchReview({ type: 'clear' })
     setColor(branch.color)
     jumpToPath(splitSanLine(branch.moves_san))
     setEditingBranchId(branch.id)
@@ -755,14 +761,13 @@ export default function OpeningsExplorer() {
 
   const startTraining = useCallback(({ branches: scopeBranches, userColor, scope }) => {
     clearTrainerTimer()
-    dispatchReview({ type: 'clear' })
     setEditingBranchId(null)
     setEditorOpen(false)
     drillWrite.clear()
     stopPlay()
     setActiveTab('Practice')
     dispatchTrainer({ type: 'start', payload: { branches: scopeBranches, userColor, scope } })
-  }, [clearTrainerTimer, dispatchReview, dispatchTrainer, drillWrite, stopPlay])
+  }, [clearTrainerTimer, dispatchTrainer, drillWrite, stopPlay])
 
   // Drill a single saved line (a one-leaf scope).
   const startPractice = useCallback((branch) => {
@@ -875,82 +880,32 @@ export default function OpeningsExplorer() {
     finishMove(result)
   }, [trainer, trainerPath, display.fen, pendingPromotion, repertoire, drillWrite, queuePromotion, resetBoardPosition, dispatchTrainer, nodesByEpdBefore])
 
-  const startReview = useCallback(() => {
-    if (!dueNodes.length) return
-    clearTrainerTimer()
-    dispatchTrainer({ type: 'stop' })
-    stopPlay()
-    setEditingBranchId(null)
-    setEditorOpen(false)
-    setActiveTab('Review')
-    resetReviewWrite()
-    dispatchReview({ type: 'start', dueNodes })
-  }, [clearTrainerTimer, dispatchReview, dispatchTrainer, dueNodes, resetReviewWrite, stopPlay])
-
-  const nextReview = useCallback(() => dispatchReview({ type: 'next' }), [dispatchReview])
-  const completeReview = useCallback(() => dispatchReview({ type: 'finish' }), [dispatchReview])
-  const finishReview = useCallback(() => {
-    dispatchReview({ type: 'clear' })
-    resetReviewWrite()
-  }, [dispatchReview, resetReviewWrite])
-
-  const handleReviewMove = useCallback((orig, dest) => {
-    if (!review || review.status !== REVIEW_STATUS.ASKING || !reviewItem || pendingPromotion) return
-    const fen = reviewBoard.fen
-
-    const grade = (result) => {
-      // Any reply saved at this position counts: the card is one question with
-      // possibly several right answers, including transposed ones.
-      const matched = matchExpectedMove(result, reviewItem.accepted)
-      if (matched) {
-        playStepSound(result.san)
-        recordReview(reviewItem, true, result.san, undefined, matched)
-        dispatchReview({ type: 'userMoveResult', correct: true, playedSan: result.san })
-      } else {
-        playIllegalSound()
-        recordReview(reviewItem, false, result.san)
-        dispatchReview({ type: 'userMoveResult', correct: false, playedSan: result.san })
-      }
-    }
-
-    if (needsPromotion(fen, orig, dest)) {
-      queuePromotion(fen, orig, dest, grade)
-      return
-    }
-    const result = makeMove(fen, orig, dest, 'q')
-    if (!result) {
-      playIllegalSound()
-      resetBoardPosition()
-      return
-    }
-    grade(result)
-  }, [review, reviewItem, reviewBoard.fen, pendingPromotion, queuePromotion, recordReview, resetBoardPosition, dispatchReview])
-
   // Start a game against Stockfish from whatever position Explore is showing.
-  const startPlay = useCallback(({ userColor, seconds }) => {
+  // `fromBoard` plays the position on the board even if a FEN is still pasted
+  // in the Play tab (the game review starts games this way).
+  const startPlay = useCallback(({ userColor, seconds, fromBoard = false }) => {
+    const pastedFen = fromBoard ? null : pastedStart.fen
     clearTrainerTimer()
     dispatchTrainer({ type: 'stop' })
-    dispatchReview({ type: 'clear' })
     setEditingBranchId(null)
     setEditorOpen(false)
     setFlipped(false)
     setActiveTab('Play')
     beginPlay({
-      fen: pastedStart.fen || exploreBoard.fen,
+      fen: pastedFen || exploreBoard.fen,
       userColor,
       seconds,
-      label: pastedStart.fen
+      label: pastedFen
         ? 'Pasted position'
         : (path.length ? formatMoveLine(path, 8) : 'From the starting position'),
     })
-  }, [clearTrainerTimer, dispatchReview, dispatchTrainer, setFlipped, beginPlay, pastedStart.fen, exploreBoard.fen, path])
+  }, [clearTrainerTimer, dispatchTrainer, setFlipped, beginPlay, pastedStart.fen, exploreBoard.fen, path])
 
   // Start a Lichess Practice position: you play the side the board is turned to
   // (which may not be the side to move; the engine then moves first).
   const startLibraryPosition = useCallback((position) => {
     clearTrainerTimer()
     dispatchTrainer({ type: 'stop' })
-    dispatchReview({ type: 'clear' })
     setEditingBranchId(null)
     setEditorOpen(false)
     setFlipped(false)
@@ -962,8 +917,10 @@ export default function OpeningsExplorer() {
       label: position.setTitle ? `${position.setTitle}: ${position.name}` : position.name,
       goal: position.goal,
       practice: { id: position.id, name: position.name, source: position.source || 'library' },
+      script: position.script || null,
+      startLastMove: position.startLastMove || null,
     })
-  }, [clearTrainerTimer, dispatchReview, dispatchTrainer, setFlipped, beginPlay])
+  }, [clearTrainerTimer, dispatchTrainer, setFlipped, beginPlay])
 
   // A mistake from one of the user's own games, as a one-move exercise. It
   // goes through the same session as a library position; `source` says where
@@ -979,31 +936,62 @@ export default function OpeningsExplorer() {
     })
   }, [startLibraryPosition])
 
+  // A Lichess puzzle: the same session again, with the solution as a script
+  // in place of the engine.
+  const puzzleSummary = puzzles.summary
+  const startPuzzle = useCallback((puzzle) => {
+    const theme = themeLabels(puzzleSummary)[puzzle.theme] || 'Puzzle'
+    startLibraryPosition({
+      id: puzzle.id,
+      fen: puzzle.fen,
+      orientation: puzzle.user_color,
+      name: `${theme} puzzle`,
+      goal: puzzleGoal(puzzle),
+      source: 'puzzle',
+      script: puzzle.solution,
+      startLastMove: puzzle.last_move,
+    })
+  }, [startLibraryPosition, puzzleSummary])
+  const fetchNextPuzzle = puzzles.fetchNext
+  // `theme` is set when the weakness report asks for puzzles on one theme;
+  // from a button it is a click event, which fetchNext ignores.
+  const startNextPuzzle = useCallback(async (theme) => {
+    const puzzle = await fetchNextPuzzle(theme)
+    // Without a puzzle, go back to the panel, where the reason is shown.
+    if (puzzle) startPuzzle(puzzle)
+    else stopPlay()
+  }, [fetchNextPuzzle, startPuzzle, stopPlay])
+
   const nextPractice = useMemo(() => {
     const current = playSession?.practice
     if (!current) return null
+    if (current.source === 'puzzle') return { puzzle: true }
     if (current.source === 'mistake') return nextMistakeAfter(mistakes.data, current.id)
     return nextPositionAfter(practiceLibrary.library, current.id)
   }, [playSession?.practice, practiceLibrary.library, mistakes.data])
   const startNextPractice = useCallback(() => {
     if (!nextPractice) return
-    if (nextPractice.mistake) startMistake(nextPractice.mistake, nextPractice.game)
+    if (nextPractice.puzzle) startNextPuzzle(null)
+    else if (nextPractice.mistake) startMistake(nextPractice.mistake, nextPractice.game)
     else startLibraryPosition(nextPractice)
-  }, [nextPractice, startLibraryPosition, startMistake])
+  }, [nextPractice, startLibraryPosition, startMistake, startNextPuzzle])
 
   // Count each finished try once, however many times the session re-renders.
   const recordedAttempt = useRef(null)
   const recordPracticeAttempt = practiceLibrary.recordAttempt
   const recordMistakeAttempt = mistakes.recordAttempt
+  const recordPuzzleAttempt = puzzles.recordAttempt
   const goalState = playSession?.goalState
   useEffect(() => {
     if (!playSession?.practice || !goalState || goalState.state === 'running') return
     const key = `${playSession.id}:${playSession.attempt}`
     if (recordedAttempt.current === key) return
     recordedAttempt.current = key
-    const record = playSession.practice.source === 'mistake' ? recordMistakeAttempt : recordPracticeAttempt
+    const record = {
+      mistake: recordMistakeAttempt, puzzle: recordPuzzleAttempt,
+    }[playSession.practice.source] || recordPracticeAttempt
     record(playSession.practice.id, goalState.state === 'solved')
-  }, [playSession?.id, playSession?.practice, playSession?.attempt, goalState, recordPracticeAttempt, recordMistakeAttempt])
+  }, [playSession?.id, playSession?.practice, playSession?.attempt, goalState, recordPracticeAttempt, recordMistakeAttempt, recordPuzzleAttempt])
 
   const playUserMove = play.userMove
   const handlePlayMove = useCallback((orig, dest) => {
@@ -1020,23 +1008,19 @@ export default function OpeningsExplorer() {
     completeMove(fen, orig, dest, 'q', accept)
   }, [playSession, pendingPromotion, queuePromotion, completeMove, playUserMove])
 
-  const boardOnMove = isReviewing && activeTab === 'Review'
-    ? handleReviewMove
-    : isTraining && activeTab === 'Practice'
-      ? handleTrainMove
-      : isPlaying
-        ? handlePlayMove
-        : handleExploreBoardMove
+  const boardOnMove = isTraining && activeTab === 'Practice'
+    ? handleTrainMove
+    : isPlaying
+      ? handlePlayMove
+      : handleExploreBoardMove
 
-  const baseOrientation = isReviewing
-    ? reviewItem.color
-    : isTraining
-      ? trainer.userColor
-      : isPlaying
-        ? playSession.userColor
-        : playPreview
-          ? sideToMove(playPreview.fen)
-          : (reviewGame ? (reviewGame.user_color || 'white') : color)
+  const baseOrientation = isTraining
+    ? trainer.userColor
+    : isPlaying
+      ? playSession.userColor
+      : playPreview
+        ? sideToMove(playPreview.fen)
+        : (reviewGame ? (reviewGame.user_color || 'white') : color)
   const orientation = flipped
     ? (baseOrientation === 'white' ? 'black' : 'white')
     : baseOrientation
@@ -1059,15 +1043,14 @@ export default function OpeningsExplorer() {
 
   const exitSession = useCallback(() => {
     // A game was started from a position you set up in Explore, so leaving it
-    // puts you back there. Drills and reviews have no such position to return to.
+    // puts you back there. A drill has no such position to return to.
     if (playSession) {
       stopPlay()
       return
     }
     stopTrainer()
-    stopReview()
     goStart()
-  }, [playSession, stopPlay, stopTrainer, stopReview, goStart])
+  }, [playSession, stopPlay, stopTrainer, goStart])
 
   const handleCrumbClick = useCallback((i) => {
     setLine(({ path, future }) => ({
@@ -1125,10 +1108,6 @@ export default function OpeningsExplorer() {
             <SessionRail
               isTraining={isTraining}
               trainerStrip={trainerStrip}
-              isReviewing={isReviewing}
-              review={review}
-              reviewItem={reviewItem}
-              reviewCompleted={reviewCompleted}
               playSession={playSession}
             />
           ) : (
@@ -1181,6 +1160,18 @@ export default function OpeningsExplorer() {
           onGoBack={goBack}
           canGoForward={future.length > 0}
           onGoForward={goForward}
+          footer={inSession || playPreview ? (
+            // Hidden during drills, games and puzzles: a comment could give the
+            // answer away. The space stays, so the board does not change size.
+            <div className="position-note" aria-hidden="true" />
+          ) : (
+            <PositionNote
+              fen={display.fen}
+              saved={positionNotes.noteFor(display.fen)}
+              onSave={positionNotes.save}
+              error={positionNotes.error}
+            />
+          )}
           onFlip={flip}
           onCrumbClick={handleCrumbClick}
         />
@@ -1198,9 +1189,6 @@ export default function OpeningsExplorer() {
                 title={tab.hint}
               >
                 {tab.label || tab.id}
-                {tab.id === 'Review' && repertoire?.stats?.due ? (
-                  <span className="tab-badge">{repertoire.stats.due}</span>
-                ) : null}
                 {tab.id === 'Games' && reviewGame ? (
                   <span className="tab-badge" title="Game in review">●</span>
                 ) : null}
@@ -1226,18 +1214,18 @@ export default function OpeningsExplorer() {
               // so showing ExploreTab here meant stats for some earlier position.
               <div className="tab-pane" role="tabpanel">
                 <div className="op-empty">
-                  <strong>{isPlaying ? 'Game in progress' : isTraining ? 'Drill in progress' : 'Review in progress'}</strong>
+                  <strong>{isPlaying ? 'Game in progress' : 'Drill in progress'}</strong>
                   <p>
                     {isPlaying
                       ? 'Explore shows your game stats for the position you started from. It waits until the game is over.'
                       : 'Your game stats would give away the answer, so Explore waits until you finish.'}
                   </p>
                   <div className="op-empty-actions">
-                    <button type="button" className="btn-primary" onClick={() => setActiveTab(isPlaying ? 'Play' : isTraining ? 'Practice' : 'Review')}>
-                      {isPlaying ? 'Back to game' : isTraining ? 'Back to drill' : 'Back to review'}
+                    <button type="button" className="btn-primary" onClick={() => setActiveTab(isPlaying ? 'Play' : 'Practice')}>
+                      {isPlaying ? 'Back to game' : 'Back to drill'}
                     </button>
                     <button type="button" className="btn-secondary" onClick={exitSession}>
-                      {isPlaying ? 'Exit game' : isTraining ? 'Exit drill' : 'End review'}
+                      {isPlaying ? 'Exit game' : 'Exit drill'}
                     </button>
                   </div>
                 </div>
@@ -1281,8 +1269,6 @@ export default function OpeningsExplorer() {
                 groupedBranches={groupedBranches}
                 allTags={allTags}
                 tagFilter={tagFilter}
-                dueNodes={dueNodes}
-                dueCount={repertoire?.stats?.due || 0}
                 transpositions={repertoire?.transpositions || []}
                 repertoire={repertoire}
                 openings={openings}
@@ -1307,7 +1293,6 @@ export default function OpeningsExplorer() {
                 onLoadBranch={loadBranch}
                 onLoadConflict={loadBranch}
                 onResetToSaved={resetToSavedLine}
-                onStartReview={startReview}
                 onSetEditorOpen={setEditorOpen}
                 onSetTagFilter={setTagFilter}
                 onJumpToPath={jumpToPath}
@@ -1355,28 +1340,11 @@ export default function OpeningsExplorer() {
                 onNextPractice={nextPractice ? startNextPractice : null}
                 mistakes={mistakes}
                 onStartMistake={startMistake}
-              />
-            )}
-            {activeTab === 'Review' && (
-              <ReviewTab
-                review={review}
-                reviewItem={reviewItem}
-                reviewPriorPath={reviewPriorPath}
-                dueNodes={dueNodes}
-                dueCount={repertoire?.stats?.due || 0}
-                duePreview={duePreview}
-                branches={branches}
-                trainedBranches={trainedBranches}
-                onStartReview={startReview}
-                onFinishReview={finishReview}
-                onNextReview={nextReview}
-                onCompleteReview={completeReview}
-                reviewWrite={reviewWrite}
-                onRetryReviewWrite={retryReviewWrite}
-                onOpenPractice={() => setActiveTab('Practice')}
-                onJumpToPath={jumpToPath}
-                onClearReview={() => dispatchReview({ type: 'clear' })}
-                onSetActiveTab={setActiveTab}
+                puzzles={puzzles}
+                onStartPuzzles={startNextPuzzle}
+                onRetryPuzzle={startPuzzle}
+                onPlayOn={play.playOn}
+                onSetSeconds={play.setSeconds}
               />
             )}
 
@@ -1391,9 +1359,16 @@ export default function OpeningsExplorer() {
                     future: (reviewGame.sans || []).slice(ply),
                   })}
                   onClose={closeGame}
+                  notes={positionNotes.notes}
+                  onPlayFromHere={positionOver ? null : () => startPlay({
+                    userColor: reviewGame.user_color === 'black' ? 'black' : 'white',
+                    seconds: PRACTICE_THINK_SECONDS,
+                    fromBoard: true,
+                  })}
                 />
               ) : (
                 <GamesTab
+                  notice={gameLinkNotice}
                   games={gameRows}
                   total={gamesTotal}
                   loading={gamesLoading}

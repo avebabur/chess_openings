@@ -41,6 +41,8 @@ fi
 
 source "$OPENINGS_ROOT/venv/bin/activate"
 export CHESS_DB_PATH="$OPENINGS_ROOT/chess_review.db"
+# Fetch new chess.com games on start and every 30 minutes (backend/main.py).
+export OPENINGS_AUTO_SYNC=1
 
 if [ -z "${STOCKFISH_PATH:-}" ]; then
   if command -v stockfish >/dev/null 2>&1; then

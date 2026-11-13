@@ -151,7 +151,99 @@ class FindMistakesTest(unittest.TestCase):
             self.ga.find_mistakes("", "white", FakeEngine())
 
 
+class NoisyEngine(FakeEngine):
+    """Sees a mistake everywhere on a short search and none on a long one."""
+
+    def __init__(self):
+        super().__init__()
+        self.long_searches = 0
+
+    def analyse(self, board, limit):
+        info = super().analyse(board, limit)
+        if limit.time >= 1:
+            self.long_searches += 1
+            return info
+        # Short search: claim the side to move is far better than it is.
+        info["score"] = chess.engine.PovScore(chess.engine.Cp(400), board.turn)
+        return info
+
+
+class VerifyAndTagTest(unittest.TestCase):
+    def setUp(self):
+        import game_analysis
+        self.ga = game_analysis
+
+    def test_a_suspected_mistake_must_survive_the_deeper_search(self):
+        quiet = '[Result "*"]\n\n1. Nf3 Nf6 2. Ng1 Ng8 *'
+        engine = NoisyEngine()
+        found = self.ga.find_mistakes(quiet, "white", engine, seconds=0.3, verify_seconds=1.0)
+        self.assertEqual(found, [])
+        self.assertGreater(engine.long_searches, 0)
+
+    def test_the_stored_numbers_come_from_the_deeper_search(self):
+        engine = NoisyEngine()
+        found = self.ga.find_mistakes(QUEEN_HANG, "white", engine, seconds=0.3, verify_seconds=1.0)
+        self.assertEqual([m["played_san"] for m in found], ["Qxf7+"])
+        self.assertNotEqual(found[0]["cp_before"], 400)
+
+    def test_tags(self):
+        hung = self.ga.find_mistakes(QUEEN_HANG, "white", FakeEngine())[0]
+        self.assertEqual(hung["tag"], "lost_material")
+
+        board = chess.Board("6k1/5ppp/8/8/8/8/5PPP/3R2K1 w - - 0 1")
+        quiet_move = chess.Move.from_uci("h2h3")
+        mate_line = [chess.Move.from_uci("d1d8")]
+        self.assertEqual(
+            self.ga.mistake_tag(board, quiet_move, mate_line, [], self.ga.MATE_CP - 1, 50),
+            "missed_mate")
+
+        board = chess.Board("6k1/5ppp/8/3q4/8/8/5PPP/3R2K1 w - - 0 1")
+        win_queen = [chess.Move.from_uci("d1d5")]
+        self.assertEqual(
+            self.ga.mistake_tag(board, quiet_move, win_queen, [], 500, -300), "missed_material")
+        self.assertEqual(self.ga.mistake_tag(board, quiet_move, [], [], 50, -80), "quiet")
+
+    def test_phase_and_situation(self):
+        self.assertEqual(self.ga.phase_of(chess.STARTING_FEN), "opening")
+        self.assertEqual(self.ga.phase_of(
+            "r1bq1rk1/pp2bppp/2n1pn2/3p4/3P4/2N1PN2/PP2BPPP/R1BQ1RK1 w - - 0 14"), "middlegame")
+        self.assertEqual(self.ga.phase_of("8/5pk1/8/8/8/8/R4PK1/3r4 w - - 0 40"), "rook_endgame")
+        self.assertEqual(self.ga.phase_of("8/5pk1/8/8/8/8/5PK1/8 w - - 0 40"), "pawn_endgame")
+        self.assertEqual(self.ga.phase_of("8/5pk1/8/3b4/8/2N5/5PK1/8 w - - 0 40"), "minor_endgame")
+        self.assertEqual(self.ga.phase_of("8/5pk1/8/3q4/8/2Q5/5PK1/8 w - - 0 40"), "queen_endgame")
+        self.assertEqual(self.ga.phase_of("8/5pk1/8/3r4/8/2N5/5PK1/8 w - - 0 40"), "other_endgame")
+        self.assertEqual(
+            [self.ga.situation_of(cp) for cp in (300, 299, 100, 99, -99, -100)],
+            ["winning", "better", "better", "level", "level", "worse"])
+
+
 class StorageTest(DatabaseCase):
+    def test_report_weighs_mistakes_by_what_they_cost(self):
+        game_id = self.add_game(QUEEN_HANG)
+        base = {"user_color": "white", "played_san": "a3", "played_uci": "a2a3",
+                "best_san": "Nf3", "best_uci": "g1f3", "target_cp": 0, "source": "stockfish"}
+        self.ga.store_mistakes(game_id, [
+            {**base, "ply": 0, "fen": chess.STARTING_FEN, "cp_before": 20, "cp_after": -120,
+             "loss": 10.0, "kind": "mistake", "tag": "quiet"},
+            {**base, "ply": 80, "fen": "8/5pk1/8/8/8/8/R4PK1/3r4 w - - 0 41", "cp_before": 400,
+             "cp_after": 0, "loss": 30.0, "kind": "blunder", "tag": "lost_material"},
+        ])
+        result = self.ga.list_mistakes()["report"]
+        self.assertEqual((result["mistakes"], result["games"]), (2, 1))
+        phase, situation, tag = result["sections"]
+        self.assertEqual([(r["key"], r["count"], r["share"]) for r in phase["rows"]],
+                         [("rook_endgame", 1, 75), ("opening", 1, 25)])
+        self.assertEqual(phase["rows"][0]["theme"], "rookEndgame")
+        self.assertEqual([r["key"] for r in situation["rows"]], ["winning", "level"])
+        self.assertEqual([r["key"] for r in tag["rows"]], ["lost_material", "quiet"])
+        self.assertIsNone(tag["rows"][1]["theme"])
+
+    def test_an_empty_report(self):
+        result = self.ga.report()
+        self.assertEqual(result["mistakes"], 0)
+        self.assertEqual([s["rows"] for s in result["sections"]], [[], [], []])
+
+
     def test_reanalysis_keeps_the_practice_record(self):
         game_id = self.add_game(QUEEN_HANG)
         found = self.ga.find_mistakes(QUEEN_HANG, "white", FakeEngine())
@@ -199,6 +291,30 @@ class StorageTest(DatabaseCase):
         self.assertEqual(listing["games"][0]["id"], first)
         self.assertFalse(analyzer.start(count=4)["running"])  # nothing left
 
+    def test_a_request_made_during_a_run_is_served_after_it(self):
+        import threading
+        first = self.add_game(QUEEN_HANG, end_time="2026-06-01T00:00:00")
+        gate = threading.Event()
+
+        class SlowEngine(FakeEngine):
+            def analyse(self, board, limit):
+                gate.wait(5)
+                return super().analyse(board, limit)
+
+        analyzer = self.ga.GameAnalyzer(engine_factory=SlowEngine)
+        self.assertEqual(analyzer.start(count=1)["total"], 1)
+        # A sync brings in another game while the first is being analysed.
+        second = self.add_game(QUEEN_HANG, end_time="2026-07-01T00:00:00")
+        self.assertTrue(analyzer.start(count=1)["running"])           # ignored
+        self.assertTrue(analyzer.start(count=1, queue=True)["running"])  # kept
+        gate.set()
+        analyzer.join(10)
+        status = analyzer.status()
+        self.assertEqual((status["running"], status["done"], status["total"]), (False, 2, 2))
+        self.assertEqual(self.ga.pending_games(limit=5), [])
+        self.assertEqual(len(self.ga.mistakes_for_game(first)), 1)
+        self.assertEqual(len(self.ga.mistakes_for_game(second)), 1)
+
 
 class ApiTest(DatabaseCase):
     def setUp(self):
@@ -229,3 +345,26 @@ class ApiTest(DatabaseCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AutoAnalysisTest(DatabaseCase):
+    def setUp(self):
+        super().setUp()
+        import main
+        self.main = importlib.reload(main)
+        self.ga = sys.modules["game_analysis"]
+
+    def test_a_sync_with_new_games_starts_a_capped_analysis(self):
+        from unittest.mock import patch
+        with TestClient(self.main.app) as client:
+            analyzer = client.app.state.game_analyzer
+            follow_up = client.app.state.sync_service._on_imported
+            with patch.object(analyzer, "start") as start:
+                follow_up(3, 250)
+                self.assertEqual(start.call_args.kwargs["account_id"], 3)
+                self.assertEqual(start.call_args.kwargs["count"], self.main.AUTO_ANALYSE_MAX_GAMES)
+                follow_up(3, 2)
+                self.assertEqual(start.call_args.kwargs["count"], 2)
+                with patch.dict(os.environ, {"OPENINGS_AUTO_ANALYSE": "0"}):
+                    follow_up(3, 2)
+                self.assertEqual(start.call_count, 2)

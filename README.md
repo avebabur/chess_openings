@@ -29,7 +29,13 @@ Built with a **FastAPI + SQLite** backend and a **React 19 + Vite** frontend, wi
 - **Repertoire builder** — save lines per color, organize them into folders, tag them (`main`, `alternative`, `trap`, `sideline`), and annotate positions with notes.
 - **Practice / drilling** — rehearse your repertoire move by move; the trainer walks the tree and checks your answers.
 - **Engine analysis** — optional local Stockfish integration for live evaluations and best-move hints.
+- **Play against Stockfish** — play any position (from the explorer, one of your games, or a pasted FEN). With seven pieces or fewer every move gets an exact verdict from the Lichess tablebase.
+- **Lichess Practice library** — all 32 practice sets imported once and playable against the engine, with each position's goal checked for you.
+- **Your own mistakes** — Stockfish goes through your newest games (automatically after each sync) and turns each mistake into a one-move exercise: find something better than you played, then play the position on. A report shows where your mistakes cluster and starts puzzles on that theme.
+- **Lichess puzzles** — one at a time on any theme and difficulty; missed puzzles are kept to retry.
+- **chess.com round trip** — a bookmark opens the chess.com game you are looking at in the app, and the review links back.
 - **Lichess integration** — the cloud opening explorer and a "Lichess players" lookup, using the official Lichess API.
+- **Chrome extension for lichess.org** — Lichess plus your app on top: your Stockfish in Lichess's own engine bar, eval bar and Practice; a My games tab in Lichess's explorer with your chess.com history; your repertoire, your game and your mistakes in the analysis board's left column; your mistakes on the puzzle page; your app's board colours. Everything switches off while any game is in progress, and a self-check reports any feature a Lichess update moved. See [extension/README.md](extension/README.md).
 - **Offline opening recognition** — an embedded ECO database names openings from their move sequence without any network call.
 
 ## Tech stack

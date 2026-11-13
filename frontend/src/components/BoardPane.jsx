@@ -35,6 +35,7 @@ export default function BoardPane({
   onGoForward,
   onFlip,
   onCrumbClick,
+  footer = null,
 }) {
   const crumbsScrollRef = useRef(null)
   const boardFen = display.fen || START_FEN
@@ -135,6 +136,7 @@ export default function BoardPane({
           </button>
         </div>
       </nav>
+      {footer}
     </section>
   )
 }

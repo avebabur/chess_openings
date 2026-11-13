@@ -8,6 +8,7 @@ import {
   tablebaseCovers,
   verdictForMove,
 } from '../domain/playSession'
+import { castleUci } from '../domain/practiceGoal'
 import { playGameEndSound, playStepSound } from '../sounds'
 
 // A tablebase reply comes back in a few milliseconds. Without a floor the
@@ -48,6 +49,8 @@ export function usePlaySession() {
   const status = session?.status ?? null
   const seconds = session?.seconds ?? 1
   const error = session?.error ?? null
+  const scripted = session?.script ? session.script[session.moves.length] : null
+  const hasScript = Boolean(session?.script)
 
   // Warm the tablebase for the position the user is looking at.
   useEffect(() => {
@@ -57,6 +60,22 @@ export function usePlaySession() {
   // The engine's move.
   useEffect(() => {
     if (status !== PLAY_STATUS.ENGINE_THINKING || !fen || error) return undefined
+    if (hasScript) {
+      // A puzzle: the reply is already known, so nothing is asked of the engine.
+      const play = uci => makeMove(fen, uci.slice(0, 2), uci.slice(2, 4), uci[4] || 'q')
+      // If the move is not legal as written it may be a castle in the
+      // king-takes-rook form.
+      const reply = scripted ? (play(scripted) || play(castleUci(scripted))) : null
+      const wait = window.setTimeout(() => {
+        if (!reply) {
+          dispatch({ type: 'engineError', fenBefore: fen, message: 'This puzzle has no reply to that move' })
+          return
+        }
+        playStepSound(reply.san)
+        dispatch({ type: 'engineMove', fenBefore: fen, move: reply, source: 'script' })
+      }, MIN_REPLY_MS)
+      return () => window.clearTimeout(wait)
+    }
     const controller = new AbortController()
     const started = performance.now()
     let timer = null
@@ -90,7 +109,7 @@ export function usePlaySession() {
       controller.abort()
       if (timer) window.clearTimeout(timer)
     }
-  }, [status, fen, seconds, error])
+  }, [status, fen, seconds, error, hasScript, scripted])
 
   useEffect(() => {
     if (status === PLAY_STATUS.OVER) playGameEndSound()
@@ -101,6 +120,8 @@ export function usePlaySession() {
   const restart = useCallback(() => dispatch({ type: 'restart' }), [])
   const takeBack = useCallback(() => dispatch({ type: 'takeBack' }), [])
   const retry = useCallback(() => dispatch({ type: 'retry' }), [])
+  const playOn = useCallback(() => dispatch({ type: 'playOn' }), [])
+  const setSeconds = useCallback(seconds => dispatch({ type: 'setSeconds', seconds }), [])
 
   /** Record a legal move the user made (a `makeMove` result) and judge it. */
   const userMove = useCallback((move) => {
@@ -114,5 +135,5 @@ export function usePlaySession() {
     })
   }, [session, tableFor])
 
-  return { session, start, stop, restart, takeBack, retry, userMove }
+  return { session, start, stop, restart, takeBack, retry, playOn, setSeconds, userMove }
 }

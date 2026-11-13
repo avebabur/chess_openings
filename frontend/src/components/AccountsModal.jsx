@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useDialogFocusTrap } from '../hooks/useDialogFocusTrap'
 import { API } from '../api'
 
@@ -7,7 +7,32 @@ const PLATFORMS = [
   { key: 'lichess', label: 'Lichess' },
 ]
 
-const TOKEN_URL = 'https://lichess.org/account/oauth/token/create?description=Chess+Openings+explorer'
+// One token does both jobs: the "Lichess players" explorer only needs a token,
+// and engine:read + engine:write let the app put your Stockfish into Lichess.
+const TOKEN_URL = 'https://lichess.org/account/oauth/token/create?scopes[]=engine:read&scopes[]=engine:write&description=Openings+app'
+
+const ENGINE_STATES = {
+  ready: 'connected — choose it in Lichess’s engine settings if it isn’t picked already',
+  no_token: 'needs a token (below)',
+  missing_scope: 'the saved token has no engine access — create a new one with the link below and paste it',
+  no_stockfish: 'Stockfish is not installed',
+  starting: 'connecting…',
+  error: 'can’t reach Lichess right now',
+  off: 'turned off',
+}
+
+// Polls while the dialog is open, so saving a token shows the result.
+function useLichessEngineStatus() {
+  const [status, setStatus] = useState(null)
+  useEffect(() => {
+    let alive = true
+    const load = () => fetch(`${API}/lichess-engine`).then(r => r.json()).then(s => { if (alive) setStatus(s) }).catch(() => {})
+    load()
+    const timer = setInterval(load, 3000)
+    return () => { alive = false; clearInterval(timer) }
+  }, [])
+  return status
+}
 
 function syncedLabel(iso) {
   if (!iso) return 'never synced'
@@ -33,6 +58,7 @@ export default function AccountsModal({ accounts, hasToken, onAdd, onSync, onCan
   const [tokenMsg, setTokenMsg] = useState('')
   const [confirmId, setConfirmId] = useState(null)
   const dialogRef = useDialogFocusTrap(onClose)
+  const engine = useLichessEngineStatus()
 
   const add = async (e) => {
     e.preventDefault()
@@ -96,7 +122,7 @@ export default function AccountsModal({ accounts, hasToken, onAdd, onSync, onCan
     setTokenMsg('')
     try {
       await onSaveToken(value)
-      setTokenMsg(value ? 'Token saved — the players explorer will work now.' : 'Token removed.')
+      setTokenMsg(value ? 'Token saved — the players explorer works now, and your Stockfish connects to Lichess in a few seconds.' : 'Token removed.')
       setToken('')
     } catch {
       setTokenMsg(value ? 'Could not save the token' : 'Could not remove the token')
@@ -200,17 +226,24 @@ export default function AccountsModal({ accounts, hasToken, onAdd, onSync, onCan
 
           <div className="op-backup-section">
             <h3>Data backup</h3>
-            <p className="op-token-help">Download a consistent SQLite backup. It includes games, repertoire, review history, and your saved Lichess token; store it securely.</p>
+            <p className="op-token-help">Download a consistent SQLite backup. It includes games, repertoire, training history, and your saved Lichess token; store it securely.</p>
             <a className="btn-secondary" href={`${API}/backup`} download>Download backup</a>
           </div>
 
           <div className="op-token-section">
-            <h3>Lichess explorer token {hasToken && <span className="op-token-ok">saved</span>}</h3>
+            <h3>Lichess token {hasToken && <span className="op-token-ok">saved</span>}</h3>
             <p className="op-token-help">
-              Lichess now requires a token for the “Lichess players” explorer. Create a free token at{' '}
+              One free token runs the “Lichess players” explorer and puts your Stockfish into Lichess’s own
+              analysis board (engine bar, eval bar, Practice with computer). Create it at{' '}
               <a href={TOKEN_URL} target="_blank" rel="noreferrer">lichess.org → API tokens</a>{' '}
-              (no scopes needed) and paste it here.
+              (engine access is already ticked) and paste it here.
             </p>
+            {engine && (
+              <p className="op-token-help" data-testid="lichess-engine-status">
+                <strong>Your Stockfish on Lichess:</strong> {ENGINE_STATES[engine.state] || engine.state}
+                {engine.error && engine.state !== 'missing_scope' ? ` (${engine.error})` : ''}
+              </p>
+            )}
             <form className="op-token-form" onSubmit={saveToken}>
               <input
                 type="password"

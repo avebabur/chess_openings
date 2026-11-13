@@ -1,6 +1,9 @@
 import { useState } from 'react'
 import {
+  MAX_THINK_SECONDS,
+  MIN_THINK_SECONDS,
   PLAY_STATUS,
+  clampSeconds,
   goalEnded,
   latestVerdict,
   pieceCount,
@@ -11,8 +14,64 @@ import {
 import { describeGoal, goalOutcomeText, isPlayableGoal } from '../../domain/practiceGoal'
 import PracticeLibrary from './PracticeLibrary'
 import MistakeList from './MistakeList'
+import PuzzlePanel from './PuzzlePanel'
 
-const THINK_TIMES = [1, 3, 10]
+const THINK_TIMES = [1, 3, 10, 30]
+
+/**
+ * How long Stockfish thinks per move: a few presets, or any number of seconds.
+ * The same control sits on the setup screen and in a running game, where a
+ * change applies from the engine's next move.
+ */
+function ThinkTime({ id, seconds, onChange }) {
+  const [text, setText] = useState(String(seconds))
+  // Follow a change made elsewhere (a preset, or the other copy of the control).
+  const [shown, setShown] = useState(seconds)
+  if (shown !== seconds) {
+    setShown(seconds)
+    setText(String(seconds))
+  }
+  const commit = () => {
+    const value = clampSeconds(text)
+    setText(String(value))
+    if (value !== seconds) onChange(value)
+  }
+  return (
+    <div className="play-setup-row">
+      <span className="eyebrow" id={`${id}-label`}>Stockfish thinking time</span>
+      <div className="think-time">
+        <div className="seg" role="group" aria-labelledby={`${id}-label`}>
+          {THINK_TIMES.map(value => (
+            <button
+              key={value}
+              type="button"
+              className={seconds === value ? 'on' : ''}
+              aria-pressed={seconds === value}
+              onClick={() => onChange(value)}
+            >
+              {value}s
+            </button>
+          ))}
+        </div>
+        <label className="think-custom">
+          <input
+            type="number"
+            inputMode="decimal"
+            min={MIN_THINK_SECONDS}
+            max={MAX_THINK_SECONDS}
+            step="any"
+            value={text}
+            onChange={event => setText(event.target.value)}
+            onBlur={commit}
+            onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur() }}
+            aria-label="Custom thinking time in seconds"
+          />
+          <span>sec</span>
+        </label>
+      </div>
+    </div>
+  )
+}
 
 function colorName(color) {
   return color === 'white' ? 'White' : 'Black'
@@ -75,6 +134,11 @@ export default function PlayTab({
   onNextPractice,
   mistakes,
   onStartMistake,
+  puzzles,
+  onStartPuzzles,
+  onRetryPuzzle,
+  onPlayOn,
+  onSetSeconds,
 }) {
   const [seconds, setSeconds] = useState(THINK_TIMES[0])
 
@@ -102,7 +166,10 @@ export default function PlayTab({
           onAnalyse={mistakes.start}
           onStop={mistakes.stop}
           onStart={onStartMistake}
+          onPractiseTheme={onStartPuzzles}
         />
+
+        <PuzzlePanel puzzles={puzzles} onStart={onStartPuzzles} onRetry={onRetryPuzzle} />
 
         <PracticeLibrary
           library={practice.library}
@@ -143,22 +210,7 @@ export default function PlayTab({
           </button>
         )}
 
-        <div className="play-setup-row">
-          <span className="eyebrow" id="play-think-label">Stockfish thinking time</span>
-          <div className="seg" role="group" aria-labelledby="play-think-label">
-            {THINK_TIMES.map(value => (
-              <button
-                key={value}
-                type="button"
-                className={seconds === value ? 'on' : ''}
-                aria-pressed={seconds === value}
-                onClick={() => setSeconds(value)}
-              >
-                {value}s
-              </button>
-            ))}
-          </div>
-        </div>
+        <ThinkTime id="play-think-setup" seconds={seconds} onChange={setSeconds} />
 
         {fenError ? null : positionOver ? (
           <div className="op-empty compact">
@@ -194,6 +246,10 @@ export default function PlayTab({
   const goalText = goal ? describeGoal(goal) : null
   const ended = goalEnded(session)
   const outcome = ended ? goalOutcomeText(goal, session.goalState) : null
+  const isPuzzle = goal?.kind === 'puzzle'
+  // Exercises with a fixed answer; the tablebase note would only distract.
+  const fixedAnswer = isPuzzle || goal?.kind === 'better'
+  const nextLabel = isPuzzle ? 'Next puzzle' : 'Next position'
 
   return (
     <div className="tab-pane" role="tabpanel">
@@ -227,9 +283,19 @@ export default function PlayTab({
           >
             <strong>{outcome.title}</strong>
             {outcome.body && <p>{outcome.body}</p>}
+            {isPuzzle && (
+              <details className="puzzle-answer">
+                <summary>{session.goalState.state === 'solved' ? 'The whole line' : 'Show the answer'}</summary>
+                <p>{goal.solutionSan.join(' ')}</p>
+                <p>
+                  {goal.themes.length ? `Themes: ${goal.themes.join(', ')}. ` : ''}
+                  <a href={goal.url} target="_blank" rel="noreferrer">This puzzle on Lichess</a>
+                </p>
+              </details>
+            )}
             <div className="practice-done-actions">
               {session.goalState.state === 'solved' && onNextPractice && (
-                <button type="button" className="btn-primary" onClick={onNextPractice}>Next position</button>
+                <button type="button" className="btn-primary" onClick={onNextPractice}>{nextLabel}</button>
               )}
               <button
                 type="button"
@@ -239,7 +305,14 @@ export default function PlayTab({
                 Try again
               </button>
               {session.goalState.state !== 'solved' && onNextPractice && (
-                <button type="button" className="btn-secondary" onClick={onNextPractice}>Skip to next</button>
+                <button type="button" className="btn-secondary" onClick={onNextPractice}>
+                  {isPuzzle ? 'Next puzzle' : 'Skip to next'}
+                </button>
+              )}
+              {!session.result && (
+                <button type="button" className="btn-secondary" onClick={onPlayOn}>
+                  Play on against Stockfish
+                </button>
               )}
               <button type="button" className="btn-secondary" onClick={onExit}>Back to library</button>
             </div>
@@ -251,13 +324,15 @@ export default function PlayTab({
             <strong>Your move</strong>
             <p>
               {lastEngine
-                ? `Stockfish played ${lastEngine.san}${lastEngine.source === 'tablebase' ? ' (tablebase)' : ''}.`
+                ? lastEngine.source === 'script'
+                  ? `The reply was ${lastEngine.san}. Keep going.`
+                  : `Stockfish played ${lastEngine.san}${lastEngine.source === 'tablebase' ? ' (tablebase)' : ''}.`
                 : `You are ${colorName(userColor)}.`}
             </p>
           </div>
         )}
 
-        {status === PLAY_STATUS.ENGINE_THINKING && !error && (
+        {status === PLAY_STATUS.ENGINE_THINKING && !error && !session.script && (
           <div className="practice-card" role="status">
             <strong>Stockfish is thinking…</strong>
             <p>You can queue your next move now. It is played if it is still legal.</p>
@@ -286,12 +361,16 @@ export default function PlayTab({
           </div>
         )}
 
-        {!copy && status !== PLAY_STATUS.OVER && !tablebaseCovers(fen) && (
+        {!copy && !fixedAnswer && status !== PLAY_STATUS.OVER && !tablebaseCovers(fen) && (
           <p className="play-note">
             {pieceCount(fen) > 7
               ? `Tablebase verdicts begin at 7 pieces. There are ${pieceCount(fen)} now.`
               : 'The tablebase does not cover positions that still have castling rights.'}
           </p>
+        )}
+
+        {!session.script && status !== PLAY_STATUS.OVER && (
+          <ThinkTime id="play-think-game" seconds={session.seconds} onChange={onSetSeconds} />
         )}
 
         {!outcome && (

@@ -904,6 +904,34 @@ def init_db():
             last_result TEXT,
             last_played_at TEXT
         );
+        -- The user's comments on positions (position_notes.py).
+        CREATE TABLE IF NOT EXISTS position_notes (
+            position_key TEXT PRIMARY KEY,
+            fen TEXT NOT NULL,
+            note TEXT NOT NULL,
+            updated_at TEXT DEFAULT (datetime('now'))
+        );
+        -- Lichess puzzles fetched one at a time (lichess_puzzles.py), each with
+        -- the user's record on it. Unrelated to the legacy `puzzles` table.
+        CREATE TABLE IF NOT EXISTS lichess_puzzles (
+            id TEXT PRIMARY KEY,
+            fen TEXT NOT NULL,
+            user_color TEXT NOT NULL,
+            last_move TEXT NOT NULL DEFAULT '',
+            solution JSON NOT NULL,
+            solution_san JSON NOT NULL,
+            rating INTEGER NOT NULL DEFAULT 0,
+            themes JSON NOT NULL DEFAULT '[]',
+            theme TEXT NOT NULL DEFAULT 'mix',
+            game_id TEXT NOT NULL DEFAULT '',
+            attempts INTEGER NOT NULL DEFAULT 0,
+            solved_count INTEGER NOT NULL DEFAULT 0,
+            failed_count INTEGER NOT NULL DEFAULT 0,
+            first_result TEXT,
+            last_result TEXT,
+            last_played_at TEXT,
+            fetched_at TEXT DEFAULT (datetime('now'))
+        );
         -- Moves of the user's that Stockfish (or the tablebase) rates as a
         -- mistake, found by game_analysis.py. Each is a position to replay.
         CREATE TABLE IF NOT EXISTS game_mistakes (
@@ -922,6 +950,7 @@ def init_db():
             loss REAL NOT NULL,
             kind TEXT NOT NULL,
             source TEXT NOT NULL,
+            tag TEXT NOT NULL DEFAULT '',
             attempts INTEGER NOT NULL DEFAULT 0,
             solved_count INTEGER NOT NULL DEFAULT 0,
             failed_count INTEGER NOT NULL DEFAULT 0,
@@ -962,6 +991,8 @@ def init_db():
         # When game_analysis.py last searched this game for mistakes. Separate
         # from the legacy `analyzed` flag, which belongs to the old review JSON.
         "ALTER TABLE games ADD COLUMN mistakes_analyzed_at TEXT",
+        # What kind of mistake it was, for the weakness report.
+        "ALTER TABLE game_mistakes ADD COLUMN tag TEXT NOT NULL DEFAULT ''",
     ):
         try:
             conn.execute(ddl)
@@ -986,11 +1017,14 @@ from account_game_repository import (  # noqa: E402,F401
     delete_account,
     get_account,
     get_game,
+    get_game_summaries,
     get_games_for_tree,
     get_setting,
     get_sync_job,
     list_accounts,
     list_games,
+    find_game_by_chesscom_id,
+    find_game_by_external_id,
     list_queued_sync_jobs,
     mark_account_synced,
     migrate_games_to_accounts,

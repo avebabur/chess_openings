@@ -84,3 +84,41 @@ class AccountSyncServiceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FollowUpTests(unittest.TestCase):
+    def run_sync(self, imported, on_imported):
+        service = sync_service.AccountSyncService(on_imported=on_imported)
+        updates = []
+        with (
+            patch.object(sync_service.db, "get_sync_job", return_value={
+                "id": "job", "account_id": 4, "status": "queued",
+            }),
+            patch.object(sync_service.db, "get_account", return_value={
+                "id": 4, "platform": "chesscom", "username": "player",
+            }),
+            patch.object(sync_service.db, "sync_job_cancel_requested", return_value=False),
+            patch.object(sync_service.db, "update_sync_job", side_effect=lambda job_id, **kw: updates.append(kw)),
+            patch.object(sync_service.game_import, "sync_account",
+                         return_value={"seen": 9, "imported": imported, "warnings": []}),
+            patch.object(sync_service.opening_tree, "invalidate_cache"),
+        ):
+            service._run_job("job")
+        return updates
+
+    def test_new_games_are_announced_once_the_sync_has_finished(self):
+        calls = []
+        updates = self.run_sync(3, lambda account_id, count: calls.append((account_id, count)))
+        self.assertEqual(calls, [(4, 3)])
+        self.assertEqual(updates[-1]["status"], "completed")
+
+    def test_nothing_is_announced_when_no_game_is_new(self):
+        calls = []
+        self.run_sync(0, lambda *args: calls.append(args))
+        self.assertEqual(calls, [])
+
+    def test_a_failing_follow_up_does_not_fail_the_sync(self):
+        def boom(*_args):
+            raise RuntimeError("no engine")
+        updates = self.run_sync(2, boom)
+        self.assertEqual(updates[-1]["status"], "completed")

@@ -95,10 +95,6 @@ test('clean white drill auto-plays the opponent and finishes the run', async ({ 
   await expect(page.getByText('Clean line')).toBeVisible()
   await page.getByRole('button', { name: 'Finish' }).click()
   await expect(page.getByText('All 1 line trained')).toBeVisible()
-
-  // A clean run leaves nothing in Review.
-  await page.getByRole('tab', { name: /Review/ }).click()
-  await expect(page.getByText('Nothing due')).toBeVisible()
 })
 
 test('a premove queued during the opponent reply is played when the turn comes back', async ({ page, request }) => {
@@ -321,6 +317,18 @@ const MISTAKE = {
   cp_before: 9999, cp_after: 20, target_cp: 300, loss: 49.5, kind: 'blunder', source: 'stockfish',
   progress: { attempts: 0, solved: 0, failed: 0, last_result: null, last_played_at: null },
 }
+const MISTAKE_REPORT = {
+  mistakes: 6, games: 4,
+  sections: [
+    { key: 'phase', title: 'When in the game', rows: [
+      { key: 'rook_endgame', label: 'Rook endgames', theme: 'rookEndgame', count: 4, share: 70 },
+      { key: 'middlegame', label: 'Middlegame', theme: 'middlegame', count: 2, share: 30 },
+    ] },
+    { key: 'tag', title: 'What went wrong', rows: [
+      { key: 'quiet', label: 'Quiet mistakes: nothing was lost on the spot', theme: null, count: 6, share: 100 },
+    ] },
+  ],
+}
 const MISTAKE_GAME = {
   id: 3, white: 'me', black: 'rival', result: '1/2-1/2', date: '2026.11.10', user_color: 'white',
   time_class: 'rapid', opening: '', eco: '', mistakes: [MISTAKE],
@@ -331,7 +339,7 @@ test('a mistake from your own game becomes a one-move exercise', async ({ page }
   let analysing = false
   await page.route('**/api/mistakes*', route => route.fulfill({
     json: analysing
-      ? { games: [MISTAKE_GAME], total: 1, solved: 0, games_total: 9, games_analysed: 4 }
+      ? { games: [MISTAKE_GAME], report: MISTAKE_REPORT, total: 1, solved: 0, games_total: 9, games_analysed: 4 }
       : { games: [], total: 0, solved: 0, games_total: 9, games_analysed: 0 },
   }))
   await page.route('**/api/mistakes/*/attempts', (route) => {
@@ -381,6 +389,203 @@ test('a mistake from your own game becomes a one-move exercise', async ({ page }
   await playMove(page, 'e7', 'd7')
   await expect(result).toContainText('Rd7 is better')
   await expect.poll(() => attempts).toEqual([false, false, true])
+
+  // The exercise is over, the position is not: carry on against the engine.
+  await result.getByRole('button', { name: 'Play on against Stockfish' }).click()
+  await expect(result).toHaveCount(0)
+  await expect(page.getByLabel('Goal', { exact: true })).toHaveCount(0)
+  await expect(page.getByText('Stockfish played Kf8.')).toBeVisible()
+  expect(attempts).toHaveLength(3)
+
+  // The report says where the mistakes are and starts puzzles on that theme.
+  await page.getByRole('button', { name: 'Exit', exact: true }).click()
+  const report = page.locator('details.weakness')
+  await expect(report).toContainText('6 in 4 games')
+  await expect(report.locator('.weakness-row').first()).toContainText('Rook endgames')
+  await expect(report.locator('.weakness-row').first()).toContainText('70% · 4')
+  await expect(report.getByRole('button', { name: /Quiet mistakes/ })).toHaveCount(0)
+  let asked = ''
+  await page.route('**/api/puzzles/next*', (route) => {
+    asked = new URL(route.request().url()).searchParams.get('theme')
+    return route.fulfill({ json: PUZZLE })
+  })
+  await report.getByRole('button', { name: 'Puzzles for: Rook endgames' }).click()
+  await expect(page.getByLabel('Goal', { exact: true })).toContainText('Find the best move')
+  expect(asked).toBe('rookEndgame')
+})
+
+const PUZZLE = {
+  id: 'r162L', fen: '6r1/R6p/p4p2/4p3/1P5k/P4r2/2PR3K/8 w - - 0 1', user_color: 'white',
+  last_move: 'g4h4', solution: ['a7h7', 'h4g4', 'd2g2', 'g4f5', 'g2g8'],
+  solution_san: ['Rxh7+', 'Kg4', 'Rg2+', 'Kf5', 'Rxg8'], rating: 1190,
+  themes: ['endgame', 'rookEndgame', 'skewer'], theme: 'rookEndgame',
+  url: 'https://lichess.org/training/r162L',
+  progress: { attempts: 0, solved: 0, failed: 0, last_result: null, last_played_at: null },
+}
+const PUZZLE_SUMMARY = {
+  groups: [
+    { title: 'Recommended', themes: [{ key: 'mix', label: 'Healthy mix', played: 0, solved: 0 }] },
+    { title: 'Phases', themes: [{ key: 'rookEndgame', label: 'Rook endgame', played: 0, solved: 0 }] },
+  ],
+  difficulties: ['easiest', 'easier', 'normal', 'harder', 'hardest'],
+  played: 0, solved: 0, missed: [],
+}
+
+test('a Lichess puzzle is checked move by move and the next one follows', async ({ page }) => {
+  const attempts = []
+  const asked = []
+  await page.route('**/api/puzzles', route => route.fulfill({ json: PUZZLE_SUMMARY }))
+  await page.route('**/api/puzzles/next*', (route) => {
+    asked.push(new URL(route.request().url()).search)
+    return route.fulfill({ json: PUZZLE })
+  })
+  await page.route('**/api/puzzles/*/attempts', (route) => {
+    attempts.push(route.request().postDataJSON().solved)
+    return route.fulfill({ json: PUZZLE.progress })
+  })
+  let engineAsked = false
+  await page.route('**/api/play/reply', (route) => { engineAsked = true; return route.abort() })
+
+  await page.goto('/')
+  await page.getByRole('tab', { name: 'Play' }).click()
+  const panel = page.getByRole('region', { name: 'Lichess puzzles' })
+  await panel.getByLabel('Theme').selectOption('rookEndgame')
+  await panel.getByLabel('Difficulty').selectOption('harder')
+  await panel.getByRole('button', { name: 'Start puzzles' }).click()
+  expect(asked).toEqual(['?theme=rookEndgame&difficulty=harder'])
+
+  const goal = page.getByLabel('Goal', { exact: true })
+  await expect(goal).toContainText('Find the best move')
+  await expect(goal).toContainText('3 moves of yours')
+
+  // A wrong move ends the try; the answer stays folded away until asked for.
+  await playMove(page, 'a7', 'a8')
+  const result = page.getByRole('status', { name: 'Goal result' })
+  await expect(result).toContainText('Ra8 is not the move')
+  await result.getByText('Show the answer').click()
+  await expect(result).toContainText('Rxh7+ Kg4 Rg2+ Kf5 Rxg8')
+
+  // The right line: each reply comes from the solution, not from the engine.
+  await result.getByRole('button', { name: 'Try again' }).click()
+  await playMove(page, 'a7', 'h7')
+  await expect(page.getByText('The reply was Kg4. Keep going.')).toBeVisible()
+  await playMove(page, 'd2', 'g2')
+  await expect(page.getByText('The reply was Kf5. Keep going.')).toBeVisible()
+  await playMove(page, 'g2', 'g8')
+  await expect(result).toContainText('Solved')
+  await expect.poll(() => attempts).toEqual([false, true])
+  expect(engineAsked).toBe(false)
+
+  await result.getByRole('button', { name: 'Next puzzle' }).click()
+  await expect(result).toHaveCount(0)
+  await expect(goal).toContainText('Find the best move')
+  expect(asked).toHaveLength(2)
+})
+
+test('the chess.com bookmark opens the game here, with a link back', async ({ page }) => {
+  const game = {
+    id: 5, white: 'me', black: 'rival', result: '1-0', date: '2026.11.10', user_color: 'white',
+    time_class: 'rapid', opening: 'Queen Pawn', eco: 'D00',
+  }
+  const link = 'https://www.chess.com/game/live/186950467864'
+  await page.route('**/api/games/by-link*', (route) => {
+    const url = new URL(route.request().url()).searchParams.get('url')
+    return url === link
+      ? route.fulfill({ json: game })
+      : route.fulfill({ status: 404, json: { detail: 'That game has not been imported yet' } })
+  })
+  await page.route('**/api/games/5', route => route.fulfill({
+    json: { ...game, pgn: `[Link "${link}"]\n\n1. d4 d5 2. c4 1-0`, mistakes: [] },
+  }))
+
+  await page.goto(`/?game=${encodeURIComponent(link)}`)
+  await expect(page.getByRole('link', { name: 'Back to this game on chess.com' })).toHaveAttribute('href', link)
+  await expect(page.getByRole('button', { name: 'c4', exact: true })).toBeVisible()
+  expect(new URL(page.url()).search).toBe('')
+
+  // Switching to the other colour's repertoire keeps the game and the move
+  // you are on (it used to throw you back to the games list).
+  await page.getByRole('button', { name: 'c4', exact: true }).click()
+  await page.getByRole('button', { name: 'Black', exact: true }).click()
+  await expect(page.getByRole('link', { name: 'Back to this game on chess.com' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'c4', exact: true })).toHaveClass(/current/)
+  await page.getByRole('button', { name: 'White', exact: true }).click()
+  await expect(page.getByRole('button', { name: 'c4', exact: true })).toHaveClass(/current/)
+
+  // From any point of the game you can play on against the engine, as yourself.
+  await page.route('**/api/play/reply', route => route.fulfill({
+    json: { uci: 'd7d5', san: 'd5', source: 'stockfish', outcome: null, cp: 20 },
+  }))
+  await page.getByRole('button', { name: 'd4', exact: true }).click()
+  await page.getByRole('button', { name: 'Play on from this position against Stockfish' }).click()
+  await expect(page.getByText('Playing as White')).toBeVisible()
+  await expect(page.getByText('Stockfish played d5.')).toBeVisible()
+
+  await page.goto(`/?game=${encodeURIComponent('https://www.chess.com/game/live/1111111')}`)
+  await expect(page.getByText('That chess.com game is not imported yet.')).toBeVisible()
+  const bookmark = page.getByRole('link', { name: 'Open in Chess Openings' })
+  await expect(bookmark).toHaveAttribute('href', /^javascript:location\.href="http:\/\/127\.0\.0\.1:\d+\/\?game="\+encodeURIComponent\(location\.href\)$/)
+})
+
+test('a comment is saved on the position and comes back with it', async ({ page }) => {
+  await page.goto('/')
+  const box = page.getByLabel('Comment on this position')
+  await expect(box).toHaveValue('')
+  await playMove(page, 'e2', 'e4')
+  await box.fill('Always my first move')
+  await box.blur()
+  await expect(page.locator('.position-note-state')).toHaveText('Saved')
+
+  // Another position has its own (empty) comment; going back shows the saved one.
+  await playMove(page, 'e7', 'e5')
+  await expect(box).toHaveValue('')
+  await page.getByRole('button', { name: 'Back one move' }).click()
+  await expect(box).toHaveValue('Always my first move')
+
+  // It is stored, not just remembered by the page.
+  await page.reload()
+  await playMove(page, 'e2', 'e4')
+  await expect(box).toHaveValue('Always my first move')
+
+  // Clearing it removes it; and it is hidden while a game is being played.
+  await box.fill('')
+  await box.blur()
+  await page.reload()
+  await playMove(page, 'e2', 'e4')
+  await expect(box).toHaveValue('')
+  await page.route('**/api/play/reply', route => route.abort())
+  await page.getByRole('tab', { name: 'Play' }).click()
+  await page.getByRole('button', { name: 'Play as Black' }).click()
+  await expect(box).toHaveCount(0)
+})
+
+test('the thinking time can be any number of seconds and changed during the game', async ({ page }) => {
+  const asked = []
+  const replies = [{ uci: 'e7e5', san: 'e5' }, { uci: 'd7d6', san: 'd6' }]
+  await page.route('**/api/play/reply', (route) => {
+    asked.push(route.request().postDataJSON().seconds)
+    const reply = replies[asked.length - 1] || replies[1]
+    return route.fulfill({ json: { ...reply, source: 'stockfish', outcome: null, cp: 20 } })
+  })
+  await page.goto('/')
+  await page.getByRole('tab', { name: 'Play' }).click()
+  const custom = page.getByLabel('Custom thinking time in seconds')
+  await custom.fill('7.5')
+  await custom.blur()
+  await page.getByRole('button', { name: 'Play as White' }).click()
+  await playMove(page, 'e2', 'e4')
+  await expect(page.getByText('Stockfish played e5.')).toBeVisible()
+  expect(asked).toEqual([7.5])
+
+  // Mid-game: a preset, then an out-of-range number, which is brought into range.
+  await page.getByRole('button', { name: '30s' }).click()
+  await expect(custom).toHaveValue('30')
+  await custom.fill('9999')
+  await custom.blur()
+  await expect(custom).toHaveValue('300')
+  await playMove(page, 'g1', 'f3')
+  await expect(page.getByText('Stockfish played d6.')).toBeVisible()
+  expect(asked).toEqual([7.5, 300])
 })
 
 test('the practice library offers to import from Lichess when it is empty, and shows it when done', async ({ page }) => {
@@ -438,7 +643,7 @@ test('a drill only accepts moves from the opening being drilled', async ({ page,
   await expect(page.locator('.op-pick').filter({ hasText: 'Queen Pawn Test' })).toContainText('1 trained')
 })
 
-test('wrong move is rejected, hints after two misses, and the miss reaches Review', async ({ page, request }) => {
+test('wrong move is rejected, hints after two misses, and the line reports the miss', async ({ page, request }) => {
   await saveBranch(request, {
     color: 'white',
     name: 'Italian',
@@ -466,47 +671,8 @@ test('wrong move is rejected, hints after two misses, and the miss reaches Revie
   await waitForOpponentReply(page, 'e5')
   await playMove(page, 'g1', 'f3')
   await expect(page.getByText('Line complete')).toBeVisible()
-  await expect(page.getByText(/miss(es)? added to Review/)).toBeVisible()
-
-  // The missed position is now due; Review reveals played + correct move.
-  await page.getByRole('tab', { name: /Review/ }).click()
-  await expect(page.getByText(/due position/)).toBeVisible()
-  await page.getByRole('button', { name: 'Start review' }).click()
-  await expect(page.getByText(/What.s your move/)).toBeVisible()
-
-  await playMoveAndWaitForDrillWrite(page, 'd2', 'd4')
-  const miss = page.locator('.practice-card.miss')
-  await expect(miss).toContainText('You played')
-  await expect(miss).toContainText('d4')
-  await expect(miss).toContainText('Correct move')
-  await expect(miss).toContainText('e4')
-})
-
-test('terminal-ply miss reaches Review and the completed summary remains visible', async ({ page, request }) => {
-  await saveBranch(request, {
-    color: 'white',
-    name: 'Terminal e4',
-    moves_san: 'e4',
-    opening: 'Terminal Audit',
-    label: 'main',
-    note: '',
-  })
-
-  await page.goto('/')
-  await trainOpening(page, 'Terminal Audit')
-  await playMoveAndWaitForDrillWrite(page, 'd2', 'd4')
-  await playMove(page, 'e2', 'e4')
-  await expect(page.getByText('Line complete')).toBeVisible()
-
-  await page.getByRole('tab', { name: /Review/ }).click()
-  await expect(page.getByText(/due position/)).toBeVisible()
-  await page.getByRole('button', { name: 'Start review' }).click()
-  await playMove(page, 'e2', 'e4')
-  const finish = page.getByRole('button', { name: 'Finish' })
-  await expect(finish).toBeEnabled()
-  await finish.click()
-  await expect(page.getByRole('heading', { name: 'Review complete' })).toBeVisible()
-  await expect(page.getByText('1 correct')).toBeVisible()
+  await expect(page.getByText(/miss(es)? in this line/)).toBeVisible()
+  await expect(page.getByRole('tab', { name: /Review/ })).toHaveCount(0)
 })
 
 test('black drill: the opponent moves first and the board is flipped', async ({ page, request }) => {

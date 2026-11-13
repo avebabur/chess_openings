@@ -19,6 +19,9 @@
  *               rated no worse than -50cp for you.
  *   draw        survive `moves` moves without the tablebase (or a rating of
  *               -300cp) saying you have lost.
+ *   puzzle      a Lichess puzzle (see puzzleGoal). Each of your moves must be
+ *               the solution's, except that any checkmate is accepted, as on
+ *               Lichess. The first other move fails it.
  *   better      a mistake from one of your own games (see mistakeGoal). You
  *               get one move; it must leave you rated at least `cp`, which is
  *               a little below what the best move keeps. The move you played
@@ -77,6 +80,32 @@ export function mistakeGoal(mistake) {
   }
 }
 
+// Castling written as "king takes own rook", which some sources use.
+const CASTLE_ALIAS = { e1h1: 'e1g1', e1a1: 'e1c1', e8h8: 'e8g8', e8a8: 'e8c8' }
+
+/** The usual UCI for `uci`, given that it may be a castle in the other form. */
+export function castleUci(uci) {
+  return CASTLE_ALIAS[uci] || uci
+}
+
+/** Is the move the user made the solution move `expected` (a UCI string)? */
+function sameMove(move, expected) {
+  if (move.uci === expected) return true
+  return move.san.startsWith('O-O') && castleUci(expected) === move.uci
+}
+
+/** The goal for a puzzle from GET /api/puzzles/next. */
+export function puzzleGoal(puzzle) {
+  return {
+    kind: 'puzzle',
+    solution: puzzle.solution,
+    solutionSan: puzzle.solution_san,
+    rating: puzzle.rating,
+    themes: puzzle.themes,
+    url: puzzle.url,
+  }
+}
+
 export function isPlayableGoal(goal) {
   return Boolean(goal) && goal.kind !== 'study'
 }
@@ -125,6 +154,14 @@ export function describeGoal(goal) {
         title: `Equalize within ${movesText(goal.moves)}`,
         detail: 'You are worse. Reach a position that is level, or better, in that many moves.',
       }
+    case 'puzzle': {
+      const yours = Math.ceil(goal.solution.length / 2)
+      return {
+        title: 'Find the best move',
+        detail: `Lichess puzzle${goal.rating ? `, rated ${goal.rating}` : ''}. ${
+          yours === 1 ? 'One move solves it.' : `The solution is ${yours} moves of yours; keep going after each reply.`}`,
+      }
+    }
     case 'better':
       return {
         title: `Find a better move than ${goal.played}`,
@@ -151,6 +188,7 @@ export function goalLabel(goal) {
     case 'equalize': return `Equalize in ${goal.moves}`
     case 'draw': return `Hold ${goal.moves} moves`
     case 'better': return `Better than ${goal.played}`
+    case 'puzzle': return goal.rating ? `Puzzle ${goal.rating}` : 'Puzzle'
     default: return 'Lesson'
   }
 }
@@ -226,12 +264,20 @@ export function judgeGoal({ goal, userColor, moves, result }) {
       return base({ state: 'running' })
     }
 
+    case 'puzzle': {
+      const wrong = userMoves.findIndex((move, i) => !sameMove(move, goal.solution[i * 2]))
+      if (wrong >= 0) return base(failed('wrong-move', { san: userMoves[wrong].san }))
+      return base(used * 2 >= goal.solution.length ? solved('puzzle') : { state: 'running' })
+    }
+
     case 'better': {
       const first = userMoves[0]
       if (!first) return base({ state: 'running' })
       if (first.uci === goal.playedUci) return base(failed('same-move'))
-      const cp = rated[0]?.cp
-      if (cp == null) return base({ state: 'running' })
+      if (!rated[0]) return base({ state: 'running' })
+      const cp = rated[0].cp
+      // The reply came back without a rating: say so rather than wait forever.
+      if (cp == null) return base(failed('unrated'))
       const extra = { cp, san: first.san }
       return base(cp >= goal.cp ? solved('better', extra) : failed('not-better', extra))
     }
@@ -255,6 +301,10 @@ export function goalOutcomeText(goal, judgement) {
     ? `${judgement.cp > 0 ? '+' : judgement.cp < 0 ? '-' : ''}${pawns(judgement.cp)}`
     : null
   switch (judgement.reason) {
+    case 'puzzle':
+      return { title: 'Solved', body: `You found ${judgement.used === 1 ? 'the move' : `all ${judgement.used} moves`}.` }
+    case 'wrong-move':
+      return { title: `${judgement.san} is not the move`, body: 'Try again, or open the answer below.' }
     case 'checkmate':
       return { title: 'Checkmate. Goal reached.', body: `You did it in ${movesText(judgement.used)}.` }
     case 'rating':
@@ -286,6 +336,8 @@ export function goalOutcomeText(goal, judgement) {
         title: `${judgement.san} does not fix it`,
         body: `${shown ? `Stockfish rates it ${shown} for you. ` : ''}It would have played ${goal.best}.`,
       }
+    case 'unrated':
+      return { title: 'That move could not be rated', body: 'Stockfish sent no rating for it. Try again.' }
     case 'same-move':
       return { title: 'That is the move from the game', body: 'It is the one that went wrong. Look for something else.' }
     case 'checkmated':

@@ -3,6 +3,8 @@ import { moveLabel, opponentOf } from '../../hooks/useMistakes'
 
 const BATCH = 4
 const BIG_BATCH = 20
+// Fewer mistakes than this say nothing about where they tend to happen.
+const MIN_FOR_REPORT = 5
 const MARK = { solved: '✓', failed: '✗' }
 const MARK_LABEL = { solved: 'fixed', failed: 'missed last time' }
 
@@ -12,13 +14,62 @@ function resultWord(game) {
   return (game.result === '1-0') === (game.user_color === 'white') ? 'win' : 'loss'
 }
 
+/**
+ * Where the mistakes happen, from GET /api/mistakes. Each line shows how many
+ * mistakes fall under it and what share of the damage they did; where Lichess
+ * has a puzzle theme for it, a button starts puzzles on that theme.
+ */
+function WeaknessReport({ report, onPractise }) {
+  if (!report || report.mistakes < MIN_FOR_REPORT) return null
+  return (
+    <details className="practice-lib-set weakness" open>
+      <summary>
+        <span className="practice-lib-set-title">Where your mistakes happen</span>
+        <span className="practice-lib-set-count">
+          {report.mistakes} in {report.games} game{report.games === 1 ? '' : 's'}
+        </span>
+      </summary>
+      <p className="practice-lib-subtitle">
+        The bar is the share of your lost winning chances, so one blunder weighs more than
+        several small slips.
+      </p>
+      {report.sections.map(section => (
+        <div className="weakness-section" key={section.key}>
+          <h4>{section.title}</h4>
+          <ul>
+            {section.rows.map(row => (
+              <li key={row.key} className="weakness-row">
+                <span className="weakness-label">{row.label}</span>
+                <span className="weakness-bar" aria-hidden="true">
+                  <i style={{ width: `${row.share}%` }} />
+                </span>
+                <span className="weakness-count">{row.share}% · {row.count}</span>
+                {row.theme ? (
+                  <button
+                    type="button"
+                    className="btn-link"
+                    onClick={() => onPractise(row.theme)}
+                    aria-label={`Puzzles for: ${row.label}`}
+                  >
+                    Puzzles
+                  </button>
+                ) : <span />}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ))}
+    </details>
+  )
+}
+
 function JobBar({ job, data, onAnalyse, onStop }) {
   if (job?.running) {
     const current = Math.min(job.done + 1, job.total)
     return (
       <p className="practice-lib-import" role="status">
         Analysing game {current} of {job.total}{job.title ? ` (${job.title})` : ''}…
-        About 20 seconds a game. You can keep using the app.{' '}
+        Up to a minute a game. You can keep using the app.{' '}
         <button type="button" className="btn-link" onClick={onStop}>Stop</button>
       </p>
     )
@@ -54,7 +105,7 @@ function JobBar({ job, data, onAnalyse, onStop }) {
   )
 }
 
-export default function MistakeList({ data, loadError, job, onAnalyse, onStop, onStart }) {
+export default function MistakeList({ data, loadError, job, onAnalyse, onStop, onStart, onPractiseTheme }) {
   const analysed = Boolean(data?.games_analysed)
 
   return (
@@ -79,6 +130,8 @@ export default function MistakeList({ data, loadError, job, onAnalyse, onStop, o
       )}
 
       <JobBar job={job} data={data} onAnalyse={onAnalyse} onStop={onStop} />
+
+      <WeaknessReport report={data?.report} onPractise={onPractiseTheme} />
 
       {(data?.games || []).map((game, index) => {
         const fixed = game.mistakes.filter(m => m.progress.last_result === 'solved').length

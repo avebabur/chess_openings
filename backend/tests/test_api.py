@@ -38,6 +38,22 @@ class ApiContractTests(unittest.TestCase):
             os.environ["CHESS_DB_PATH"] = self.old_db_path
         self.temp_dir.cleanup()
 
+    def test_the_lichess_extension_may_call_the_app_but_websites_may_not(self):
+        preflight = {"Access-Control-Request-Method": "POST",
+                     "Access-Control-Request-Headers": "content-type"}
+        res = self.client.options("/api/extension/health",
+                                  headers={"Origin": "moz-extension://1f2e-3d4c", **preflight})
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.headers["access-control-allow-origin"], "moz-extension://1f2e-3d4c")
+        res = self.client.options("/api/extension/health",
+                                  headers={"Origin": "https://example.com", **preflight})
+        self.assertEqual(res.status_code, 400)
+
+    def test_a_lichess_game_page_finds_the_imported_game(self):
+        res = self.client.get("/api/games/by-link", params={"url": "https://lichess.org/game/NxSwb2Nq#18"})
+        self.assertEqual(res.status_code, 404)
+        self.assertIn("Lichess", res.json()["detail"])
+
     def test_adding_an_account_that_does_not_exist_creates_nothing(self):
         # A typo used to become a dead "0 games · never synced" account.
         with patch.object(self.main.game_import, "account_exists", return_value=False), \

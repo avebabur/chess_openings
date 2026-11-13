@@ -256,9 +256,13 @@ def _transpositions(node, path):
             for order, n in others[:MAX_TRANSPOSITIONS]]
 
 
-def _node_from_graph(graph, color, path):
-    path = [p for p in path if p]
-    board = chess.Board()
+def _node_from_graph(graph, color, path, fen=None):
+    """The node at ``path`` (SAN moves from the start), or — when ``fen`` is
+    given — at that position directly, whatever move order reached it. The
+    graph is keyed by position, so a FEN lookup needs no path at all; it is how
+    the Lichess extension asks about the board it is showing."""
+    path = [] if fen else [p for p in path if p]
+    board = chess.Board(fen) if fen else chess.Board()
     legal_path = True
     for san in path:
         try:
@@ -352,7 +356,7 @@ class OpeningTreeCache:
             self._trees.popitem(last=False)
         return graph
 
-    def node_for_filter(self, color, path, time_classes=None, account_id=None):
+    def node_for_filter(self, color, path, time_classes=None, account_id=None, fen=None):
         if self._game_loader is None:
             import database as db
             loader = db.get_games_for_tree
@@ -374,7 +378,29 @@ class OpeningTreeCache:
                         # would hide the new games until the next invalidation.
                         if generation == self._generation:
                             root = self._remember(key, root)
-        return _node_from_graph(root, color, path)
+        return _node_from_graph(root, color, path, fen)
+
+    def games_through(self, fen, color=None, time_classes=None, account_id=None):
+        """Your games that reached the position in ``fen`` by any move order,
+        newest first, each with the ply where it got there (0 = the start)."""
+        if self._game_loader is None:
+            import database as db
+            loader = db.get_games_for_tree
+        else:
+            loader = self._game_loader
+        target = _graph_key(chess.Board(fen))
+        found = []
+        for game in loader(color=color, time_classes=time_classes, account_id=account_id):
+            if target == START_KEY:
+                ply = 0
+            else:
+                ply = next((i + 1 for i, (_, _, after) in enumerate(self._moves_for(game))
+                            if after == target), None)
+                if ply is None:
+                    continue
+            found.append((game, ply))
+        found.sort(key=lambda item: (item[0].get("end_time") or "", item[0]["id"]), reverse=True)
+        return found
 
     def _cached(self, key):
         with self._lock:
@@ -407,8 +433,8 @@ class OpeningTreeCache:
 _default_cache = OpeningTreeCache()
 
 
-def node_for_filter(color, path, time_classes=None, account_id=None):
-    return _default_cache.node_for_filter(color, path, time_classes, account_id)
+def node_for_filter(color, path, time_classes=None, account_id=None, fen=None):
+    return _default_cache.node_for_filter(color, path, time_classes, account_id, fen)
 
 
 def invalidate_cache(account_id=None):

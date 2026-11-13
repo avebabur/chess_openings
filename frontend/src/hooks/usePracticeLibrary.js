@@ -1,13 +1,8 @@
 /* eslint-disable react-hooks/set-state-in-effect */
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { api } from '../api'
+import { api, errorText } from '../api'
 
 const POLL_MS = 1500
-
-function errorText(err, fallback) {
-  const detail = err?.response?.data?.detail
-  return typeof detail === 'string' ? detail : (err?.message || fallback)
-}
 
 /**
  * The Lichess Practice library: the imported sets with the user's progress,

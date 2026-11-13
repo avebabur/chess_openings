@@ -27,8 +27,6 @@ export default function RepertoireTab({
   groupedBranches,
   allTags,
   tagFilter,
-  dueNodes,
-  dueCount = 0,
   transpositions = [],
   openings,
   activeLineKey,
@@ -50,7 +48,6 @@ export default function RepertoireTab({
   onLoadBranch,
   onLoadConflict,
   onResetToSaved,
-  onStartReview,
   onSetEditorOpen,
   onSetTagFilter,
   onJumpToPath,
@@ -176,14 +173,6 @@ export default function RepertoireTab({
   return (
     <div className="tab-pane rep-pane" role="tabpanel">
       <div className="rep-sticky">
-        {dueNodes.length > 0 && (
-          <button type="button" className="rep-due" onClick={onStartReview}>
-            {/* dueCount is the real backlog; dueNodes is capped at 50 by the API. */}
-            <span>{dueCount} position{dueCount === 1 ? '' : 's'} due for review</span>
-            <span aria-hidden="true">→</span>
-          </button>
-        )}
-
         {conflicts.length > 0 && (
           <div className="rep-conflicts">
             <button
@@ -405,7 +394,7 @@ export default function RepertoireTab({
         ) : (
           <div className="op-empty compact">
             <strong>No saved variations yet</strong>
-            <p>Play a line on the board, then &ldquo;Save line&rdquo;. {color === 'white' ? 'White' : 'Black'} lines you save can be drilled and reviewed on a schedule.</p>
+            <p>Play a line on the board, then &ldquo;Save line&rdquo;. {color === 'white' ? 'White' : 'Black'} lines you save can be drilled in the Train tab.</p>
           </div>
         )}
       </div>

@@ -14,7 +14,6 @@ import {
   positionKeyFromFen,
   positionKeysAlongPath,
   repliesAtPosition,
-  reviewQueueFromDueNodes,
   sideToMove,
   splitSanLine,
 } from './chessLine'
@@ -174,52 +173,6 @@ describe('chessLine domain helpers', () => {
     })).toBe(true)
   })
 
-  it('normalizes due nodes into review items with prior paths', () => {
-    const queue = reviewQueueFromDueNodes([
-      { id: 7, color: 'white', path_san: 'e4 e5 Nf3', san: 'Nf3', fen_after: 'fen' },
-      { id: 8, path_san: '', san: 'e4' },
-    ])
-
-    expect(queue).toHaveLength(1)
-    expect(queue[0]).toMatchObject({
-      id: 7,
-      color: 'white',
-      path: ['e4', 'e5', 'Nf3'],
-      priorPath: ['e4', 'e5'],
-      san: 'Nf3',
-      fen_after: 'fen',
-    })
-  })
-
-  it('falls back to the node itself when the server sends no accepted list', () => {
-    const [item] = reviewQueueFromDueNodes([
-      { id: 7, color: 'white', path_san: 'e4 e5 Nf3', san: 'Nf3', fen_after: 'fen' },
-    ])
-
-    expect(item.accepted).toEqual([{
-      node_id: 7, san: 'Nf3', fen_after: 'fen', epd_after: null, path_san: 'e4 e5 Nf3',
-    }])
-  })
-
-  it('carries every accepted reply so a transposed answer is credited', () => {
-    const [item] = reviewQueueFromDueNodes([
-      {
-        id: 7,
-        color: 'white',
-        path_san: 'd4',
-        san: 'd4',
-        epd_before: 'start-key',
-        accepted: [
-          { node_id: 7, san: 'd4', path_san: 'd4' },
-          { node_id: 9, san: 'e4', path_san: 'e4' },
-        ],
-      },
-    ])
-    const played = makeMove(START_FEN, 'e2', 'e4')
-
-    expect(item.epd_before).toBe('start-key')
-    expect(matchExpectedMove(played, item.accepted)?.node_id).toBe(9)
-  })
 })
 
 describe('positionKeysAlongPath', () => {

@@ -199,8 +199,8 @@ export function tryMove(fen, orig, dest, promotion = 'q') {
 }
 
 // Which of the saved replies the player just made, or null for none of them.
-// `expected` is one reply or a list — a review card collapses every move order
-// into a single question, so several answers can be right.
+// `expected` is one reply or a list: several saved replies to one position
+// can all be right.
 //
 // Matching is by position, not FEN string: two replies can reach one position by
 // different move orders, and only the move clocks would differ.
@@ -219,35 +219,6 @@ export function isExpectedMove(moveResult, expected) {
   return matchExpectedMove(moveResult, expected) !== null
 }
 
-export function normalizeReviewNode(node) {
-  const path = splitSanLine(node?.path_san)
-  if (!node?.id || !path.length) return null
-  // `accepted` comes from the server: every reply saved at this position, so a
-  // transposed-but-saved answer isn't graded wrong. Older payloads without it
-  // fall back to this node's own move.
-  const accepted = (node.accepted || []).filter(reply => reply?.node_id)
-  return {
-    id: node.id,
-    path,
-    priorPath: path.slice(0, -1),
-    san: node.san,
-    color: node.color,
-    fen_after: node.fen_after,
-    epd_before: node.epd_before || null,
-    epd_after: node.epd_after || null,
-    accepted: accepted.length ? accepted : [{
-      node_id: node.id,
-      san: node.san,
-      fen_after: node.fen_after,
-      epd_after: node.epd_after || null,
-      path_san: node.path_san,
-    }],
-  }
-}
-
-export function reviewQueueFromDueNodes(dueNodes) {
-  return (dueNodes || []).map(normalizeReviewNode).filter(Boolean)
-}
 
 export function uciLineToSan(fen, uciMoves) {
   const game = new Chess(fen)

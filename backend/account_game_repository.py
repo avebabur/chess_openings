@@ -490,6 +490,19 @@ def list_games(account_id=None, color=None, time_classes=None, limit=50, offset=
     return [dict(r) for r in rows]
 
 
+def get_game_summaries(game_ids):
+    """{id: metadata} for the given games (the same fields as list_games)."""
+    if not game_ids:
+        return {}
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT id, white, black, result, date, end_time, user_color, user_rating, "
+        "opp_rating, time_class, time_control, eco, opening, source, analyzed "
+        f"FROM games WHERE id IN ({','.join('?' * len(game_ids))})", list(game_ids)).fetchall()
+    conn.close()
+    return {r["id"]: dict(r) for r in rows}
+
+
 def count_games(account_id=None, color=None, time_classes=None):
     """Total games matching the browser filter (for the header + paging end)."""
     conn = get_db()
@@ -514,3 +527,38 @@ def get_game(game_id):
     result["analysis"] = json.loads(result["analysis"]) if result["analysis"] else None
     return result
 
+
+def find_game_by_external_id(source, external_id):
+    """`{id, ...metadata}` of an imported game by its site id (Lichess: the
+    8-character game id), or None."""
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT id, white, black, result, date, end_time, user_color, user_rating, "
+            "opp_rating, time_class, time_control, eco, opening, source, analyzed "
+            "FROM games WHERE source = ? AND external_id = ? AND merged_into_game_id IS NULL LIMIT 1",
+            (source, external_id)).fetchone()
+    finally:
+        conn.close()
+    return dict(row) if row else None
+
+
+def find_game_by_chesscom_id(number, kind=None):
+    """`{id, ...metadata}` of the game whose PGN links to chess.com game
+    `number` ("live" or "daily" if the address said which), or None."""
+    kinds = [kind] if kind else ["live", "daily"]
+    conn = get_db()
+    try:
+        for k in kinds:
+            row = conn.execute(
+                "SELECT id, white, black, result, date, end_time, user_color, user_rating, "
+                "opp_rating, time_class, time_control, eco, opening, source, analyzed "
+                "FROM games WHERE source = 'chesscom' AND merged_into_game_id IS NULL "
+                "AND instr(pgn, ?) > 0 LIMIT 1",
+                (f'chess.com/game/{k}/{number}"',),
+            ).fetchone()
+            if row:
+                return dict(row)
+        return None
+    finally:
+        conn.close()
