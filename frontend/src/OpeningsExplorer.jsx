@@ -113,7 +113,10 @@ export default function OpeningsExplorer() {
   const cancelPromotion = useCallback(() => setPendingPromotion(null), [])
   const resetBoardPosition = useCallback(() => setBoardResetKey((key) => key + 1), [])
 
-  const stopReview = useCallback(() => dispatchReview({ type: 'clear' }), [dispatchReview])
+  const stopReview = useCallback(() => {
+    resetReviewWrite()
+    dispatchReview({ type: 'clear' })
+  }, [dispatchReview, resetReviewWrite])
 
   const closeGame = useCallback(() => {
     setReviewGame(null)
@@ -123,9 +126,8 @@ export default function OpeningsExplorer() {
   // Load a full game onto the review board: seed the line with its mainline so
   // the shared board + analysis rail step through it (no opening-tree fetch).
   const openGame = useCallback(async (game) => {
-    clearTrainerTimer()
-    dispatchTrainer({ type: 'stop' })
-    dispatchReview({ type: 'clear' })
+    stopTrainer()
+    stopReview()
     setActiveTab('Games')
     setFlipped(false)
     try {
@@ -137,7 +139,7 @@ export default function OpeningsExplorer() {
       setReviewGame({ ...game, sans: [], error: true })
       setLine({ path: [], future: [] })
     }
-  }, [clearTrainerTimer, dispatchReview, dispatchTrainer, setFlipped, setLine])
+  }, [stopTrainer, stopReview, setFlipped, setLine])
 
   const exploreBoard = useMemo(() => boardFromPath(path), [path])
   // How many of the open game's moves are currently on the board (leading prefix
@@ -377,15 +379,14 @@ export default function OpeningsExplorer() {
 
   const selectColor = useCallback((nextColor) => {
     if (nextColor === color && !path.length && !trainer && !review && !reviewGame) return
-    clearTrainerTimer()
-    dispatchTrainer({ type: 'stop' })
-    dispatchReview({ type: 'clear' })
+    stopTrainer()
+    stopReview()
     setReviewGame(null)
     setEditingBranchId(null)
     setEditorOpen(false)
     setColor(nextColor)
     setLine({ path: [], future: [] })
-  }, [clearTrainerTimer, color, dispatchReview, dispatchTrainer, path.length, review, reviewGame, setLine, trainer])
+  }, [color, path.length, review, reviewGame, setLine, stopTrainer, stopReview, trainer])
 
   const selectTimeClass = useCallback((nextTimeClass) => {
     if (nextTimeClass === timeClass && !path.length && !reviewGame) return
@@ -397,13 +398,12 @@ export default function OpeningsExplorer() {
   }, [path.length, reviewGame, setLine, timeClass])
 
   const selectAccount = useCallback((id) => {
-    clearTrainerTimer()
-    dispatchTrainer({ type: 'stop' })
-    dispatchReview({ type: 'clear' })
+    stopTrainer()
+    stopReview()
     setReviewGame(null)
     setSelectedAccountId(id)
     setLine({ path: [], future: [] })
-  }, [clearTrainerTimer, dispatchReview, dispatchTrainer, setLine])
+  }, [setLine, stopTrainer, stopReview])
 
   const addAccount = useCallback(async (platform, username) => {
     const res = await accountManager.add(platform, username)
@@ -608,9 +608,8 @@ export default function OpeningsExplorer() {
   }, [loadOpenings, loadRepertoire])
 
   const loadBranch = (branch) => {
-    clearTrainerTimer()
-    dispatchTrainer({ type: 'stop' })
-    dispatchReview({ type: 'clear' })
+    stopTrainer()
+    stopReview()
     setColor(branch.color)
     jumpToPath(splitSanLine(branch.moves_san))
     setEditingBranchId(branch.id)
@@ -620,13 +619,13 @@ export default function OpeningsExplorer() {
 
   const startTraining = useCallback(({ branches: scopeBranches, userColor, scope }) => {
     clearTrainerTimer()
-    dispatchReview({ type: 'clear' })
+    stopReview()
     setEditingBranchId(null)
     setEditorOpen(false)
     drillWrite.clear()
     setActiveTab('Practice')
     dispatchTrainer({ type: 'start', payload: { branches: scopeBranches, userColor, scope } })
-  }, [clearTrainerTimer, dispatchReview, dispatchTrainer, drillWrite])
+  }, [clearTrainerTimer, dispatchTrainer, drillWrite, stopReview])
 
   // Drill a single saved line (a one-leaf scope).
   const startPractice = useCallback((branch) => {
@@ -721,21 +720,19 @@ export default function OpeningsExplorer() {
 
   const startReview = useCallback(() => {
     if (!dueNodes.length) return
-    clearTrainerTimer()
-    dispatchTrainer({ type: 'stop' })
+    stopTrainer()
     setEditingBranchId(null)
     setEditorOpen(false)
     setActiveTab('Review')
     resetReviewWrite()
     dispatchReview({ type: 'start', dueNodes })
-  }, [clearTrainerTimer, dispatchReview, dispatchTrainer, dueNodes, resetReviewWrite])
+  }, [dueNodes, dispatchReview, resetReviewWrite, stopTrainer])
 
   const nextReview = useCallback(() => dispatchReview({ type: 'next' }), [dispatchReview])
   const completeReview = useCallback(() => dispatchReview({ type: 'finish' }), [dispatchReview])
   const finishReview = useCallback(() => {
-    dispatchReview({ type: 'clear' })
-    resetReviewWrite()
-  }, [dispatchReview, resetReviewWrite])
+    stopReview()
+  }, [stopReview])
 
   const handleReviewMove = useCallback((orig, dest) => {
     if (!review || review.status !== REVIEW_STATUS.ASKING || !reviewItem || pendingPromotion) return
@@ -1043,7 +1040,7 @@ export default function OpeningsExplorer() {
                 onRetryReviewWrite={retryReviewWrite}
                 onOpenPractice={() => setActiveTab('Practice')}
                 onJumpToPath={jumpToPath}
-                onClearReview={() => dispatchReview({ type: 'clear' })}
+                onClearReview={stopReview}
                 onSetActiveTab={setActiveTab}
               />
             )}
