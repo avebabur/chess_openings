@@ -144,6 +144,35 @@ class RegistrationTests(unittest.TestCase):
         self.assertEqual(provider.engine_id, "eei_old")
 
 
+class PauseTests(unittest.TestCase):
+    def test_no_work_is_taken_while_a_game_is_live(self):
+        polls = []
+
+        def handler(request):
+            polls.append(request.url.path)
+            return httpx.Response(204)
+
+        provider = lep.LichessEngineProvider(
+            token_getter=lambda: "tok", secret_store=lambda value=None: "s",
+            stockfish_path=sys.executable, transport=httpx.MockTransport(handler), poll_pause=0.01)
+        provider._token_in_use = "tok"
+
+        async def run_for(seconds):
+            async with httpx.AsyncClient(transport=provider._transport) as http:
+                try:
+                    await asyncio.wait_for(provider._serve(http, "s"), seconds)
+                except asyncio.TimeoutError:
+                    pass
+
+        asyncio.run(provider.set_paused(True))
+        asyncio.run(run_for(0.3))
+        self.assertEqual(polls, [])
+        self.assertTrue(provider.status()["paused"])
+        asyncio.run(provider.set_paused(False))
+        asyncio.run(run_for(0.3))
+        self.assertIn("/api/external-engine/work", polls)
+
+
 class AnalyseTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

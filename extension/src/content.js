@@ -8,7 +8,11 @@
     const status = await OX.bridge.status();
     OX.state.paused = !!status?.paused;
     if (status?.autostart) OX.state.autostart = status.autostart;
-  } catch { /* background not ready: stay with defaults */ }
+  } catch {
+    // Not answered: a game may be on in another tab, so stay paused until the
+    // background script answers this page's own report (core.js reportPlaying).
+    OX.state.paused = true;
+  }
   OX.bridge.onPaused(paused => { OX.state.paused = paused; OX.runner.tick(); });
   const api = OX.bridge.api.bind(OX.bridge);
   OX.bridge.api = async (...args) => {

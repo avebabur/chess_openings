@@ -150,9 +150,22 @@ def init_db():
     conn = get_db()
     try:
         conn.executescript(SCHEMA)
+        _fill_missing_player_names(conn)
         conn.commit()
     finally:
         conn.close()
+
+
+def _fill_missing_player_names(conn):
+    """Lichess games against the computer or an anonymous player were imported
+    with an empty name before the importer took it from the PGN. Fill those in
+    the same way (only rows still empty, so this costs nothing afterwards)."""
+    from game_import import pgn_player  # late: game_import imports this module
+    rows = conn.execute(
+        "SELECT id, pgn, white, black FROM games WHERE white = '' OR black = ''").fetchall()
+    for game_id, pgn, white, black in rows:
+        conn.execute("UPDATE games SET white = ?, black = ? WHERE id = ?",
+                     (white or pgn_player(pgn, "White"), black or pgn_player(pgn, "Black"), game_id))
 
 
 def create_database_backup(target_path):

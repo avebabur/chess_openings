@@ -100,7 +100,17 @@ const explorerPage = `<!doctype html><body>${topnav}
 <table class="moves lichess-table"><tbody><tr><td>Nf3</td></tr></tbody></table></div></section></div>
 <div class="analyse__underboard"><div class="copyables"><div class="pair"><input class="copyable" value="rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1"></div></div></div>
 </main></body>`;
+// The analysis board set up from a position (after 1.e4 e5), then 2.Nf3 Nc6:
+// those moves are legal from the normal start too, but are not a line from it.
+const customStart = `<!doctype html><body>${topnav}
+<main class="analyse variant-fromPosition"><aside class="analyse__side"></aside>
+<div class="analyse__board main-board"><div class="cg-wrap orientation-white"></div></div>
+<div class="analyse__tools"><div class="ceval"></div><div class="analyse__moves areplay"><div class="tview2">
+<move p="(0"><san>Nf3</san></move><move p="(0aA" class="active"><san>Nc6</san></move></div></div></div>
+<div class="analyse__underboard"><div class="copyables"><div class="pair"><input class="copyable" value="r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3"></div></div></div>
+</main></body>`;
 const fixtures = {
+  '/ox-fixture/custom-start': customStart,
   '/ox-fixture/game': finishedGame,
   '/ox-fixture/explorer': explorerPage,
   '/ox-fixture/live': `<!doctype html><body>${topnav}<main class="round"><div class="rclock rclock-bottom running"></div></main></body>`,
@@ -318,6 +328,12 @@ record('explorer', await page.evaluate(() => !document.querySelector('.explorer-
 record('finished-game layout',
   (await page.evaluate(() => globalThis.OX.state.position?.fen))?.startsWith('rnbqkbnr/pppppppp/8/8/4P3'),
   'finished-game layout: the position is read from the game page\'s FEN box');
+
+await open('https://lichess.org/ox-fixture/custom-start');
+await page.waitForTimeout(1500);
+record('custom start', await page.evaluate(() => globalThis.OX.currentLine() === null
+  && !/save this line/i.test(document.querySelector('[data-ox-host=repertoire]')?.shadowRoot?.textContent || '')),
+  'custom start: moves from a set-up position are not offered as a line to save');
 
 await open('https://lichess.org/ox-fixture/finished');
 record('finished game', (await page.evaluate(() => globalThis.__oxHarness.playing.at(-1))) === false,

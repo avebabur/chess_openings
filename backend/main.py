@@ -319,6 +319,18 @@ def lichess_engine_status(request: Request):
     return request.app.state.lichess_engine.status()
 
 
+class EnginePauseInput(BaseModel):
+    paused: bool
+
+
+@api.put("/lichess-engine/paused")
+async def lichess_engine_pause(input: EnginePauseInput, request: Request):
+    """The extension's live-game lock: while a game is in progress in any
+    Lichess tab, your Stockfish takes no work from Lichess."""
+    await request.app.state.lichess_engine.set_paused(input.paused)
+    return {"paused": request.app.state.lichess_engine.paused}
+
+
 @api.get("/extension/build")
 def extension_build():
     """When the extension's files last changed. The extension compares it with

@@ -27,6 +27,14 @@ _LICHESS_OVERLAP = timedelta(days=90)
 _ARCHIVE_MONTH_RE = re.compile(r"/(\d{4})/(\d{2})$")
 
 _HEADER_RE = re.compile(r'^\[(\w+)\s+"(.*)"\]\s*$', re.M)
+
+
+def pgn_player(pgn, color):
+    """The White or Black name in a PGN's tags, "Anonymous" when it has none."""
+    for tag, value in _HEADER_RE.findall(pgn or ""):
+        if tag == color and value.strip() and value.strip() != "?":
+            return value.strip()
+    return "Anonymous"
 # Lichess "speed" → the time-class vocabulary the UI filters on (chess.com's).
 # Lichess statuses for games that may never have been played out. With no
 # `winner` such a game would otherwise be filed as a draw in the tree. (A
@@ -212,8 +220,10 @@ def import_lichess(username, account_id, progress=None, cancelled=None, client=N
                 players = g.get("players") or {}
                 w = players.get("white") or {}
                 b = players.get("black") or {}
-                w_name = (w.get("user") or {}).get("name", "")
-                b_name = (b.get("user") or {}).get("name", "")
+                # The computer and anonymous players have no user: their name
+                # is the PGN's ("lichess AI level 8", "Anonymous").
+                w_name = (w.get("user") or {}).get("name") or pgn_player(pgn, "White")
+                b_name = (b.get("user") or {}).get("name") or pgn_player(pgn, "Black")
                 user_is_white = w_name.lower() == uname
                 me, opp = (w, b) if user_is_white else (b, w)
                 winner = g.get("winner")

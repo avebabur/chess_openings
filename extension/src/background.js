@@ -1,7 +1,8 @@
 // Background service worker: the only part that talks to the openings app,
 // and the keeper of the live-game lock across every Lichess tab.
-importScripts('backend-client.js');
+importScripts('backend-client.js', 'anchors.js'); // anchors: the live-game selectors
 const ext = chrome;
+const A = globalThis.OX.anchors;
 const BACKEND = 'http://127.0.0.1:8001';
 const client = globalThis.OX_createBackendClient(`${BACKEND}/api`);
 const LICHESS_TABS = { url: 'https://lichess.org/*' };
@@ -30,12 +31,59 @@ function setTabPlaying(tabId, playing) {
     if (playing) tabs.add(tabId); else tabs.delete(tabId);
     await ext.storage.session.set({ playingTabs: [...tabs] });
     const paused = tabs.size > 0;
-    if (paused !== before) await broadcastPaused(paused);
+    if (paused !== before) {
+      await broadcastPaused(paused);
+      tellEngine(paused);
+    }
     await refreshBadge();
     return paused;
   });
   lockQueue = change.catch(() => {});
   return change;
+}
+
+// Your Stockfish takes no work from Lichess while a game is on, so no Lichess
+// tab can use it then (backend/lichess_engine_provider.py). Said on every
+// change and again with every keepalive, so an app (re)started mid-game hears it.
+function tellEngine(paused) {
+  return client.api('PUT', '/lichess-engine/paused', { paused }).catch(() => {});
+}
+
+// Session storage is emptied when the extension is updated or Chrome restarts,
+// and Lichess tabs already open don't report again until their new copy runs:
+// until then a game in one of them must still count. So the first time the
+// lock is asked about after that, every Lichess tab is looked at directly.
+function looksLikeGame(url) {
+  try {
+    const { host, pathname } = new URL(url);
+    return host === 'lichess.org' && /^\/(?:game\/)?[A-Za-z0-9]{8}(?:[A-Za-z0-9]{4})?(?:\/(?:white|black))?\/?$/.test(pathname);
+  } catch { return false; }
+}
+async function tabIsLive(tab) {
+  if (tab.discarded) return false; // unloaded by Chrome: nothing is shown in it
+  try {
+    const [{ result }] = await ext.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: (round, finished) => !!document.querySelector(round) && !document.querySelector(finished),
+      args: [A.roundPage.selector, A.roundFinished.selector],
+    });
+    return result === true;
+  } catch {
+    // Not readable right now (loading, an error page): a game's address counts as live.
+    return looksLikeGame(tab.url);
+  }
+}
+let seeding = null;
+function seedLock() {
+  seeding = seeding || (async () => {
+    const { lockSeeded } = await ext.storage.session.get('lockSeeded');
+    if (lockSeeded) return;
+    const tabs = await ext.tabs.query(LICHESS_TABS);
+    const live = await Promise.all(tabs.map(tabIsLive));
+    await Promise.all(tabs.filter((tab, i) => live[i]).map(tab => setTabPlaying(tab.id, true)));
+    await ext.storage.session.set({ lockSeeded: true });
+  })().catch(() => {}); // never in the way of an answer: the tabs' own reports still come
+  return seeding;
 }
 
 async function broadcastPaused(paused) {
@@ -48,10 +96,14 @@ ext.tabs.onRemoved.addListener(tabId => {
   setTabPlaying(tabId, false);
   stopIfUnwanted();
 });
-// A playing tab that starts loading anything else is no longer a live game;
-// if it loads another game page, its content script reports it again.
-ext.tabs.onUpdated.addListener((tabId, change) => {
-  if (change.status === 'loading') setTabPlaying(tabId, false);
+// A playing tab that leaves Lichess is no longer a live game. One that loads
+// another Lichess page keeps the lock until that page's content script says
+// otherwise: the next page may be a game too (a rematch, "New opponent"), and
+// unlocking in between showed everything in the other tabs for a moment.
+ext.tabs.onUpdated.addListener(async (tabId, change, tab) => {
+  if (change.status === 'loading' && !tab.url?.startsWith('https://lichess.org/')) setTabPlaying(tabId, false);
+  // A Lichess page our script can't run in (an error page) never reports.
+  if (change.status === 'complete' && (await playingTabs()).has(tabId)) setTabPlaying(tabId, await tabIsLive(tab));
 });
 
 // --- toolbar badge ---------------------------------------------------------
@@ -168,6 +220,7 @@ async function keepAlive() {
   lastKeepalive = Date.now();
   // Not answered means the app is down: the next real request starts it.
   fetch(`${BACKEND}/api/keepalive`, { method: 'POST' }).catch(() => {});
+  tellEngine((await playingTabs()).size > 0);
   return true;
 }
 
@@ -227,6 +280,7 @@ ext.runtime.onMessage.addListener((message, sender, sendResponse) => {
           return { ok: false, status: 0, data: null, offline: true, autostart: state, error: String(error) };
         }
       case 'ox-status': {
+        await seedLock();
         keepAlive();
         // Fail-closed: while this copy is about to be replaced, stay paused.
         if (await reloadIfUpdated()) return { paused: true, reloading: true };
@@ -236,6 +290,7 @@ ext.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return { paused: (await playingTabs()).size > 0, autostart: running ? 'running' : autostart.state };
       }
       case 'ox-playing':
+        await seedLock();
         return { paused: tabId == null ? false : await setTabPlaying(tabId, message.playing) };
       case 'ox-health':
         await rememberHealth(message.report);

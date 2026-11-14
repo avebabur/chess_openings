@@ -38,10 +38,15 @@ links lead out of Lichess.
 
 ## Fair play: it switches itself off during games
 
-- While **any** Lichess tab shows a game in progress (yours or one you're watching), every
-  feature in every Lichess tab is removed and the engine stops. The toolbar icon shows
-  **live**. Everything comes back when the game's result appears.
-- This fails safe: a game page counts as live until its result box shows.
+- While **any** Lichess tab shows a game in progress (yours or one you're watching, Lichess
+  TV included), every feature in every Lichess tab is removed, and your Stockfish takes no
+  work from Lichess, so Lichess's engine bar in another tab gets no answers from it. The
+  toolbar icon shows **live**. Everything comes back when the game's result appears.
+- This fails safe: a game page counts as live until its result box shows; a game tab that
+  goes straight into the next game (rematch) stays locked in between; after an extension
+  update or a Chrome restart every open Lichess tab is checked before anything is shown.
+- What it can't see: a game in another browser or Chrome profile, or a correspondence game
+  whose page isn't open.
 
 ## Install in Chrome (once)
 

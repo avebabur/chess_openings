@@ -63,6 +63,24 @@ class GameImportTests(unittest.TestCase):
         self.assertEqual([g["result"] for g in saved], ["1/2-1/2", "0-1"])
         self.assertEqual(result["seen"], 2)
 
+    def test_the_computer_and_anonymous_players_get_their_pgn_name(self):
+        module = importlib.reload(game_import)
+        pgn = '[White "lichess AI level 8"]\n[Black "me"]\n\n1. e4 e5 *'
+        line = json.dumps({
+            "id": "vsai", "variant": "standard", "speed": "correspondence", "status": "mate",
+            "winner": "white", "createdAt": 1_700_000_000_000, "pgn": pgn,
+            "players": {"white": {"aiLevel": 8}, "black": {"user": {"name": "me"}}},
+        })
+        saved = []
+        with httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200, text=line))) as client, \
+                patch.object(module.db, "get_setting", return_value=None), \
+                patch.object(module.db, "save_imported_games",
+                             side_effect=lambda batch: saved.extend(batch) or {"imported": len(batch)}):
+            module.import_lichess("me", 1, client=client)
+        self.assertEqual((saved[0]["white"], saved[0]["black"], saved[0]["user_color"]),
+                         ("lichess AI level 8", "me", "black"))
+        self.assertEqual(module.pgn_player("1. e4 *", "Black"), "Anonymous")
+
     def test_a_later_sync_only_asks_for_what_is_new(self):
         module = importlib.reload(game_import)
         asked = []

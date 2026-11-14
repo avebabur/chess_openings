@@ -110,10 +110,11 @@
       }
 
       // The moves on the board from the normal start, replayed: null when the
-      // game doesn't start there, or while Lichess's move list and its FEN box
-      // disagree for a moment (drawn again shortly, see render).
+      // board doesn't start there (a set-up position: its moves lead elsewhere
+      // from the normal start), or while Lichess's move list and its FEN box
+      // disagree for a moment (drawn again shortly).
       function boardPath() {
-        const line = OX.currentLine();
+        const line = OX.movesOnBoard();
         if (!line) return null;
         const id = line.join(' ');
         if (pathCache.id !== id) pathCache = { id, path: R.replay(line) };
@@ -265,7 +266,8 @@
       }
 
       function footer(path) {
-        const line = OX.currentLine();
+        // Only a line that really leads from the normal start to this position.
+        const line = path?.sans;
         if (form) return form;
         const buttons = [];
         if (line?.length) {

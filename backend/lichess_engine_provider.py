@@ -334,6 +334,10 @@ class LichessEngineProvider:
         self.error = ""
         self.engine_id = None
         self.jobs = 0
+        # A game is in progress in a Lichess tab (the extension says so): no
+        # work is taken and the search in progress stops, so your Stockfish
+        # can't help in any Lichess tab during a game.
+        self.paused = False
         self.recent = collections.deque(maxlen=40)  # what Lichess asked, newest last
 
     def status(self):
@@ -345,8 +349,17 @@ class LichessEngineProvider:
             "token_url": TOKEN_URL,
             "practice_seconds": PRACTICE_SECONDS,
             "jobs": self.jobs,
+            "paused": self.paused,
             "recent": list(self.recent),
         }
+
+    async def set_paused(self, paused):
+        self.paused = bool(paused)
+        if self.paused and self._engine and self._engine.alive():
+            try:
+                await self._engine.stop()  # the job in progress ends with what it has
+            except EOFError:
+                pass
 
     def start(self):
         if os.environ.get("OPENINGS_LICHESS_ENGINE", "1") != "1":
@@ -424,6 +437,9 @@ class LichessEngineProvider:
         while True:
             if await asyncio.to_thread(self._token_getter) != self._token_in_use:
                 return  # token changed or removed: register again
+            if self.paused:
+                await asyncio.sleep(0.5)
+                continue
             try:
                 res = await http.post(f"{BROKER}/api/external-engine/work",
                                       json={"providerSecret": secret}, timeout=12)
@@ -442,6 +458,8 @@ class LichessEngineProvider:
                 continue
             self.error = ""
             job = res.json()
+            if self.paused:
+                continue  # a game started while waiting: leave the job unanswered
             if self._engine and self._engine.alive():
                 try:
                     await self._engine.stop()

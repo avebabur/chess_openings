@@ -159,10 +159,10 @@
     return START_FEN;
   }
 
-  // The moves (SAN) from the start to the highlighted move, read from Lichess's
-  // move list, when the game starts from the normal starting position (null
-  // otherwise). Used to save the line to your repertoire.
-  OX.currentLine = () => {
+  // The moves (SAN) from the start to the highlighted move, as Lichess's move
+  // list shows them (null in a study chapter that starts from another
+  // position). Not checked against the board: see currentLine.
+  OX.movesOnBoard = () => {
     const list = OX.$(A.moveList.selector);
     if (!list || chapterStartFen() !== START_FEN) return null;
     const path = OX.$(A.activeMove.selector, list)?.getAttribute('p') || '';
@@ -173,6 +173,21 @@
       sans.push(san);
     }
     return sans;
+  };
+
+  // The moves from the normal starting position to the position on the board,
+  // or null. The analysis board can start from a position set up on it (or a
+  // game from a position): its moves then lead somewhere else from the normal
+  // start, and saving them as a line would save the wrong line.
+  OX.currentLine = () => {
+    const sans = OX.movesOnBoard();
+    const here = OX.readPosition();
+    if (!sans || !here) return null;
+    try {
+      const chess = new globalThis.OXChess(START_FEN);
+      for (const san of sans) chess.move(san);
+      return OX.positionKey(chess.fen()) === here.key ? sans : null;
+    } catch { return null; }
   };
 
   // Replays the moves from the chapter's start to the highlighted move.

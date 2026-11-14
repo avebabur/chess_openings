@@ -73,12 +73,17 @@
         return show(OX.el('div', { class: 'dim', text: 'Connecting your Stockfish to Lichess…' }));
       }
 
+      let asking = false; // one question at a time: a slow answer (the app starting) isn't asked again
       async function refresh() {
-        checkedAt = Date.now();
+        if (asking) return;
+        asking = true;
         try {
           status = await OX.bridge.api('GET', '/lichess-engine');
         } catch (error) {
           status = { state: error.offline ? 'app_offline' : 'error' };
+        } finally {
+          asking = false;
+          checkedAt = Date.now();
         }
         render();
       }
