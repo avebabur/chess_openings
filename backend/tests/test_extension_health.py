@@ -37,6 +37,20 @@ class ExtensionHealthTests(unittest.TestCase):
         on_disk = json.loads(Path(self.path).read_text())
         self.assertEqual(on_disk["broken"], merged["broken"])
 
+    def test_a_page_kind_that_no_longer_exists_is_dropped(self):
+        Path(self.path).parent.mkdir(parents=True)
+        Path(self.path).write_text(json.dumps({"pages": {
+            "puzzle": {"url": "https://lichess.org/training", "features": {
+                "puzzles": _feature("missing", ["puzzleSide"])}},
+            "other": {"url": "https://lichess.org/", "features": {"engine": _feature("n/a")}},
+        }}))
+        merged = extension_health.record({
+            "page_kind": "analyse", "url": "https://lichess.org/analysis",
+            "features": {"engine": _feature("ok")},
+        }, self.path)
+        self.assertEqual(sorted(merged["pages"]), ["analyse", "other"])
+        self.assertEqual(merged["broken"], [])
+
     def test_each_page_kind_keeps_its_own_latest_report(self):
         extension_health.record({"page_kind": "other", "features": {
             "nav": _feature("missing", ["topnav"])}}, self.path)

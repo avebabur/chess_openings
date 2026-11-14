@@ -137,7 +137,11 @@ li { display: flex; align-items: center; justify-content: space-between; gap: 12
 .account-meta { display: block; color: var(--text-muted); font-size: 13px; margin-top: 2px; }
 .account-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 [data-error] { color: #e04444; }
-#account-message, #token-message { font-size: 13.5px; margin-top: 10px; }
+#account-message, #token-message, #check-message { font-size: 13.5px; margin-top: 10px; }
+#check-state { color: var(--text); }
+.actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+#remove-token + button { margin-left: 8px; }
+[hidden] { display: none !important; }
 #account-message:empty, #token-message:empty { display: none; }
 button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
 @media (max-width: 600px) { main { padding: 20px 14px 44px; } li { align-items: flex-start; flex-direction: column; } }

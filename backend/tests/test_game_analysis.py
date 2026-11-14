@@ -1,6 +1,7 @@
 import importlib
 import os
 import sys
+import threading
 import tempfile
 import unittest
 from pathlib import Path
@@ -235,6 +236,94 @@ class StorageTest(DatabaseCase):
         self.assertEqual(self.ga.pending_games(limit=5), [])
         self.assertEqual(len(self.ga.mistakes_for_game(first)), 1)
         self.assertEqual(len(self.ga.mistakes_for_game(second)), 1)
+
+
+class ProgressTest(DatabaseCase):
+    def test_progress_counts_your_moves_and_the_game_being_checked(self):
+        seen = []
+        self.ga = sys.modules["game_analysis"]
+        self.ga.find_mistakes(QUEEN_HANG, "white", FakeEngine(),
+                              progress=lambda done, total: seen.append((done, total)))
+        self.assertEqual(seen, [(0, 3), (1, 3), (2, 3)])  # White's three moves
+
+    def test_a_game_asked_for_by_itself_goes_ahead_of_a_long_run(self):
+        first = self.add_game(QUEEN_HANG, end_time="2026-11-03T10:00:00")
+        second = self.add_game(QUEEN_HANG, end_time="2026-11-02T10:00:00")
+        third = self.add_game(QUEEN_HANG, end_time="2026-11-01T10:00:00")
+        self.ga = sys.modules["game_analysis"]
+        order = []
+        started = threading.Event()
+        release = threading.Event()
+
+        class SlowEngine(FakeEngine):
+            def analyse(self, board, limit):
+                started.set()
+                release.wait(5)
+                return super().analyse(board, limit)
+
+        analyzer = self.ga.GameAnalyzer(engine_factory=SlowEngine)
+        stored = self.ga.store_mistakes
+        self.ga.store_mistakes = lambda game_id, mistakes: (order.append(game_id), stored(game_id, mistakes))
+        try:
+            analyzer.start(count=3)               # first, second, third (newest first)
+            started.wait(5)
+            status = analyzer.start(game_ids=[third])  # asked for while the run is on first
+            self.assertTrue(status["running"])
+            self.assertEqual(analyzer.status()["game_id"], first)
+            release.set()
+            analyzer.join(10)
+        finally:
+            self.ga.store_mistakes = stored
+        self.assertEqual(order, [first, third, second])
+        status = analyzer.status()
+        self.assertEqual((status["done"], status["total"], status["game_id"]), (3, 3, None))
+        self.assertEqual(self.ga.count_pending(), 0)
+
+    def test_stop_keeps_what_was_checked(self):
+        first = self.add_game(QUEEN_HANG, end_time="2026-11-03T10:00:00")
+        self.add_game(QUEEN_HANG, end_time="2026-11-02T10:00:00")
+        self.ga = sys.modules["game_analysis"]
+        analyzer = self.ga.GameAnalyzer(engine_factory=FakeEngine)
+        stored = self.ga.store_mistakes
+
+        def store_then_stop(game_id, mistakes):
+            stored(game_id, mistakes)
+            analyzer.stop()
+        self.ga.store_mistakes = store_then_stop
+        try:
+            analyzer.start(count=2)
+            analyzer.join(10)
+        finally:
+            self.ga.store_mistakes = stored
+        status = analyzer.status()
+        self.assertEqual((status["running"], status["stopped"], status["done"]), (False, True, 1))
+        self.assertEqual(self.ga.count_pending(), 1)
+        self.assertEqual(len(self.ga.mistakes_for_game(first)), 1)
+
+
+class StopThenStartTest(DatabaseCase):
+    def test_a_check_asked_for_right_after_stop_still_runs(self):
+        first = self.add_game(QUEEN_HANG, end_time="2026-11-03T10:00:00")
+        second = self.add_game(QUEEN_HANG, end_time="2026-11-02T10:00:00")
+        wanted = self.add_game(QUEEN_HANG, end_time="2026-11-01T10:00:00")
+        self.ga = sys.modules["game_analysis"]
+        started = threading.Event()
+
+        class SlowEngine(FakeEngine):
+            def analyse(self, board, limit):
+                started.set()
+                import time
+                time.sleep(0.05)
+                return super().analyse(board, limit)
+
+        analyzer = self.ga.GameAnalyzer(engine_factory=SlowEngine)
+        analyzer.start(count=2)
+        started.wait(5)
+        analyzer.stop()
+        analyzer.start(game_ids=[wanted])   # straight after Stop
+        analyzer.join(10)
+        self.assertEqual(len(self.ga.mistakes_for_game(wanted)), 1)
+        self.assertFalse(analyzer.status()["running"])
 
 
 class ApiTest(DatabaseCase):

@@ -5,6 +5,7 @@ chess_review.db, finds the mistakes in those games with Stockfish, and serves
 this Mac's Stockfish to Lichess as an external engine.
 """
 import asyncio
+import logging
 import os
 import re
 import sys
@@ -36,6 +37,7 @@ import eco_openings  # noqa: E402  (offline move-sequence → opening-name recog
 import stockfish  # noqa: E402  (where Stockfish is on this Mac)
 import game_analysis  # noqa: E402  (mistakes in the user's own games)
 import extension_health  # noqa: E402  (what the Lichess extension could not show)
+import idle_exit  # noqa: E402  (stops the service when the extension is gone)
 import lichess_engine_provider  # noqa: E402  (your Stockfish inside Lichess's own analysis)
 import game_import  # noqa: E402
 from sync_service import AccountSyncService  # noqa: E402
@@ -72,7 +74,8 @@ class LichessTokenInput(BaseModel):
 
 
 class AnalysisStartInput(BaseModel):
-    game_id: int = Field(gt=0)  # the game to check
+    game_id: int | None = Field(default=None, gt=0)  # the one game to check
+    all: bool = False  # or: every game not checked yet
 
 
 # The names this service answers to ("testserver" is the test client's).
@@ -118,7 +121,9 @@ async def lifespan(target_app):
     target_app.state.external_clients = ExternalApiClients()
     target_app.state.opening_tree_cache = ot.OpeningTreeCache()
     target_app.state.game_analyzer = game_analysis.GameAnalyzer()
-    target_app.state.lichess_engine = lichess_engine_provider.LichessEngineProvider()
+    target_app.state.idle_exit = idle_exit.from_environment()
+    target_app.state.lichess_engine = lichess_engine_provider.LichessEngineProvider(
+        on_activity=target_app.state.idle_exit.touch if target_app.state.idle_exit else None)
 
     def analyse_new_games(account_id, imported):
         """Search the games a sync just brought in for mistakes. Capped, so a
@@ -142,15 +147,21 @@ async def lifespan(target_app):
         on_imported=analyse_new_games,
     )
     auto_sync = None
+    idle_watch = None
     try:
         target_app.state.sync_service.start()
         target_app.state.lichess_engine.start()
+        if target_app.state.idle_exit:
+            target_app.state.idle_exit.touch()
+            idle_watch = asyncio.get_running_loop().create_task(target_app.state.idle_exit.run())
         auto_sync = (asyncio.get_running_loop().create_task(_auto_sync(target_app.state.sync_service))
                      if os.environ.get("OPENINGS_AUTO_SYNC") == "1" else None)
         yield
     finally:
         if auto_sync:
             auto_sync.cancel()
+        if idle_watch:
+            idle_watch.cancel()
         await target_app.state.lichess_engine.stop()
         target_app.state.game_analyzer.shutdown()
         target_app.state.sync_service.shutdown()
@@ -165,6 +176,14 @@ def health(request: Request):
     except Exception as e:
         raise HTTPException(503, f"Database not ready: {e}")
     return {"status": "ok", "app": "openings", "stockfish": stockfish.availability()}
+
+
+@api.post("/keepalive")
+def keepalive(request: Request):
+    """The extension's "a Lichess tab is still open". Every request counts as
+    use (see idle_exit.py); this one exists for when nothing else is asked."""
+    idle = request.app.state.idle_exit
+    return {"ok": True, "stops_after_idle_seconds": idle.seconds if idle else None}
 
 
 @api.get("/profile")
@@ -256,13 +275,20 @@ async def opening_tree(
     request: Request,
     color: Literal["white", "black"] = "white",
     fen: str = Query(min_length=4, max_length=128),
+    moves_san: str = Query(default="", max_length=8000),
 ):
     """Your games through one position, whatever the move order: the moves you
-    played from it and how they scored (the explorer's My games tab)."""
+    played from it and how they scored (the explorer's My games tab).
+
+    `opening_name` is the name of the position itself (from the ECO list, by
+    the moves on the board when `moves_san` is given), not of the openings
+    your games through it ended up in."""
     _validate_fen(fen)
-    return await run_in_threadpool(
+    node = await run_in_threadpool(
         request.app.state.opening_tree_cache.node_for_filter, color, [], None, None, fen,
     )
+    node["opening_name"] = await run_in_threadpool(eco_openings.name_at, fen, moves_san)
+    return node
 
 
 def _external_network_allowed():
@@ -340,24 +366,45 @@ def position_games(
     return {"total": len(found), "games": games}
 
 
+def _analysis_status(request):
+    return {**request.app.state.game_analyzer.status(),
+            "unchecked": game_analysis.count_pending()}
+
+
 @api.get("/analysis")
 def analysis_status(request: Request):
-    """How far the background analysis has got."""
-    return request.app.state.game_analyzer.status()
+    """How far the background analysis has got, and how many games are still
+    unchecked."""
+    return _analysis_status(request)
 
 
 @api.post("/analysis", status_code=202)
 def analysis_start(input: AnalysisStartInput, request: Request):
-    """Search one game for the user's mistakes, in the background (after the
-    games already being searched). Poll GET /analysis for progress."""
+    """Search one game (`game_id`) or every unchecked game (`all`) for the
+    user's mistakes, in the background, after the games already being
+    searched. Poll GET /analysis for progress."""
+    if input.all == (input.game_id is not None):
+        raise HTTPException(422, "Give either game_id or all")
+    if input.game_id is not None and not db.get_game(input.game_id):
+        raise HTTPException(404, "Game not found")
     clients = request.app.state.external_clients
     allow_network = _external_network_allowed()
+    chosen = ({"count": game_analysis.CHECK_ALL_LIMIT, "queue": True} if input.all
+              else {"game_ids": [input.game_id]})
     try:
-        return request.app.state.game_analyzer.start(
-            tablebase=lambda fen: clients.tablebase(fen, allow_network),
-            game_ids=[input.game_id])
+        request.app.state.game_analyzer.start(
+            tablebase=lambda fen: clients.tablebase(fen, allow_network), **chosen)
     except game_analysis.AnalysisError as exc:
         raise HTTPException(503, str(exc))
+    return _analysis_status(request)
+
+
+@api.delete("/analysis")
+def analysis_stop(request: Request):
+    """Stop checking games. The game in progress is dropped; the ones already
+    checked are kept."""
+    request.app.state.game_analyzer.stop()
+    return _analysis_status(request)
 
 
 @api.get("/games/{game_id}")
@@ -383,11 +430,23 @@ def classify_opening(moves_san: str = ""):
     return eco_openings.classify(moves_san)
 
 
+def _line_name(name, moves_san):
+    """The name to store for a saved line: yours, in the ECO list's spelling
+    when it is one of its openings ("Caro Kann Defense" -> "Caro-Kann
+    Defense"); with no name given, the opening the moves reach."""
+    name = (name or "").strip()
+    if name:
+        return eco_openings.canonical_spelling(name)
+    found = eco_openings.classify(moves_san or "")
+    return found["name"] if found else ""
+
+
 @api.post("/repertoire/tree/branches")
 def save_repertoire_branch(input: RepertoireBranchInput):
     try:
         return db.save_repertoire_branch(
-            input.color, input.name, input.moves_san, label=input.label)
+            input.color, _line_name(input.name, input.moves_san), input.moves_san,
+            label=input.label)
     except ValueError as e:
         raise HTTPException(400, str(e))
 
@@ -401,9 +460,13 @@ def delete_repertoire_branch(branch_id: int = Path(gt=0)):
 
 @api.patch("/repertoire/tree/branches/{branch_id}")
 def update_repertoire_branch(input: RepertoireBranchPatch, branch_id: int = Path(gt=0)):
+    name = input.name
+    if name is not None:
+        # An emptied name gets the opening's name rather than the raw moves.
+        name = _line_name(name, input.moves_san or db.get_repertoire_branch_moves(branch_id) or "")
     try:
         branch = db.update_repertoire_branch(
-            branch_id, name=input.name, moves_san=input.moves_san, label=input.label)
+            branch_id, name=name, moves_san=input.moves_san, label=input.label)
     except ValueError as e:
         raise HTTPException(400, str(e))
     if not branch:
@@ -434,8 +497,33 @@ async def download_backup(request: Request, background_tasks: BackgroundTasks):
     )
 
 
+class _CountsAsUse:
+    """Every request tells the idle watchdog the service is being used."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http":
+            idle = getattr(scope["app"].state, "idle_exit", None)
+            if idle:
+                idle.touch()
+        await self.app(scope, receive, send)
+
+
+class _NoKeepaliveLines(logging.Filter):
+    """Keeps the half-minute keepalive out of the access log."""
+
+    def filter(self, record):
+        return "/api/keepalive" not in record.getMessage()
+
+
+logging.getLogger("uvicorn.access").addFilter(_NoKeepaliveLines())
+
+
 def create_app():
     target_app = FastAPI(title="Chess Openings", lifespan=lifespan)
+    target_app.add_middleware(_CountsAsUse)
     # No CORS headers on purpose: the extension's background script reaches
     # this service through its host permission, which needs none, and without
     # them no website (or other extension without that permission) can read

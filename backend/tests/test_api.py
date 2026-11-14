@@ -95,6 +95,62 @@ class ApiContractTests(unittest.TestCase):
         self.assertEqual([node["san"] for node in tree["root"]["children"]], ["d4"])
 
 
+    def test_a_line_saved_without_a_name_is_named_after_its_opening(self):
+        saved = self.client.post("/api/repertoire/tree/branches", json={
+            "color": "black", "name": "", "moves_san": "e4 c6 d4 d5",
+        }).json()
+        self.assertEqual(saved["name"], "Caro-Kann Defense")
+        # Emptying the name later does the same, not "e4 c6 d4 d5".
+        self.client.patch(f"/api/repertoire/tree/branches/{saved['id']}", json={"name": "mine"})
+        again = self.client.patch(f"/api/repertoire/tree/branches/{saved['id']}", json={"name": ""}).json()
+        self.assertEqual(again["name"], "Caro-Kann Defense")
+
+    def test_an_opening_name_is_stored_in_the_eco_spelling(self):
+        saved = self.client.post("/api/repertoire/tree/branches", json={
+            "color": "black", "name": "caro kann defense classical variation",
+            "moves_san": "e4 c6 d4 d5 Nc3 dxe4 Nxe4 Bf5",
+        }).json()
+        self.assertEqual(saved["name"], "Caro-Kann Defense: Classical Variation")
+        other = self.client.post("/api/repertoire/tree/branches", json={
+            "color": "white", "name": "My pet line", "moves_san": "e4 e5",
+        }).json()
+        self.assertEqual(other["name"], "My pet line")
+
+    def test_my_games_names_the_position_on_the_board(self):
+        # Not the opening most of the games through it ended up in.
+        one_d4 = "rnbqkbnr/pppppppp/8/8/3P4/8/PPP1PPPP/RNBQKBNR b KQkq - 0 1"
+        node = self.client.get("/api/opening-tree", params={"color": "white", "fen": one_d4}).json()
+        self.assertEqual(node["opening_name"], "Queen's Pawn Game")
+        # Deeper than any named position: the name of the last one on the way.
+        moves = "e4 e5 Nf3 Nc6 Bb5 a6 Ba4 Nf6 O-O Be7 Re1 b5 Bb3 d6 c3 O-O h3 Nb8 d4 Nbd7 a4"
+        import chess
+        board = chess.Board()
+        for san in moves.split():
+            board.push_san(san)
+        node = self.client.get("/api/opening-tree", params={
+            "color": "white", "fen": board.fen(), "moves_san": moves}).json()
+        self.assertIn("Ruy Lopez", node["opening_name"])
+        # Moves that do not lead to the position are not believed.
+        node = self.client.get("/api/opening-tree", params={
+            "color": "white", "fen": one_d4, "moves_san": "e4 e5"}).json()
+        self.assertEqual(node["opening_name"], "Queen's Pawn Game")
+        start = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+        self.assertIsNone(self.client.get("/api/opening-tree", params={
+            "color": "white", "fen": start}).json()["opening_name"])
+
+    def test_checking_a_game_that_does_not_exist_is_refused(self):
+        self.assertEqual(self.client.post("/api/analysis", json={"game_id": 987654}).status_code, 404)
+        self.assertEqual(self.client.post("/api/analysis", json={}).status_code, 422)
+        self.assertEqual(self.client.post("/api/analysis", json={"game_id": 1, "all": True}).status_code, 422)
+        status = self.client.get("/api/analysis").json()
+        self.assertEqual((status["running"], status["unchecked"]), (False, 0))
+
+    def test_keepalive_answers(self):
+        res = self.client.post("/api/keepalive")
+        self.assertEqual(res.status_code, 200)
+        # Not started by the extension's helper: the service never stops itself.
+        self.assertIsNone(res.json()["stops_after_idle_seconds"])
+
     def test_backup_download_is_a_valid_database(self):
         response = self.client.get("/api/backup")
         self.assertEqual(response.status_code, 200)

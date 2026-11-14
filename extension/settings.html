@@ -15,7 +15,7 @@
     <p id="connection" role="status">Connecting to the local service…</p>
     <section aria-labelledby="accounts-heading">
       <div class="section-head"><h2 id="accounts-heading">Game accounts</h2><button id="refresh" type="button">Refresh</button></div>
-      <p>Imported Lichess and Chess.com games appear together in My games.</p>
+      <p>Imported Lichess and Chess.com games appear together in My games. Only standard chess is imported: Chess960 and other variants are left out.</p>
       <ul id="accounts"></ul>
       <form id="add-account">
         <label>Site <select id="platform"><option value="lichess">Lichess</option><option value="chesscom">Chess.com</option></select></label>
@@ -23,6 +23,16 @@
         <button type="submit">Add and import</button>
       </form>
       <p id="account-message" role="status"></p>
+    </section>
+    <section aria-labelledby="check-heading">
+      <h2 id="check-heading">Mistakes in your games</h2>
+      <p>After each sync your Stockfish checks the newest games (up to 10) for mistakes. Older games can be checked here. It runs while this page or a Lichess tab is open, and can be stopped and continued later.</p>
+      <p id="check-state" role="status"></p>
+      <div class="actions">
+        <button id="check-all" type="button" hidden>Check all unchecked games</button>
+        <button id="check-stop" type="button" class="quiet" hidden>Stop checking</button>
+      </div>
+      <p id="check-message" role="status"></p>
     </section>
     <section aria-labelledby="engine-heading">
       <h2 id="engine-heading">Lichess engine token</h2>

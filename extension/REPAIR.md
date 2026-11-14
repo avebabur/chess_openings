@@ -54,8 +54,7 @@ Things that rely on Lichess internals rather than selectors, and fail quietly:
   My games is chosen.
 - **Engine choice:** `src/engine-select.js` and `features/engine.js` write the engine id
   into Lichess's localStorage key `ceval.engine.<variant>` (see `storedEngine` in lila's
-  `ui/lib/src/ceval/ctrl.ts`). If Lichess's engine bar stops using "Your Stockfish
-  (openings app)" although `GET /api/lichess-engine` says `ready`, check that key name.
+  `ui/lib/src/ceval/ctrl.ts`). If Lichess's engine bar stops using "Your Stockfish" although `GET /api/lichess-engine` says `ready`, check that key name.
 - **The engine link itself** (`backend/lichess_engine_provider.py`) follows
   lichess-org/external-engine's `example-provider.py`. `GET /api/lichess-engine` shows its
   state and last error; `venv/bin/python extension/scripts/engine_check.py` (add

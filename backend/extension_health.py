@@ -53,7 +53,10 @@ def load(path=None):
 
 def merge(existing, report, now):
     """Fold one page's report into the file's contents."""
-    pages = dict(existing.get("pages") or {})
+    # Kinds of page an older version reported on (its puzzle page) are dropped:
+    # the features listed there no longer exist, so they can never be fixed.
+    pages = {kind: page for kind, page in (existing.get("pages") or {}).items()
+             if kind in PAGE_KINDS and isinstance(page, dict)}
     kind = report["page_kind"]
     pages[kind] = {
         "url": _text(report.get("url")),
@@ -68,7 +71,7 @@ def merge(existing, report, now):
     broken = [
         {"page_kind": page, "feature": fid, **feature}
         for page, page_report in sorted(pages.items())
-        for fid, feature in sorted(page_report["features"].items())
+        for fid, feature in sorted((page_report.get("features") or {}).items())
         if feature["status"] in BROKEN_STATUSES
     ]
     return {

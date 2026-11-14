@@ -6,8 +6,11 @@
 #  1. a launchd job, com.openings.app, that runs ./start.sh when asked
 #     (log: ~/Library/Logs/openings-app.log). It does not run at login.
 #  2. Chrome's helper (native messaging), which asks launchd to start that job
-#     and runs ./stop.sh to stop it. Only the extension with this folder's
-#     manifest key (its fixed id) may use it.
+#     when a Lichess page opens and runs ./stop.sh when the last one closes.
+#     Only the extension with this folder's manifest key (its fixed id) may use it.
+# Started this way (OPENINGS_MANAGED=1), the app also stops by itself after two
+# minutes without hearing from the extension, for when Chrome quits or crashes
+# before it can say so (backend/idle_exit.py).
 #
 # Undo:  sh extension/native/install.sh --uninstall
 set -eu
@@ -48,7 +51,10 @@ cat > "$AGENT" <<EOF
   <array><string>/bin/sh</string><string>$ROOT/start.sh</string></array>
   <key>WorkingDirectory</key><string>$ROOT</string>
   <key>EnvironmentVariables</key>
-  <dict><key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string></dict>
+  <dict>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>OPENINGS_MANAGED</key><string>1</string>
+  </dict>
   <key>RunAtLoad</key><false/>
   <key>StandardOutPath</key><string>$HOME/Library/Logs/openings-app.log</string>
   <key>StandardErrorPath</key><string>$HOME/Library/Logs/openings-app.log</string>

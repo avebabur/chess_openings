@@ -31,9 +31,16 @@ main.analyse > .mchat.ox-fit > .mchat__content { flex: 1 1 auto; min-height: 0; 
 .explorer-box.ox-mine .explorer-title .active { opacity: .6; }
 .explorer-box.ox-mine .explorer-title .active strong { font-weight: normal; }
 .explorer-title .ox-tab.ox-active { font-weight: bold; color: var(--c-font-clear, var(--c-font)); text-decoration: none; }
-.ox-mine-content .ox-mine-head { display: flex; gap: .8em; align-items: baseline; justify-content: space-between;
+/* First row: the side and Sync. Second row, full width: how many games, your
+   score and the opening's name (beside the buttons it was cut off). */
+.ox-mine-content .ox-mine-head { display: flex; flex-wrap: wrap; gap: .15em .8em; align-items: baseline; justify-content: space-between;
   padding: .45em .7em; font-size: .9em; color: var(--c-font-dim); }
-.ox-mine-content .ox-mine-head span { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.ox-mine-content .ox-mine-head .ox-mine-note { order: 3; flex: 1 1 100%; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.ox-mine-content .ox-mine-head .ox-mine-note:empty { display: none; }
+.ox-mine-content .ox-mine-head .ox-side strong { text-transform: capitalize; }
+/* How each game went for you: green won, red lost (the score itself stays 1-0 / 0-1). */
+.ox-mine-content result.ox-won { background: var(--c-good, #629924) !important; color: #fff !important; }
+.ox-mine-content result.ox-lost { background: var(--c-bad, #c33) !important; color: #fff !important; }
 .ox-mine-content .ox-mine-head button { flex: none; white-space: nowrap; color: var(--c-primary); background: none; border: 0; cursor: pointer; padding: 0; font: inherit; }
 .ox-mine-content .ox-mine-head .ox-sync:disabled { opacity: .5; cursor: default; }
 .ox-mine-content tbody tr { cursor: pointer; }

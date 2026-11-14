@@ -24,7 +24,20 @@
   const wdb = (row, color) => (color === 'white' ? [row.win, row.draw, row.loss] : [row.loss, row.draw, row.win]);
   // Lichess's own result pill and speed icons (lila explorerView.ts showResult,
   // lib/game/perfIcons.ts; the glyphs are Lichess's icon font).
-  const result = r => OX.el('result', { class: r === '1-0' ? 'white' : r === '0-1' ? 'black' : 'draws', text: r === '1/2-1/2' ? '½-½' : r });
+  // The score is written as always (1-0 is a win for White); the pill's colour
+  // says how it went for YOU: green won, red lost.
+  const result = (r, you) => {
+    const drawn = r !== '1-0' && r !== '0-1';
+    const won = !drawn && (r === '1-0') === (you === 'white');
+    return OX.el('result', {
+      class: `${r === '1-0' ? 'white' : r === '0-1' ? 'black' : 'draws'}${drawn ? '' : won ? ' ox-won' : ' ox-lost'}`,
+      title: drawn ? 'Draw' : won ? 'You won' : 'You lost',
+      text: r === '1/2-1/2' ? '½-½' : r,
+    });
+  };
+  // The side at the bottom of the board: the one you are looking from.
+  const boardSide = () =>
+    (document.querySelector('main.analyse .cg-wrap')?.classList.contains('orientation-black') ? 'black' : 'white');
   const SPEED_ICON = { bullet: '\ue032', blitz: '\ue008', rapid: '\ue002', classical: '\ue00a', daily: '\ue019' };
   const speedIcon = s => OX.el('i', { 'data-icon': SPEED_ICON[s] || '', title: s ? s[0].toUpperCase() + s.slice(1) : '' });
 
@@ -46,12 +59,14 @@
     },
 
     create(host) {
-      // All of the tab's state first: label() can run before anything else.
+      // All of the tab's state first.
       const content = OX.el('div', { class: 'ox-mine-content' });
       let position = null;
       let loadedKey = null;
       let nodes = null;
       let color = null;
+      let chosen = null;        // the side picked with the switch, until the board is flipped
+      let side = boardSide();
       let games = [];
       let total = 0;
       let token = 0;
@@ -60,27 +75,30 @@
       host.type = 'button';
       host.className = 'button-link ox-tab text';
       host.dataset.icon = '\ue050'; // Lichess's person icon, as on its Player tab
-      host.title = 'Your games from chess.com and Lichess, as one history — click again to switch sides';
-      // Like Lichess's Player tab: "My games as black".
-      const label = () => {
-        if (!open() || !color) return host.replaceChildren('My games');
-        host.replaceChildren(OX.el('strong', { text: 'My games' }), ` as ${color}`);
+      host.title = 'Your games from chess.com and Lichess, as one history';
+      // The label never changes (the side is shown, and switched, inside the
+      // tab): a label that grew to "My games as white" pushed the other tabs
+      // about and was cut off.
+      host.replaceChildren('My games');
+
+      // The side shown follows the board (your side is at the bottom), unless
+      // that side has no games here and the other has, or you switched.
+      const pickSide = () => {
+        const other = side === 'white' ? 'black' : 'white';
+        color = chosen || (!nodes[side].total_games && nodes[other].total_games ? other : side);
       };
-      label();
+      const switchSide = () => {
+        chosen = color === 'white' ? 'black' : 'white';
+        color = chosen;
+        reloadGames();
+      };
 
       host.addEventListener('click', event => {
         event.stopPropagation();
-        if (open() && nodes) {
-          // Like Lichess's Player tab: clicking it again switches sides.
-          color = color === 'white' ? 'black' : 'white';
-          OX.setSetting('mineColor', color);
-          label();
-          reloadGames();
-          return;
-        }
+        // Like Lichess's Player tab: clicking it again switches sides.
+        if (open() && nodes) return switchSide();
         OX.setSetting('mineOpen', true);
         sync();
-        label();
         if (position && loadedKey !== position.key) load(position);
       });
       // Choosing one of Lichess's own tabs leaves "My games".
@@ -91,7 +109,6 @@
 
       function sync() {
         host.classList.toggle('ox-active', open());
-        if (!open() && host.querySelector('strong')) label();
         const box = OX.$(A.explorerBox.selector);
         if (!box) return;
         box.classList.toggle('ox-mine', open());
@@ -115,7 +132,7 @@
       });
       const showNote = text => {
         syncNote = text;
-        const note = content.querySelector('.ox-mine-head span');
+        const note = content.querySelector('.ox-mine-note');
         if (note) note.textContent = text;
       };
       syncButton.addEventListener('click', async event => {
@@ -133,19 +150,24 @@
       });
 
       function render() {
-        label();
         const node = nodes[color];
         const s = node.summary || {};
-        // At the starting position there is no opening yet (the app would
-        // name the one you play most).
-        const opening = position?.fen.startsWith('rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w') ? '' : OX.openingName(s.opening);
+        const other = color === 'white' ? 'black' : 'white';
+        // The name of the position on the board (from the ECO list), not of
+        // the openings your games through it ended up in.
+        const opening = node.opening_name || '';
+        const summary = node.total_games
+          ? `${node.total_games} game${node.total_games === 1 ? '' : 's'} · you score ${Math.round(s.score)}%${opening ? ` · ${opening}` : ''}`
+          : '';
         const head = OX.el('div', { class: 'ox-mine-head' },
-          OX.el('span', { title: opening || null, text: syncNote || (node.total_games
-            ? `${node.total_games} game${node.total_games === 1 ? '' : 's'} · you score ${Math.round(s.score)}%${opening ? ` · ${opening}` : ''}`
-            : '') }),
+          OX.el('button', {
+            type: 'button', class: 'ox-side', title: `Showing your games as ${color}. Click for your games as ${other}.`,
+            onclick: event => { event.stopPropagation(); switchSide(); },
+          }, OX.el('strong', { text: `As ${color}` }), ' ⇄'),
+          OX.el('span', { class: 'ox-mine-note', title: summary || null, text: syncNote || summary }),
           syncButton);
         if (!node.total_games) {
-          content.replaceChildren(head, empty(`No games as ${color} here. Click "My games" to switch sides.`));
+          content.replaceChildren(head, empty(`No games as ${color} here.`));
           return;
         }
         const sum = node.moves.reduce((n, m) => n + m.games, 0) || 1;
@@ -171,7 +193,7 @@
             },
             OX.el('td', { class: 'game-rating' }, OX.el('span', { text: ratings[0] ?? '' }), OX.el('span', { text: ratings[1] ?? '' })),
             OX.el('td', {}, OX.el('span', { text: g.white }), OX.el('span', { text: g.black })),
-            OX.el('td', {}, result(g.result)),
+            OX.el('td', {}, result(g.result, you)),
             OX.el('td', { class: 'game-date', text: (g.date || '').slice(0, 10).replace(/\./g, '-') }),
             OX.el('td', { class: 'game-type' }, speedIcon(g.time_class)));
           }))) : null;
@@ -215,12 +237,14 @@
         loadedKey = next.key;
         content.replaceChildren(empty('Loading your games…'));
         try {
+          // The moves on the board, so the position gets the name Lichess
+          // would give it (the deepest named opening on the way).
+          const moves = (OX.currentLine() || []).join(' ');
           const [white, black] = await Promise.all(['white', 'black'].map(c =>
-            OX.bridge.api('GET', `/opening-tree?${new URLSearchParams({ color: c, fen: next.fen })}`)));
+            OX.bridge.api('GET', `/opening-tree?${new URLSearchParams({ color: c, fen: next.fen, moves_san: moves })}`)));
           if (mine !== token) return;
           nodes = { white, black };
-          const wanted = OX.settings.mineColor;
-          color = wanted && nodes[wanted].total_games ? wanted : (white.total_games >= black.total_games ? 'white' : 'black');
+          pickSide();
           const res = await fetchGames(0);
           if (mine !== token) return;
           games = res.games;
@@ -244,6 +268,13 @@
           if (!open() && OX.$('main.analyse .explorer-title .active.player')) {
             OX.setSetting('mineOpen', true);
             if (position && loadedKey !== position.key) load(position);
+          }
+          // The board was flipped: show that side's games.
+          const now = boardSide();
+          if (now !== side) {
+            side = now;
+            chosen = null;
+            if (open() && nodes) { pickSide(); reloadGames(); }
           }
           sync();
         },

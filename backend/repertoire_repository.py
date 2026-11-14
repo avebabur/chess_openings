@@ -69,6 +69,16 @@ def _branch(conn, branch_id):
     return dict(row) if row else None
 
 
+def get_repertoire_branch_moves(branch_id):
+    """The saved moves of one line, or None when there is no such line."""
+    conn = get_db()
+    try:
+        branch = _branch(conn, branch_id)
+        return branch["moves_san"] if branch else None
+    finally:
+        conn.close()
+
+
 def save_repertoire_branch(color, name, moves_san, label="main"):
     """Upsert a branch (one exact line) and its move nodes.
 

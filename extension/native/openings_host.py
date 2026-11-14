@@ -9,6 +9,9 @@ stop.sh.
 Protocol: one message per run.
   {"cmd": "start"} -> {"state": "running" | "starting" | "error"}
   {"cmd": "stop"}  -> {"state": "stopped" | "not_ours" | "error"}
+                      Sent when the last Lichess tab closes. If Chrome quits
+                      or crashes first, the app stops itself instead
+                      (backend/idle_exit.py).
                       Only when launchd started it: an app you started yourself
                       in Terminal is left alone. Stopping runs the app's own
                       stop.sh (start.sh ignores SIGTERM when launchd runs it,

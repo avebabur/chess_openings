@@ -45,8 +45,8 @@
   };
 
   OX.state = { paused: false, position: null, offline: false, autostart: null };
-  // mineOpen: the explorer's My games tab is the chosen one. mineColor: the side last looked at there.
-  OX.defaultSettings = { mineOpen: false, mineColor: null };
+  // mineOpen: the explorer's My games tab is the chosen one.
+  OX.defaultSettings = { mineOpen: false };
 
   // What to say while the local service is down. With the auto-start helper installed
   // the background script is already starting it.

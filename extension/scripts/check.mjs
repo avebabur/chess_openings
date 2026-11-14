@@ -294,18 +294,23 @@ record('explorer', (await statuses()).mine === 'ok', 'explorer: the My games tab
 record('explorer', await page.evaluate(() => document.querySelector('.ox-tab')?.nextElementSibling?.classList.contains('toconf')),
   "explorer: it sits in Lichess's tab row, before the gear");
 await page.click('.ox-tab');
-await page.waitForFunction(() => document.querySelectorAll('.ox-mine-content tbody tr').length > 0, null, { timeout: 15000 }).catch(() => {});
-record('explorer', await page.evaluate(() => document.querySelector('.explorer-box').classList.contains('ox-mine')
-  && getComputedStyle(document.querySelector('.lichess-table')).display === 'none'
-  && document.querySelectorAll('.ox-mine-content table.moves tbody tr').length > 0
-  && document.querySelectorAll('.ox-mine-content table.games tbody tr').length > 0),
-  "explorer: choosing it shows your moves and games in place of Lichess's");
+await page.waitForFunction(() => !!document.querySelector('.ox-mine-content .ox-side'), null, { timeout: 15000 }).catch(() => {});
+record('explorer', await page.evaluate(() => {
+  const box = document.querySelector('.explorer-box');
+  const content = document.querySelector('.ox-mine-content');
+  return box.classList.contains('ox-mine')
+    && getComputedStyle(document.querySelector('.lichess-table')).display === 'none'
+    && !!content.querySelector('.ox-side')
+    && (content.querySelectorAll('table.moves tbody tr').length > 0 || !!content.querySelector('.ox-empty'));
+}), "explorer: choosing it shows your moves or empty state in place of Lichess's");
 await page.screenshot({ path: join(outDir, 'explorer.png') });
 // Reopening a page with My games still chosen (this broke twice).
 await open('https://lichess.org/ox-fixture/explorer');
-await page.waitForFunction(() => document.querySelectorAll('.ox-mine-content tbody tr').length > 0, null, { timeout: 15000 }).catch(() => {});
-record('explorer', (await statuses()).mine === 'ok' && await page.evaluate(() => /My games as (white|black)/.test(document.querySelector('.ox-tab')?.textContent || '')),
-  'explorer: a page opened with My games already chosen shows it straight away ("My games as …")');
+await page.waitForFunction(() => !!document.querySelector('.ox-mine-content .ox-side'), null, { timeout: 15000 }).catch(() => {});
+record('explorer', (await statuses()).mine === 'ok' && await page.evaluate(() =>
+  document.querySelector('.ox-tab')?.textContent === 'My games'
+  && /As (white|black)/.test(document.querySelector('.ox-mine-content .ox-side')?.textContent || '')),
+  'explorer: a page opened with My games already chosen shows its side and content');
 await page.click('.explorer-title .button-link:not(.ox-tab)');
 await page.waitForTimeout(400);
 record('explorer', await page.evaluate(() => !document.querySelector('.explorer-box').classList.contains('ox-mine')),

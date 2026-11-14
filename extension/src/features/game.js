@@ -63,8 +63,19 @@
   OX.syncErrorText = error => (error.offline ? OX.offlineText() : error.status ? "Couldn't sync your games." : error.message);
 
   const moveLabel = (ply, san) => `${Math.floor(ply / 2) + 1}${ply % 2 ? '…' : '.'} ${san}`;
-  const pawns = cp => (cp >= 9000 ? 'winning' : cp <= -9000 ? 'lost'
-    : `${cp > 0 ? '+' : cp < 0 ? '−' : ''}${(Math.abs(cp) / 100).toFixed(1)}`);
+  // An evaluation as Lichess writes it, from White's side: +1.3, −0.4, #3 (White
+  // mates in 3), #-3, and 1-0 / 0-1 for a position that is simply won (the
+  // tablebase's verdict, or mate on the board). The app stores evaluations
+  // from YOUR side (10000 = won, 10000 − n = mate in n), so Black's are turned round.
+  const evalText = (cp, color) => {
+    const white = color === 'black' ? -cp : cp;
+    const size = Math.abs(white);
+    if (size >= 10000) return white > 0 ? '1-0' : '0-1';
+    if (size >= 9000) return `#${white > 0 ? '' : '-'}${10000 - size}`;
+    const pawns = (size / 100).toFixed(1);
+    return `${pawns === '0.0' ? '' : white > 0 ? '+' : '−'}${pawns}`;
+  };
+  const seconds = n => (n >= 90 ? `${Math.round(n / 60)} min` : `${Math.max(5, Math.round(n / 5) * 5)} s`);
 
   function current() {
     try {
@@ -114,23 +125,39 @@
         return gameId;
       }
 
+      // Checks this game, saying how far it has got: "Checking… move 12 of 48,
+      // about 25 s left", or which game is being checked first.
       async function checkThisGame(button) {
         button.disabled = true;
-        button.textContent = 'Checking…';
+        button.textContent = 'Starting the check…';
         try {
           await OX.bridge.api('POST', '/analysis', { game_id: gameId });
         } catch (error) {
           button.textContent = error.offline ? OX.offlineText() : "Couldn't start the check.";
           return;
         }
-        // Reload the card when the check is done (about 30–60 s a game).
+        let ownSince = 0;     // when this game's turn came
+        let ownStartedAt = 0; // ...and how many moves were done then
         const wait = async () => {
           const status = await OX.bridge.api('GET', '/analysis').catch(() => null);
           if (!alive) return;
-          if (status?.running) { polling = setTimeout(wait, 3000); return; }
-          load();
+          // Not heard this time (the app busy, or restarting): ask again.
+          if (!status) { polling = setTimeout(wait, 2000); return; }
+          const own = status?.running && status.game_id === gameId;
+          // Done: nothing is running any more, or the run has moved on to another game.
+          if (!status?.running || (ownSince && !own)) return load();
+          if (own) {
+            const { moves_done: done, moves_total: total } = status;
+            if (!ownSince) { ownSince = Date.now(); ownStartedAt = done; }
+            const rate = (done - ownStartedAt) / ((Date.now() - ownSince) / 1000);
+            const left = done - ownStartedAt >= 3 && rate > 0 ? `, about ${seconds((total - done) / rate)} left` : '';
+            button.textContent = total ? `Checking… move ${Math.min(done + 1, total)} of ${total}${left}` : 'Checking…';
+          } else {
+            button.textContent = `Waiting: checking ${status.title || 'another game'} first…`;
+          }
+          polling = setTimeout(wait, 1000);
         };
-        polling = setTimeout(wait, 3000);
+        polling = setTimeout(wait, 500);
       }
 
       // A Lichess game of yours the app hasn't imported yet (just played):
@@ -187,11 +214,12 @@
         const mistakes = game.mistakes || [];
         // A row jumps to the position before the mistake.
         const list = mistakes.map(m => OX.el('div', {
-          class: 'mistake', title: 'Go to the position before this move',
+          class: 'mistake',
+          title: "Go to the position before this move.\nThe evaluation before → after it, from White's side, as on Lichess's bar.",
           onclick: () => OX.lichess.jumpToPly(m.ply),
         },
         OX.el('span', { class: 'san', text: moveLabel(m.ply, m.played_san) }),
-        OX.el('span', { class: 'dim grow', text: `${pawns(m.cp_before)} → ${pawns(m.cp_after)}` }),
+        OX.el('span', { class: 'dim grow', text: `${evalText(m.cp_before, game.user_color)} → ${evalText(m.cp_after, game.user_color)}` }),
         OX.el('span', { class: 'dim', text: `best ${m.best_san}` })));
         const check = OX.el('button', { class: 'btn primary', text: 'Check with your Stockfish' });
         check.addEventListener('click', () => checkThisGame(check));

@@ -202,6 +202,7 @@ from evaluation_repository import (  # noqa: E402,F401
 
 from repertoire_repository import (  # noqa: E402,F401
     delete_repertoire_branch,
+    get_repertoire_branch_moves,
     get_repertoire_tree,
     save_repertoire_branch,
     update_repertoire_branch,

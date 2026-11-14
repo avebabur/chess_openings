@@ -37,7 +37,12 @@ log = logging.getLogger(__name__)
 
 LICHESS = "https://lichess.org"
 BROKER = "https://engine.lichess.ovh"
-ENGINE_NAME = "Your Stockfish (openings app)"
+# Short on purpose: Lichess's engine bar shows the name next to its own
+# "EXTERNAL" tag in a narrow space, and a longer name cut that tag off.
+ENGINE_NAME = "Your Stockfish"
+# What earlier versions registered it as. Found under one of these, the same
+# registration (and so the engine id Lichess pages have chosen) is renamed.
+FORMER_ENGINE_NAMES = ("Your Stockfish (openings app)",)
 TOKEN_URL = (
     "https://lichess.org/account/oauth/token/create"
     "?scopes[]=engine:read&scopes[]=engine:write&description=Openings+app"
@@ -312,7 +317,10 @@ class LichessEngineProvider:
     """Background task: keeps the engine registered and answers Lichess."""
 
     def __init__(self, token_getter=None, secret_store=None, stockfish_path=None,
-                 transport=None, poll_pause=5.0):
+                 transport=None, poll_pause=5.0, on_activity=None):
+        # Called for every job Lichess sends: the engine being used counts as
+        # the service being used (idle_exit.py), whatever the extension says.
+        self._on_activity = on_activity
         self._token_getter = token_getter or _setting_getter("lichess_token")
         self._secret_store = secret_store or _secret_store
         self._stockfish_path = stockfish_path or stockfish.STOCKFISH_PATH
@@ -397,7 +405,9 @@ class LichessEngineProvider:
             secret = secrets.token_urlsafe(32)
             await asyncio.to_thread(self._secret_store, secret)
         body = registration(secret)
-        existing = next((e for e in res.json() if e.get("name") == ENGINE_NAME), None)
+        engines = res.json()
+        existing = (next((e for e in engines if e.get("name") == ENGINE_NAME), None)
+                    or next((e for e in engines if e.get("name") in FORMER_ENGINE_NAMES), None))
         if existing:
             res = await http.put(f"{LICHESS}/api/external-engine/{existing['id']}", json=body, headers=headers)
             res.raise_for_status()
@@ -447,6 +457,8 @@ class LichessEngineProvider:
 
     async def _handle(self, http, job, started):
         self.jobs += 1
+        if self._on_activity:
+            self._on_activity()
         work = job.get("work", {})
         record = {
             "at": time.strftime("%H:%M:%S"),

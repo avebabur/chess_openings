@@ -12,8 +12,8 @@ See [extension/README.md](extension/README.md) for the full feature map and setu
 
 ## Local service
 
-`./start.sh` starts the API on `127.0.0.1:8001`; `./stop.sh` stops it. The native helper starts and stops it automatically while Lichess tabs are open. Python dependencies are installed into `venv` when needed. Stockfish is detected automatically, or can be set with `STOCKFISH_PATH`. Games and repertoire are in `chess_review.db`; keep that file and any backups private.
+`./start.sh` starts the API on `127.0.0.1:8001`; `./stop.sh` stops it. The native helper starts it when a Lichess page opens and stops it when the last one closes; if Chrome quits or crashes first, the service stops itself after two minutes (`backend/idle_exit.py`). Python dependencies are installed into `venv` when needed. Stockfish is detected automatically, or can be set with `STOCKFISH_PATH`. Games and repertoire are in `chess_review.db`; keep that file and any backups private.
 
 ## Development
 
-The backend lives in `backend/`, the extension in `extension/`. The extension browser check is `node extension/scripts/check.mjs` after `npm install --prefix extension/scripts`. It uses real Lichess pages in Chrome.
+The backend lives in `backend/`, the extension in `extension/`. The extension browser check is `node extension/scripts/check.mjs` after `npm install --prefix extension/scripts`. It uses real Lichess pages in Chrome. `node extension/scripts/repertoire-test.mjs` tests the repertoire's transposition handling and needs nothing running. Backend tests: `./venv/bin/python -m pytest backend/tests`.

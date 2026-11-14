@@ -44,6 +44,8 @@ BLUNDER_LOSS = 15.0
 # The quick search may underrate a mistake by this much and still have it
 # looked at again.
 VERIFY_MARGIN = 4.0
+# "Check all": more games than anyone has unchecked, so one request takes them all.
+CHECK_ALL_LIMIT = 100000
 
 _OUTCOME_CP = {"win": MATE_CP, "draw": 0, "loss": -MATE_CP}
 _OUTCOME_CHANCE = {"win": 100.0, "draw": 50.0, "loss": 0.0}
@@ -107,12 +109,13 @@ def _tablebase_mistake(table, board, move):
 
 
 def find_mistakes(pgn, user_color, engine, tablebase=None, seconds=None, should_stop=None,
-                  verify_seconds=None):
+                  verify_seconds=None, progress=None):
     """The user's mistakes in one game, in the order they were played.
 
     `tablebase` is `fen -> table` (see lichess_tablebase.get_tablebase) or None
     to rely on the engine alone. Returns None if `should_stop()` turned true
-    part-way, and raises ValueError for a PGN with no moves.
+    part-way, and raises ValueError for a PGN with no moves. `progress(done,
+    total)` is told how many of the user's moves have been looked at.
     """
     seconds = ANALYSIS_SECONDS if seconds is None else seconds
     verify_seconds = VERIFY_SECONDS if verify_seconds is None else verify_seconds
@@ -145,6 +148,8 @@ def find_mistakes(pgn, user_color, engine, tablebase=None, seconds=None, should_
         cp_after = -search(ply + 1, time)[0]
         return cp_before, best_line, cp_after, win_chance(cp_before) - win_chance(cp_after)
 
+    own_moves = sum(1 for ply in range(len(moves)) if boards[ply].turn == user_turn)
+    looked_at = 0
     mistakes = []
     for ply, move in enumerate(moves):
         before = boards[ply]
@@ -152,6 +157,9 @@ def find_mistakes(pgn, user_color, engine, tablebase=None, seconds=None, should_
             continue
         if should_stop and should_stop():
             return None
+        if progress:
+            progress(looked_at, own_moves)
+        looked_at += 1
         base = {
             "ply": ply, "fen": before.fen(), "user_color": user_color,
             "played_san": before.san(move), "played_uci": move.uci(),
@@ -233,6 +241,18 @@ def games_to_check(game_ids):
     return [dict(row) for row in rows]
 
 
+def count_pending(account_id=None):
+    """How many games have not been searched for mistakes yet."""
+    where, params = _account_filter(account_id)
+    conn = get_db()
+    try:
+        return conn.execute(
+            "SELECT COUNT(*) FROM games g WHERE g.user_color IN ('white', 'black') "
+            "AND g.mistakes_analyzed_at IS NULL" + where, params).fetchone()[0]
+    finally:
+        conn.close()
+
+
 def pending_games(account_id=None, limit=4):
     """The newest games not yet searched for mistakes, newest first."""
     where, params = _account_filter(account_id)
@@ -294,7 +314,10 @@ class GameAnalyzer:
 
     @staticmethod
     def _fresh(running, total=0):
+        # game_id / moves_done / moves_total: the game being searched now and
+        # how many of your moves in it have been looked at.
         return {"running": running, "done": 0, "total": total, "title": "",
+                "game_id": None, "moves_done": 0, "moves_total": 0,
                 "mistakes": 0, "error": None, "stopped": False}
 
     def status(self):
@@ -304,6 +327,10 @@ class GameAnalyzer:
     def start(self, tablebase=None, account_id=None, count=4, queue=False, game_ids=None):
         """Search games for mistakes in the background: the newest `count`
         not yet searched, or exactly `game_ids` (one game you asked for)."""
+        # A run told to stop is ending (within a move): wait for it, or this
+        # request would be queued behind it and then thrown away with its queue.
+        if self._stop.is_set():
+            self.join(10)
         with self._lock:
             if self._state["running"]:
                 if queue or game_ids:
@@ -337,37 +364,75 @@ class GameAnalyzer:
                 return games
         return []
 
+    def _asked_for_first(self, todo):
+        """Move the waiting one-game requests to the front of `todo`."""
+        with self._lock:
+            asked = [ids for _, _, ids in self._queued if ids]
+            self._queued = [request for request in self._queued if not request[2]]
+        wanted = [game_id for ids in asked for game_id in ids]
+        if not wanted:
+            return
+        waiting = {game["id"]: game for game in todo}
+        front = []
+        for game in games_to_check(wanted):
+            if game["id"] in waiting:
+                todo.remove(waiting[game["id"]])  # already in line: just moved up
+            else:
+                with self._lock:
+                    self._state["total"] += 1
+            front.append(game)
+        todo[:0] = front
+
     def join(self, timeout=None):
         thread = self._thread
         if thread:
             thread.join(timeout)
 
+    def stop(self):
+        """Ask the run to end. It stops before its next move; the game it was
+        on is not stored, so a later run starts that game again."""
+        self._stop.set()
+        with self._lock:
+            self._queued.clear()
+        return self.status()
+
     def shutdown(self):
         self._stop.set()
         self.join(5)
+
+    def _moves_progress(self, done, total):
+        with self._lock:
+            self._state["moves_done"] = done
+            self._state["moves_total"] = total
 
     def _run(self, games, tablebase):
         error = None
         engine = None
         try:
             engine = self._engine_factory()
-            while games:
-                for game in games:
-                    with self._lock:
-                        self._state["title"] = f"{game['white']} vs {game['black']}"
-                    try:
-                        mistakes = find_mistakes(
-                            game["pgn"], game["user_color"], engine, tablebase,
-                            should_stop=self._stop.is_set)
-                    except ValueError:
-                        mistakes = []  # unreadable PGN: nothing to learn, do not retry it
-                    if mistakes is None:
-                        break
-                    store_mistakes(game["id"], mistakes)
-                    with self._lock:
-                        self._state["done"] += 1
-                        self._state["mistakes"] += len(mistakes)
-                games = self._next_queued()
+            todo = list(games)
+            while todo:
+                # A game you asked for by itself goes next, ahead of a long
+                # run through all the unchecked ones.
+                self._asked_for_first(todo)
+                game = todo.pop(0)
+                with self._lock:
+                    self._state.update(title=f"{game['white']} vs {game['black']}",
+                                       game_id=game["id"], moves_done=0, moves_total=0)
+                try:
+                    mistakes = find_mistakes(
+                        game["pgn"], game["user_color"], engine, tablebase,
+                        should_stop=self._stop.is_set, progress=self._moves_progress)
+                except ValueError:
+                    mistakes = []  # unreadable PGN: nothing to learn, do not retry it
+                if mistakes is None:
+                    break
+                store_mistakes(game["id"], mistakes)
+                with self._lock:
+                    self._state["done"] += 1
+                    self._state["mistakes"] += len(mistakes)
+                if not todo:
+                    todo = self._next_queued()
         except Exception as exc:  # never leave the UI waiting on a dead thread
             log.exception("game analysis crashed")
             error = f"Analysis failed: {exc}"
@@ -379,4 +444,5 @@ class GameAnalyzer:
                     pass
             with self._lock:
                 self._queued.clear()
-                self._state.update(running=False, error=error, stopped=self._stop.is_set())
+                self._state.update(running=False, error=error, stopped=self._stop.is_set(),
+                                   game_id=None)

@@ -83,10 +83,9 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 .rep .tile { padding: 3px 10px; border-radius: 6px; background: var(--c-bg-zebra, rgba(127,127,127,.1)); transition: background .12s, color .12s; }
 .rep .tile:hover { background: var(--c-bg-zebra2, rgba(127,127,127,.2)); color: var(--c-font-clear, inherit); }
 .rep .tile.main { font-weight: 700; color: var(--c-font-clear, inherit); }
-.rep .mainline { display: flex; align-items: baseline; gap: 6px; width: 100%; margin-top: 6px; text-align: left;
-  color: var(--c-font-dim, #787878); font-size: 12.5px; font-variant-numeric: tabular-nums; }
-.rep .mainline:hover { color: var(--c-primary, #1b78d0); }
-.rep .mainline .ox-svg-icon { flex: 0 0 auto; align-self: center; }
+.rep .mainline { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; margin-top: 6px;
+  font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.rep .mainline .link { flex: 0 0 auto; }
 .rep .banner { display: flex; gap: 8px; align-items: flex-start; padding: 7px 10px; border-radius: 8px;
   background: color-mix(in srgb, var(--c-bad, #c33) 16%, transparent); }
 .rep .banner-icon { color: var(--c-bad, #c33); display: inline-flex; align-items: center; margin-top: 2px; }
@@ -97,7 +96,9 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
   background: var(--c-bg-input, var(--c-bg-zebra, transparent)); border: 1px solid var(--c-border, #d9d9d9); border-radius: 6px; }
 .rep .line-matches { white-space: nowrap; font-size: 12.5px; }
 .rep .linerow { gap: 7px; min-height: 30px; }
-.rep .linename { flex: 1 1 auto; min-width: 0; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; line-height: 1.3; }
+.rep .linename { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; line-height: 1.3; }
+.rep .linename .nm { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.rep .linename .apart { font-size: 12px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
 .rep .pill { flex: 0 0 auto; font-size: 11px; color: var(--c-font-dim, #787878); }
 .rep .pill.main { font-weight: 700; color: var(--c-font, inherit); }
 .rep .actions { display: flex; flex: 0 0 auto; opacity: .5; transition: opacity .12s; }

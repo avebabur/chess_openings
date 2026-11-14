@@ -15,6 +15,7 @@ returns the deepest one that is a known named opening — the longest prefix mat
 which is exactly how Lichess labels a position.
 """
 import os
+import re
 import threading
 
 import chess
@@ -104,3 +105,55 @@ def classify(moves_san):
         "family": name.split(":")[0].strip(),
         "variation": name,
     }
+
+
+def name_at(fen, moves_san=""):
+    """The opening name of the position `fen`, or None.
+
+    With the moves that led there (`moves_san`, from the normal start) it is
+    the deepest named position on the way, as Lichess names a position; that
+    line is only believed when it really ends in `fen`. Without it, or when it
+    does not fit, only a position that is itself a named opening has a name."""
+    index = _get_index()
+    try:
+        target = position_key(chess.Board(fen))
+    except ValueError:
+        return None
+    if moves_san:
+        board = chess.Board()
+        best = None
+        for token in moves_san.split():
+            try:
+                board.push_san(token)
+            except ValueError:
+                best = None
+                break
+            best = index.get(position_key(board)) or best
+        else:
+            if best and position_key(board) == target:
+                return best["name"]
+    hit = index.get(target)
+    return hit["name"] if hit else None
+
+
+_spellings = None
+
+
+def _plain(name):
+    return re.sub(r"[^a-z0-9]+", " ", (name or "").lower()).strip()
+
+
+def canonical_spelling(name):
+    """`name` as the ECO list spells it, when it is one of its openings or
+    opening families apart from punctuation and capitals ("Caro Kann Defense
+    Classical Variation" -> "Caro-Kann Defense: Classical Variation"). Any
+    other name comes back unchanged."""
+    global _spellings
+    if _spellings is None:
+        spellings = {}
+        for entry in _get_index().values():
+            full = entry["name"]
+            for candidate in (full, full.split(":")[0].strip()):
+                spellings.setdefault(_plain(candidate), candidate)
+        _spellings = spellings
+    return _spellings.get(_plain(name), name)

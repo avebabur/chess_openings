@@ -44,7 +44,10 @@ async function broadcastPaused(paused) {
     ext.tabs.sendMessage(tab.id, { type: 'ox-paused', paused }).catch(() => {})));
 }
 
-ext.tabs.onRemoved.addListener(tabId => { setTabPlaying(tabId, false); });
+ext.tabs.onRemoved.addListener(tabId => {
+  setTabPlaying(tabId, false);
+  stopIfUnwanted();
+});
 // A playing tab that starts loading anything else is no longer a live game;
 // if it loads another game page, its content script reports it again.
 ext.tabs.onUpdated.addListener((tabId, change) => {
@@ -99,7 +102,6 @@ async function appRunning() {
 
 async function startApp() {
   if (Date.now() - autostart.at < 20_000) return autostart.state;
-  ext.storage.session.set({ appInUse: true });
   autostart = { state: 'starting', at: Date.now() };
   try {
     const reply = await ext.runtime.sendNativeMessage(NATIVE_HOST, { cmd: 'start' });
@@ -110,34 +112,68 @@ async function startApp() {
   return autostart.state;
 }
 
-// --- stopping the app when Lichess is closed ------------------------------------
-// Two minutes after the last Lichess tab closes, the helper asks launchd to
-// stop the app it started (Stockfish included). Opening Lichess again within
-// that time cancels it. `appInUse` (set when a Lichess page or the settings
-// page used the app) keeps this to once per use: without it every tab closed
-// or loaded anywhere in Chrome pushed the stop back another two minutes, and
-// asked the helper again and again after the app had stopped.
-const STOP_ALARM = 'ox-stop-app';
-const STOP_AFTER_MINUTES = 2;
+// --- keeping the app running only while it is wanted -------------------------
+// Closing the last tab asks the helper to stop the app at once. If Chrome quits
+// or crashes before that event runs, the app stops itself after two minutes
+// without contact (backend/idle_exit.py). While a Lichess tab or settings is
+// open, an alarm says "still here" every half minute. Alarms wake this service
+// worker however long the tabs sit in the background, which timers in the
+// pages would not.
+const KEEPALIVE_ALARM = 'ox-keepalive';
+const KEEPALIVE_MINUTES = 0.5;
 
-async function lichessTabsOpen() {
-  return (await ext.tabs.query(LICHESS_TABS)).length > 0;
+// Stops the app once nothing of ours is open any more. Only when this browser
+// was using it (the keepalive alarm is set): otherwise every tab closed
+// anywhere in Chrome started the helper again, a Python process each time,
+// long after the app had stopped.
+let stopping = null;
+function stopIfUnwanted() {
+  stopping = stopping || (async () => {
+    if (!(await ext.alarms.get(KEEPALIVE_ALARM)) || (await wanted())) return;
+    await ext.alarms.clear(KEEPALIVE_ALARM);
+    // The helper refuses to stop a service started by hand. On Chrome quit or
+    // crash this may not run; the service's idle watchdog covers that.
+    try { await ext.runtime.sendNativeMessage(NATIVE_HOST, { cmd: 'stop' }); } catch {}
+    // Opening Lichess again must start it at once, not wait out startApp's
+    // 20-second guard against starting twice.
+    autostart = { state: null, at: 0 };
+  })().finally(() => { stopping = null; });
+  return stopping;
 }
 
-async function stopLaterIfLichessClosed() {
-  const { appInUse } = await ext.storage.session.get('appInUse');
-  if (!appInUse || (await ext.alarms.get(STOP_ALARM)) || (await lichessTabsOpen())) return;
-  ext.alarms.create(STOP_ALARM, { delayInMinutes: STOP_AFTER_MINUTES });
+async function wanted() {
+  if ((await ext.tabs.query(LICHESS_TABS)).length > 0) return true;
+  // The settings page (accounts, syncing, checking games) uses the app too.
+  try {
+    const pages = await ext.runtime.getContexts({ contextTypes: ['TAB'] });
+    return pages.some(page => page.documentUrl?.startsWith(ext.runtime.getURL('settings.html')));
+  } catch {
+    return false;
+  }
 }
 
-ext.alarms.onAlarm.addListener(async alarm => {
-  if (alarm.name !== STOP_ALARM || (await lichessTabsOpen())) return;
-  await ext.storage.session.set({ appInUse: false });
-  try { await ext.runtime.sendNativeMessage(NATIVE_HOST, { cmd: 'stop' }); } catch { /* helper not installed */ }
-  autostart = { state: null, at: 0 };
-});
-ext.tabs.onRemoved.addListener(() => { stopLaterIfLichessClosed(); });
-ext.tabs.onUpdated.addListener((tabId, change) => { if (change.status === 'complete') stopLaterIfLichessClosed(); });
+let lastKeepalive = 0;
+async function keepAlive() {
+  if (!(await wanted())) {
+    // Nothing of ours is open (a Lichess tab went to another site): stop it.
+    await stopIfUnwanted();
+    return false;
+  }
+  if (!(await ext.alarms.get(KEEPALIVE_ALARM))) {
+    ext.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: KEEPALIVE_MINUTES });
+  }
+  // Every request to the app counts too, so a page loading (a dozen
+  // requests) needs no extra call each time.
+  if (Date.now() - lastKeepalive < 10_000) return true;
+  lastKeepalive = Date.now();
+  // Not answered means the app is down: the next real request starts it.
+  fetch(`${BACKEND}/api/keepalive`, { method: 'POST' }).catch(() => {});
+  return true;
+}
+
+ext.alarms.onAlarm.addListener(alarm => { if (alarm.name === KEEPALIVE_ALARM) keepAlive(); });
+// Chrome may drop alarms when it restarts; tabs it restores bring them back.
+ext.runtime.onStartup.addListener(() => { keepAlive(); });
 
 // --- picking up code changes ---------------------------------------------------
 // The app reports when the extension's files last changed. If that is newer
@@ -184,14 +220,14 @@ ext.runtime.onMessage.addListener((message, sender, sendResponse) => {
       case 'ox-api':
         try {
           const answer = await client.api(message.method, message.path, message.body);
-          ext.storage.session.set({ appInUse: true });
+          keepAlive();
           return answer;
         } catch (error) {
           const state = await startApp();
           return { ok: false, status: 0, data: null, offline: true, autostart: state, error: String(error) };
         }
       case 'ox-status': {
-        ext.alarms.clear(STOP_ALARM);
+        keepAlive();
         // Fail-closed: while this copy is about to be replaced, stay paused.
         if (await reloadIfUpdated()) return { paused: true, reloading: true };
         // Opening a Lichess page starts the app if it isn't running.

@@ -2,6 +2,8 @@
 # Start the local API used by the Lichess extension.
 #   ./start.sh starts the service on 127.0.0.1:8001.
 #   ./stop.sh stops it.
+# The extension starts it by itself when a Lichess page opens (see
+# extension/native/install.sh); then it also stops by itself.
 
 set -eu
 OPENINGS_ROOT="$(cd "$(dirname "$0")" && pwd)"
@@ -25,6 +27,23 @@ source "$OPENINGS_ROOT/venv/bin/activate"
 export CHESS_DB_PATH="$OPENINGS_ROOT/chess_review.db"
 # Fetch new chess.com games on start and every 30 minutes (backend/main.py).
 export OPENINGS_AUTO_SYNC=1
+
+# Started by the extension (through launchd, see extension/native/install.sh):
+# the extension stops it when the last Lichess tab closes, and the service also
+# stops by itself after two minutes without hearing from the extension, for
+# when Chrome quits or crashes first (backend/idle_exit.py). Started by hand in
+# Terminal it runs until you stop it. launchd names its job in XPC_SERVICE_NAME.
+LOG_FILE="$HOME/Library/Logs/openings-app.log"
+if [ "${OPENINGS_MANAGED:-}" = "1" ] || [ "${XPC_SERVICE_NAME:-}" = "com.openings.app" ]; then
+  export OPENINGS_IDLE_EXIT_SECONDS="${OPENINGS_IDLE_EXIT_SECONDS:-120}"
+  # Keep the log launchd writes for this job from growing for ever: past
+  # 2 MB, only its last 500 KB stay.
+  if [ -f "$LOG_FILE" ] && [ "$(stat -f %z "$LOG_FILE" 2>/dev/null || echo 0)" -gt 2097152 ]; then
+    tail -c 512000 "$LOG_FILE" > "$RUNTIME_DIR/log.tail" 2>/dev/null \
+      && cat "$RUNTIME_DIR/log.tail" > "$LOG_FILE"
+    rm -f "$RUNTIME_DIR/log.tail"
+  fi
+fi
 
 if [ -z "${STOCKFISH_PATH:-}" ]; then
   if command -v stockfish >/dev/null 2>&1; then
