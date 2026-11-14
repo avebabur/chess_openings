@@ -9,6 +9,7 @@ __pycache__/
 chess_review.db
 chess_review.db-shm
 chess_review.db-wal
+backups/
 
 # --- Optional browser-check tooling ---
 extension/scripts/node_modules/

@@ -122,8 +122,11 @@ async def lifespan(target_app):
     target_app.state.opening_tree_cache = ot.OpeningTreeCache()
     target_app.state.game_analyzer = game_analysis.GameAnalyzer()
     target_app.state.idle_exit = idle_exit.from_environment()
+    # Starts paused (fail-closed): the extension says at once whether a game
+    # is on in a Lichess tab (background.js tells it when it sees the app up).
     target_app.state.lichess_engine = lichess_engine_provider.LichessEngineProvider(
-        on_activity=target_app.state.idle_exit.touch if target_app.state.idle_exit else None)
+        on_activity=target_app.state.idle_exit.touch if target_app.state.idle_exit else None,
+        paused=True)
 
     def analyse_new_games(account_id, imported):
         """Search the games a sync just brought in for mistakes. Capped, so a
@@ -326,7 +329,9 @@ class EnginePauseInput(BaseModel):
 @api.put("/lichess-engine/paused")
 async def lichess_engine_pause(input: EnginePauseInput, request: Request):
     """The extension's live-game lock: while a game is in progress in any
-    Lichess tab, your Stockfish takes no work from Lichess."""
+    Lichess tab, your Stockfish answers Lichess with nothing, and checking your
+    old games for mistakes waits (Stockfish goes quiet)."""
+    request.app.state.game_analyzer.hold(input.paused)
     await request.app.state.lichess_engine.set_paused(input.paused)
     return {"paused": request.app.state.lichess_engine.paused}
 

@@ -22,6 +22,8 @@
     // Stockfish once it is Lichess's chosen engine).
     practice: () => command('practice'),
     flip: () => command('flip'),
+    // Lichess's engine bar searches the position on the board again.
+    restartCeval: () => command('restartCeval'),
     // Put `color` at the bottom of the board (your side of your own game).
     showSide(color) {
       const black = document.querySelector('main.analyse .cg-wrap')?.classList.contains('orientation-black');

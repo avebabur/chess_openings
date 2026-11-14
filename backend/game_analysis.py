@@ -309,6 +309,9 @@ class GameAnalyzer:
         self._lock = threading.Lock()
         self._thread = None
         self._stop = threading.Event()
+        # Set while a game is live on Lichess (the extension's lock): the run
+        # waits before its next move, so Stockfish is quiet during the game.
+        self._held = threading.Event()
         self._queued = []  # (account_id, count) requests waiting for the run to end
         self._state = self._fresh(False)
 
@@ -318,7 +321,7 @@ class GameAnalyzer:
         # how many of your moves in it have been looked at.
         return {"running": running, "done": 0, "total": total, "title": "",
                 "game_id": None, "moves_done": 0, "moves_total": 0,
-                "mistakes": 0, "error": None, "stopped": False}
+                "mistakes": 0, "error": None, "stopped": False, "held": False}
 
     def status(self):
         with self._lock:
@@ -383,6 +386,24 @@ class GameAnalyzer:
             front.append(game)
         todo[:0] = front
 
+    def hold(self, held):
+        """Pause (True) or resume (False) the run between two moves."""
+        if held:
+            self._held.set()
+        else:
+            self._held.clear()
+
+    def _should_stop(self):
+        """Checked before every move: waits while held, True once stopped."""
+        if self._held.is_set() and not self._stop.is_set():
+            with self._lock:
+                self._state["held"] = True
+            while self._held.is_set() and not self._stop.is_set():
+                self._stop.wait(0.5)
+            with self._lock:
+                self._state["held"] = False
+        return self._stop.is_set()
+
     def join(self, timeout=None):
         thread = self._thread
         if thread:
@@ -422,7 +443,7 @@ class GameAnalyzer:
                 try:
                     mistakes = find_mistakes(
                         game["pgn"], game["user_color"], engine, tablebase,
-                        should_stop=self._stop.is_set, progress=self._moves_progress)
+                        should_stop=self._should_stop, progress=self._moves_progress)
                 except ValueError:
                     mistakes = []  # unreadable PGN: nothing to learn, do not retry it
                 if mistakes is None:

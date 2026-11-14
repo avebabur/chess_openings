@@ -163,7 +163,9 @@
             text: move.san,
           }))),
           line.length > 1 ? OX.el('div', { class: 'mainline' },
-            OX.el('span', { class: 'dim', text: `Main line: ${OX.numberMoves(position.fen, line.map(m => m.san))}` }),
+            // "Main line" only when every move on it is one: a line made of
+            // sidelines (nothing marked main from here) says so.
+            OX.el('span', { class: 'dim', text: `${line.every(m => m.main) ? 'Main line' : 'Your line'}: ${OX.numberMoves(position.fen, line.map(m => m.san))}` }),
             OX.el('button', {
               class: 'link small', title: `Play these ${line.length} moves on the board`,
               onclick: () => OX.lichess.playUciList(line.map(m => m.uci)),
@@ -275,13 +277,16 @@
           // move order that reaches its last position): offer to extend it.
           for (const { branch, moves, transposed } of (path ? R.extensions(index, path) : []).slice(0, 2)) {
             const name = nameOf(branch);
+            // The dot says whose line it is: lines of both colours can be
+            // offered here, often with the same opening name.
+            const whose = `your ${label(branch.color)} line`;
             buttons.push(OX.el('button', {
               class: 'btn',
               title: transposed
-                ? `Add the moves from here on to “${name}”. It reaches this position by another move order and keeps its own moves.`
-                : `Make “${name}” continue to this move`,
+                ? `Add the moves from here on to ${whose} “${name}”. It reaches this position by another move order and keeps its own moves.`
+                : `Make ${whose} “${name}” continue to this move`,
               onclick: () => act(() => OX.bridge.api('PATCH', `/repertoire/tree/branches/${branch.id}`, { moves_san: moves.join(' ') }), `Extended “${name}”.`),
-            }, `Extend “${name.length > 22 ? `${name.slice(0, 21)}…` : name}”`));
+            }, OX.el('span', { class: `dot ${branch.color}` }), `Extend “${name.length > 22 ? `${name.slice(0, 21)}…` : name}”`));
           }
           buttons.unshift(OX.el('button', { class: 'btn primary', onclick: () => openForm(line, path) }, svgEl('plus'), 'Save this line'));
         }
@@ -362,11 +367,14 @@
         const sections = COLORS.map(color => sideSection(entry, color)).filter(Boolean);
         const ended = COLORS.filter(c => entry?.reached[c]);
         const names = lines => (lines.length ? `: ${lines.map(nameOf).join(', ')}` : '');
+        // Played past the end of a line of either colour (the warning above
+        // is only about the side at the bottom of the board).
+        const past = left?.past ? left : path ? COLORS.map(c => R.leftAt(index, path, c)).find(l => l?.past) : null;
         const status = sections.length
           ? null
           : OX.el('div', { class: 'section dim' },
             ended.length ? `End of your prepared line${names(entry.ends)}.`
-              : left?.past ? `Past the end of your prepared line${names(left.ends)}.`
+              : past ? `Past the end of your prepared line${names(past.ends)}.`
                 : 'Not in your repertoire.');
         // Drawing again must not move what you were looking at: the list of
         // lines and the box itself keep their scroll positions.

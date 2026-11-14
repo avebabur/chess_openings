@@ -145,7 +145,40 @@ class RegistrationTests(unittest.TestCase):
 
 
 class PauseTests(unittest.TestCase):
-    def test_no_work_is_taken_while_a_game_is_live(self):
+    def _run(self, provider, seconds):
+        async def run_for():
+            async with httpx.AsyncClient(transport=provider._transport) as http:
+                try:
+                    await asyncio.wait_for(provider._serve(http, "s"), seconds)
+                except asyncio.TimeoutError:
+                    pass
+        asyncio.run(run_for())
+
+    def test_during_a_game_every_request_is_answered_with_nothing(self):
+        answers = []
+
+        def handler(request):
+            if request.url.path == "/api/external-engine/work":
+                return httpx.Response(200, json={"id": "job1", "work": {"moves": ["e2e4"], "movetime": 1000}})
+            answers.append((request.url.path, request.content))
+            return httpx.Response(200)
+
+        provider = lep.LichessEngineProvider(
+            token_getter=lambda: "tok", secret_store=lambda value=None: "s",
+            stockfish_path=sys.executable, transport=httpx.MockTransport(handler),
+            poll_pause=0.01, paused=True)
+        provider._token_in_use = "tok"
+        self.assertTrue(provider.status()["paused"])  # fail-closed until told
+        self._run(provider, 0.3)
+        # Answered (so Lichess's engine bar shows no error), but with nothing,
+        # and Stockfish was never started.
+        self.assertTrue(answers)
+        self.assertEqual(set(answers), {("/api/external-engine/work/job1", b"bestmove (none)\n")})
+        self.assertIsNone(provider._engine)
+        self.assertEqual(provider.jobs, 0)
+        self.assertEqual(provider.status()["recent"][-1]["ended"], "paused: answered with nothing")
+
+    def test_work_is_taken_again_once_the_game_ends(self):
         polls = []
 
         def handler(request):
@@ -154,22 +187,12 @@ class PauseTests(unittest.TestCase):
 
         provider = lep.LichessEngineProvider(
             token_getter=lambda: "tok", secret_store=lambda value=None: "s",
-            stockfish_path=sys.executable, transport=httpx.MockTransport(handler), poll_pause=0.01)
+            stockfish_path=sys.executable, transport=httpx.MockTransport(handler),
+            poll_pause=0.01, paused=True)
         provider._token_in_use = "tok"
-
-        async def run_for(seconds):
-            async with httpx.AsyncClient(transport=provider._transport) as http:
-                try:
-                    await asyncio.wait_for(provider._serve(http, "s"), seconds)
-                except asyncio.TimeoutError:
-                    pass
-
-        asyncio.run(provider.set_paused(True))
-        asyncio.run(run_for(0.3))
-        self.assertEqual(polls, [])
-        self.assertTrue(provider.status()["paused"])
         asyncio.run(provider.set_paused(False))
-        asyncio.run(run_for(0.3))
+        self.assertFalse(provider.status()["paused"])
+        self._run(provider, 0.3)
         self.assertIn("/api/external-engine/work", polls)
 
 

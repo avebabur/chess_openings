@@ -23,11 +23,12 @@
     const game = await OX.bridge.api('GET', `/games/${gameId}`);
     const lichessId = game.source === 'lichess'
       && /\[(?:GameId "|Site "https?:\/\/lichess\.org\/(?:game\/)?)([A-Za-z0-9]{8})"/.exec(game.pgn || '')?.[1];
+    const { path, plies } = gamePath(game);
     if (lichessId) {
-      location.href = `/${lichessId}${game.user_color === 'black' ? '/black' : ''}${ply == null ? '' : `#${ply}`}`;
+      // Lichess's game page opens at the first move without a ply: say the end.
+      location.href = `/${lichessId}${game.user_color === 'black' ? '/black' : ''}#${ply ?? plies}`;
       return;
     }
-    const { path, plies } = gamePath(game);
     try { localStorage.setItem(KEY, JSON.stringify({ id: gameId, path })); } catch { /* blocked */ }
     location.href = `${path}#${ply ?? plies}`;
   };
@@ -134,8 +135,18 @@
           await OX.bridge.api('POST', '/analysis', { game_id: gameId });
         } catch (error) {
           button.textContent = error.offline ? OX.offlineText() : "Couldn't start the check.";
+          button.disabled = false;
           return;
         }
+        watchCheck(button);
+      }
+
+      // Shows how the check of this game is going until it is done. Also
+      // picks up a check started earlier (the box is drawn again after a
+      // live game in another tab, or the page was reloaded meanwhile).
+      function watchCheck(button) {
+        button.disabled = true;
+        clearTimeout(polling);
         let ownSince = 0;     // when this game's turn came
         let ownStartedAt = 0; // ...and how many moves were done then
         const wait = async () => {
@@ -223,6 +234,11 @@
         OX.el('span', { class: 'dim', text: `best ${m.best_san}` })));
         const check = OX.el('button', { class: 'btn primary', text: 'Check with your Stockfish' });
         check.addEventListener('click', () => checkThisGame(check));
+        if (!game.mistakes_analyzed_at) {
+          OX.bridge.api('GET', '/analysis').then(status => {
+            if (alive && status?.running && status.game_id === gameId && check.isConnected) watchCheck(check);
+          }).catch(() => {});
+        }
         const rating = value => (value ? ` (${value})` : '');
         body.className = '';
         body.replaceChildren(

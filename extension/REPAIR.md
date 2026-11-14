@@ -41,6 +41,14 @@ Things that rely on Lichess internals rather than selectors, and fail quietly:
 - **Lichess's controller** (`src/lichess.js`): `window.site.analysis` with `playUci`,
   `playUciList`, `jumpToMain`, `togglePractice` (lila `ui/analyse/src/ctrl.ts`). If clicking
   a move or Jump stops moving the board, check those names.
+- **Lichess's engine bar stays empty after a live game ends** (`src/page-bridge.js`,
+  `restartCeval`): during a game your Stockfish answers Lichess with `bestmove (none)`, and
+  when the lock lifts (or the app reconnects) the extension calls Lichess's
+  `ctrl.startCevalIfEnabled()` (lila `ui/analyse/src/ctrl.ts`). It first drops that empty
+  answer from `ctrl.node.ceval`, and in Practice calls `ctrl.practice.onJump()` so the
+  computer takes its turn again (lila `ui/analyse/src/practice/practiceCtrl.ts`, its
+  `played` flag). If the bar no longer restarts by itself, or Practice stays on
+  "Computer thinking…" after a game, check those names.
 - **Practice stuck on "Computer thinking…"** (`src/page-bridge.js`, `nudgePractice`): in
   Practice's Mastery mode Lichess only moves once the engine is idle, and with an external
   engine nothing re-checks after it stops. The bridge calls `ctrl.practice.onCeval()` when

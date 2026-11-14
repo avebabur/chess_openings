@@ -8,6 +8,13 @@
   const OX = globalThis.OX;
   const A = OX.anchors;
   const PAGE = 15;
+  // How deep the app follows each game (backend/opening_tree.py MAX_PLIES).
+  const INDEXED_PLIES = 40;
+  // Moves played before the position in `fen`, from its move number.
+  const plyOf = fen => {
+    const [, turn, , , , number] = (fen || '').split(' ');
+    return ((parseInt(number, 10) || 1) - 1) * 2 + (turn === 'b' ? 1 : 0);
+  };
 
   function bar(white, draws, black) {
     const sum = white + draws + black || 1;
@@ -167,7 +174,13 @@
           OX.el('span', { class: 'ox-mine-note', title: summary || null, text: syncNote || summary }),
           syncButton);
         if (!node.total_games) {
-          content.replaceChildren(head, empty(`No games as ${color} here.`));
+          // The app looks only at the first moves of each game (backend
+          // opening_tree.py MAX_PLIES): past them even the game you just
+          // opened would show as "no games", so say why.
+          const late = !nodes[other].total_games && plyOf(position?.fen) > INDEXED_PLIES;
+          content.replaceChildren(head, empty(late
+            ? `My games looks at the first ${INDEXED_PLIES / 2} moves of each game; this position is later.`
+            : `No games as ${color} here.`));
           return;
         }
         const sum = node.moves.reduce((n, m) => n + m.games, 0) || 1;
@@ -188,8 +201,10 @@
             const you = g.user_color;
             const ratings = you === 'white' ? [g.user_rating, g.opp_rating] : [g.opp_rating, g.user_rating];
             return OX.el('tr', {
-              'data-id': g.id, title: 'Open this game at this position',
-              onclick: () => OX.openMyGame(g.id, g.ply).catch(() => {}),
+              // At the starting position (your whole history) "this position"
+              // is move 0: open the game at its end instead.
+              'data-id': g.id, title: g.ply ? 'Open this game at this position' : 'Open this game',
+              onclick: () => OX.openMyGame(g.id, g.ply || undefined).catch(() => {}),
             },
             OX.el('td', { class: 'game-rating' }, OX.el('span', { text: ratings[0] ?? '' }), OX.el('span', { text: ratings[1] ?? '' })),
             OX.el('td', {}, OX.el('span', { text: g.white }), OX.el('span', { text: g.black })),

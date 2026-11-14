@@ -32,8 +32,10 @@ function setTabPlaying(tabId, playing) {
     await ext.storage.session.set({ playingTabs: [...tabs] });
     const paused = tabs.size > 0;
     if (paused !== before) {
+      // The engine first: a tab unlocked before it was told would ask it
+      // again and get the paused (empty) answer.
+      await tellEngine(paused);
       await broadcastPaused(paused);
-      tellEngine(paused);
     }
     await refreshBadge();
     return paused;
@@ -47,6 +49,19 @@ function setTabPlaying(tabId, playing) {
 // change and again with every keepalive, so an app (re)started mid-game hears it.
 function tellEngine(paused) {
   return client.api('PUT', '/lichess-engine/paused', { paused }).catch(() => {});
+}
+// The app starts paused (fail-closed: it can't know whether a game is on), so
+// it is told the lock's state the moment it is seen answering after being
+// down (or after this service worker restarted), not half a minute later.
+let appUp = false;
+async function noteApp(up) {
+  if (up && !appUp) {
+    appUp = true;
+    await seedLock();
+    await tellEngine((await playingTabs()).size > 0);
+  } else if (!up) {
+    appUp = false;
+  }
 }
 
 // Session storage is emptied when the extension is updated or Chrome restarts,
@@ -218,8 +233,12 @@ async function keepAlive() {
   // requests) needs no extra call each time.
   if (Date.now() - lastKeepalive < 10_000) return true;
   lastKeepalive = Date.now();
-  // Not answered means the app is down: the next real request starts it.
-  fetch(`${BACKEND}/api/keepalive`, { method: 'POST' }).catch(() => {});
+  // Not answered means the app is down (it crashed, or was stopped by hand):
+  // start it again, so Lichess's engine bar and the boxes come back by
+  // themselves even on a page nobody touches.
+  fetch(`${BACKEND}/api/keepalive`, { method: 'POST' })
+    .then(res => noteApp(res.ok))
+    .catch(() => { noteApp(false); startApp(); });
   tellEngine((await playingTabs()).size > 0);
   return true;
 }
@@ -273,9 +292,11 @@ ext.runtime.onMessage.addListener((message, sender, sendResponse) => {
       case 'ox-api':
         try {
           const answer = await client.api(message.method, message.path, message.body);
+          noteApp(true);
           keepAlive();
           return answer;
         } catch (error) {
+          noteApp(false);
           const state = await startApp();
           return { ok: false, status: 0, data: null, offline: true, autostart: state, error: String(error) };
         }
@@ -286,6 +307,7 @@ ext.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (await reloadIfUpdated()) return { paused: true, reloading: true };
         // Opening a Lichess page starts the app if it isn't running.
         const running = await appRunning();
+        await noteApp(running);
         if (!running) await startApp();
         return { paused: (await playingTabs()).size > 0, autostart: running ? 'running' : autostart.state };
       }

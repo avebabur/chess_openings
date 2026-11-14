@@ -26,6 +26,11 @@ status = httpx.get("http://127.0.0.1:8001/api/lichess-engine", timeout=5).json()
 print("app says:", status["state"], status.get("error") or "")
 if status["state"] != "ready":
     sys.exit(1)
+if status.get("paused"):
+    # The app starts paused and answers with nothing until the extension says
+    # no game is on (or while one is): open a Lichess page, then run this.
+    print("paused: a game is in progress in a Lichess tab, or no Lichess tab has told the app yet")
+    sys.exit(1)
 token = db.get_setting("lichess_token")
 engine = httpx.get(f"https://lichess.org/api/external-engine/{status['engine_id']}",
                    headers={"Authorization": f"Bearer {token}"}, timeout=10).json()

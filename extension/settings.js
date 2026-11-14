@@ -234,8 +234,10 @@ async function loadChecks() {
     const done = status.done - checkRun.doneThen;
     const each = done >= 2 ? (Date.now() - checkRun.since) / 1000 / done : GUESS_SECONDS_A_GAME;
     const move = status.moves_total ? `, move ${Math.min(status.moves_done + 1, status.moves_total)} of ${status.moves_total}` : '';
-    $('check-state').textContent = `Checking game ${Math.min(status.done + 1, status.total)} of ${status.total}`
-      + `${status.title ? ` (${status.title}${move})` : ''}. About ${duration((status.total - status.done) * each)} left.`;
+    $('check-state').textContent = status.held
+      ? `Waiting: a game is in progress on Lichess. Checking carries on when it ends (game ${Math.min(status.done + 1, status.total)} of ${status.total}).`
+      : `Checking game ${Math.min(status.done + 1, status.total)} of ${status.total}`
+        + `${status.title ? ` (${status.title}${move})` : ''}. About ${duration((status.total - status.done) * each)} left.`;
     checkTimer = setTimeout(loadChecks, 1500);
     return;
   }

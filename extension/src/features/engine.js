@@ -77,6 +77,7 @@
       async function refresh() {
         if (asking) return;
         asking = true;
+        const before = status ? `${status.state}${status.paused ? ' paused' : ''}` : null;
         try {
           status = await OX.bridge.api('GET', '/lichess-engine');
         } catch (error) {
@@ -85,6 +86,11 @@
           asking = false;
           checkedAt = Date.now();
         }
+        // Your Stockfish is connected again after the app was down (Lichess's
+        // engine bar is left showing an error), or the app, which starts
+        // paused, has just heard that no game is on (it answered this page
+        // with nothing meanwhile): have Lichess search again.
+        if (before && before !== 'ready' && status.state === 'ready' && !status.paused && !needsReload) OX.lichess.restartCeval();
         render();
       }
 
@@ -93,7 +99,10 @@
       return {
         update() {},
         tick() {
-          const every = status?.state === 'ready' ? 60_000 : 4000;
+          // Every minute once connected; every 4 s while not, and as soon as
+          // the app is back after being down (a box elsewhere noticed).
+          const settled = status?.state === 'ready' && !status.paused && !OX.state.offline;
+          const every = settled ? 60_000 : 4000;
           if (Date.now() - checkedAt > every) refresh();
         },
         destroy() {},

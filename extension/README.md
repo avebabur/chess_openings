@@ -39,12 +39,18 @@ links lead out of Lichess.
 ## Fair play: it switches itself off during games
 
 - While **any** Lichess tab shows a game in progress (yours or one you're watching, Lichess
-  TV included), every feature in every Lichess tab is removed, and your Stockfish takes no
-  work from Lichess, so Lichess's engine bar in another tab gets no answers from it. The
-  toolbar icon shows **live**. Everything comes back when the game's result appears.
+  TV included), every feature in every Lichess tab is removed, and your Stockfish answers
+  Lichess with nothing, so Lichess's engine bar in another tab stays empty (no error).
+  Checking your games for mistakes waits too, so Stockfish is quiet. The toolbar icon
+  shows **live**. Everything comes back when the game's result appears, and Lichess's
+  engine bar searches the position on the board again by itself.
 - This fails safe: a game page counts as live until its result box shows; a game tab that
   goes straight into the next game (rematch) stays locked in between; after an extension
-  update or a Chrome restart every open Lichess tab is checked before anything is shown.
+  update or a Chrome restart every open Lichess tab is checked before anything is shown;
+  the app starts with your Stockfish paused and serves Lichess only once the extension
+  has said no game is on (a second or two after it starts).
+- If the app stops unexpectedly while Lichess is open, the extension starts it again within
+  half a minute, and the boxes and Lichess's engine bar recover by themselves.
 - What it can't see: a game in another browser or Chrome profile, or a correspondence game
   whose page isn't open.
 

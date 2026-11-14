@@ -317,7 +317,7 @@ class LichessEngineProvider:
     """Background task: keeps the engine registered and answers Lichess."""
 
     def __init__(self, token_getter=None, secret_store=None, stockfish_path=None,
-                 transport=None, poll_pause=5.0, on_activity=None):
+                 transport=None, poll_pause=5.0, on_activity=None, paused=False):
         # Called for every job Lichess sends: the engine being used counts as
         # the service being used (idle_exit.py), whatever the extension says.
         self._on_activity = on_activity
@@ -334,10 +334,12 @@ class LichessEngineProvider:
         self.error = ""
         self.engine_id = None
         self.jobs = 0
-        # A game is in progress in a Lichess tab (the extension says so): no
-        # work is taken and the search in progress stops, so your Stockfish
-        # can't help in any Lichess tab during a game.
-        self.paused = False
+        # A game is in progress in a Lichess tab (the extension says so): every
+        # request is answered with nothing and the search in progress stops, so
+        # your Stockfish can't help in any Lichess tab during a game. The app
+        # starts paused (main.py): until the extension has said whether a game
+        # is on, one may be.
+        self.paused = bool(paused)
         self.recent = collections.deque(maxlen=40)  # what Lichess asked, newest last
 
     def status(self):
@@ -437,9 +439,6 @@ class LichessEngineProvider:
         while True:
             if await asyncio.to_thread(self._token_getter) != self._token_in_use:
                 return  # token changed or removed: register again
-            if self.paused:
-                await asyncio.sleep(0.5)
-                continue
             try:
                 res = await http.post(f"{BROKER}/api/external-engine/work",
                                       json={"providerSecret": secret}, timeout=12)
@@ -459,7 +458,8 @@ class LichessEngineProvider:
             self.error = ""
             job = res.json()
             if self.paused:
-                continue  # a game started while waiting: leave the job unanswered
+                await self._answer_nothing(http, job)
+                continue
             if self._engine and self._engine.alive():
                 try:
                     await self._engine.stop()
@@ -472,6 +472,24 @@ class LichessEngineProvider:
             started = asyncio.Event()
             self._job_task = asyncio.create_task(self._handle(http, job, started))
             await started.wait()
+
+    async def _answer_nothing(self, http, job):
+        """During a game: answer Lichess with no analysis at all, just the
+        end of a search that found nothing ("bestmove (none)", the shortest
+        answer Lichess's broker accepts; an empty one is refused with 400).
+        Lichess's engine bar then simply stays empty. A request left
+        unanswered timed out (503) into "Error loading engine" instead, which
+        stayed after the game until you moved. The extension asks Lichess to
+        search again when the game ends."""
+        record = {"at": time.strftime("%H:%M:%S"), "moves": len(job.get("work", {}).get("moves") or []),
+                  "ended": "paused: answered with nothing"}
+        self.recent.append(record)
+        try:
+            res = await http.post(f"{BROKER}/api/external-engine/work/{job['id']}",
+                                  content=b"bestmove (none)\n", timeout=10)
+            record["broker"] = res.status_code
+        except httpx.HTTPError as exc:
+            record["broker"] = f"error: {exc.__class__.__name__}"
 
     async def _handle(self, http, job, started):
         self.jobs += 1

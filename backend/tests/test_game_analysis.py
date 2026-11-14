@@ -326,6 +326,44 @@ class StopThenStartTest(DatabaseCase):
         self.assertFalse(analyzer.status()["running"])
 
 
+class HoldTest(DatabaseCase):
+    def test_a_held_run_waits_quietly_and_carries_on_when_released(self):
+        game = self.add_game(QUEEN_HANG)
+        self.ga = sys.modules["game_analysis"]
+        engines = []
+
+        def factory():
+            engines.append(FakeEngine())
+            return engines[-1]
+
+        analyzer = self.ga.GameAnalyzer(engine_factory=factory)
+        analyzer.hold(True)          # a game is live on Lichess
+        analyzer.start(count=1)
+        import time
+        deadline = time.monotonic() + 5
+        while not analyzer.status()["held"] and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.assertTrue(analyzer.status()["held"])
+        time.sleep(0.2)
+        self.assertEqual(engines[0].searches, 0)   # Stockfish is quiet
+        analyzer.hold(False)         # the game ended
+        analyzer.join(10)
+        status = analyzer.status()
+        self.assertEqual((status["running"], status["held"], status["done"]), (False, False, 1))
+        self.assertEqual(len(self.ga.mistakes_for_game(game)), 1)
+
+    def test_stop_ends_a_held_run(self):
+        self.add_game(QUEEN_HANG)
+        self.ga = sys.modules["game_analysis"]
+        analyzer = self.ga.GameAnalyzer(engine_factory=FakeEngine)
+        analyzer.hold(True)
+        analyzer.start(count=1)
+        analyzer.stop()
+        analyzer.join(5)
+        self.assertFalse(analyzer.status()["running"])
+        self.assertEqual(self.ga.count_pending(), 1)
+
+
 class ApiTest(DatabaseCase):
     def setUp(self):
         super().setUp()

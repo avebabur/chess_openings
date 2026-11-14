@@ -251,6 +251,7 @@
   let lastPlaying = null;
   let playingSentAt = 0;
   let lastPositionKey = null;
+  let wasPaused = false;
   const PLAYING_AGAIN_MS = 5000;
 
   // Tells the background script whether this page shows a game in progress.
@@ -352,6 +353,11 @@
     const playing = OX.liveGameOnPage();
     reportPlaying(playing);
     const paused = OX.state.paused || playing;
+    // A game elsewhere just ended: during it your Stockfish answered this
+    // page's engine bar with nothing, so ask Lichess to search again (once
+    // the engine has surely heard; the background tells it first).
+    if (wasPaused && !paused && kind === 'analyse') setTimeout(() => { if (!OX.state.paused) OX.lichess.restartCeval(); }, 500);
+    wasPaused = paused;
     const inGrace = Date.now() - pageStart < GRACE_MS;
     const position = kind === 'analyse' && !paused && OX.standardVariant() ? OX.readPosition() : null;
     OX.state.position = position;
