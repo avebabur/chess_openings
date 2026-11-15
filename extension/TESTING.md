@@ -1,0 +1,183 @@
+# Finding bugs in the extension
+
+Instructions for an agent asked to **test the extension, find bugs, or run edge-case
+checks**. (Lichess changed and a feature stopped showing? That is `REPAIR.md`.)
+
+The existing checks already pass, so running them finds nothing new. Bugs are found by
+the four passes below, in this order. Each pass catches what the others can't.
+
+## Before you start
+
+```bash
+cp chess_review.db backups/chess_review-before-tests-$(date +%Y%m%d-%H%M).db   # backups/ is gitignored
+git status --short        # another agent may be editing this folder: read its diff, never revert it
+```
+
+Then run what exists, once, to know the starting point:
+
+```bash
+(cd backend && ../venv/bin/python -m pytest -q)
+node extension/scripts/live-lock-test.mjs && node extension/scripts/sync-test.mjs && node extension/scripts/repertoire-test.mjs
+node extension/scripts/check.mjs                  # needs the app on :8001 (open Lichess in Chrome)
+```
+
+## Pass 1: read the code and write down suspicions
+
+Read every file in `src/` and `src/features/`, `settings.js`, and `backend/main.py`, in
+full, before opening a browser. Start with `git diff` and `git log -5`: code changed
+since the last commit is the least tested. While reading, write a list of things that
+could be wrong. Questions that have found real bugs here:
+
+- **Types across a boundary.** A value that went through `sessionStorage`, a URL, or JSON:
+  is it still a number? (`"4742" === 4742` is false: the check-progress bug.)
+- **Patterns that match too much.** Every regex and selector: what else on Lichess fits?
+  (`/training` has the shape of a game id; `a.user-link` also matches the spectator list.)
+- **Limits on one side only.** A length or range the extension can exceed but the service
+  refuses (a 700-character game address against `max_length=500`).
+- **Two things at once.** Two clicks, two tabs, two requests, an answer that arrives after
+  the page moved on. Look for read-then-write without a lock, and for buttons still on the
+  page while their request is in flight.
+- **State that outlives its page.** Module-level variables, caches, storage keys, timers:
+  what do they hold after a navigation, a chapter switch, an extension reload?
+- **What Lichess draws that you didn't expect.** Its own redraws, its settings views, its
+  one- and two-column layouts, variants, studies, pages reached by redirect.
+
+For each suspicion, note how you would see it. Then go and try each one.
+
+## Pass 2: the real extension in the user's Chrome
+
+The user's Chrome is left open for agents (Claude in Chrome tools; they are signed in to
+Lichess). Open a new tab; the extension reloads itself after a code change on the next
+Lichess page load, so **load a page twice** after editing.
+
+**Measure instead of looking.** Paste this into the analysis tab, do things in a second
+tab, then read `__log`. A box that vanishes for 0.1 s shows here and in no screenshot:
+
+```js
+window.__log = []; let last = ''; window.__t0 = Date.now();
+setInterval(() => {
+  const s = JSON.stringify({
+    paused: document.documentElement.hasAttribute('data-ox-paused'),
+    hosts: [...document.querySelectorAll('[data-ox-host]')].map(h => h.dataset.oxHost).join(','),
+    myGames: !!document.querySelector('.ox-tab'),
+    engine: (document.querySelector('.ceval')?.innerText || '').replace(/\s+/g, ' ').slice(0, 60),
+  });
+  if (s !== last) { last = s; __log.push(((Date.now() - __t0) / 1000).toFixed(2) + ' ' + s); }
+}, 50);
+```
+
+Read a box's text (they are in shadow roots):
+`document.querySelector('[data-ox-host=repertoire]').shadowRoot.querySelector('.ox').innerText`.
+Drive the board with Lichess's own controller: `site.analysis.playUciList(['e2e4','e7e5'])`,
+`site.analysis.userJump('')`, `site.analysis.flip()`. Use **real** clicks and typing for
+anything about focus or keyboard shortcuts; `.click()` from script is fine for logic.
+
+**After every action, look where the user can't:**
+
+```bash
+tail -20 ~/Library/Logs/openings-app.log                 # any 4xx/5xx the page swallowed?
+curl -s http://127.0.0.1:8001/api/lichess-engine         # state, paused, and `recent`: every engine request
+curl -s http://127.0.0.1:8001/api/analysis               # the game check's progress
+cat extension/health-report.json                         # what the extension says is broken
+```
+
+**Do each thing the wrong way too:**
+
+- click twice and three times, fast (Save, Delete, Extend, Sync, More games, Check);
+- type before the suggestion has arrived, press Enter, Escape, `f`, arrow keys in a text box;
+- click the tab that is already open, open settings on top of it, close them in the other order;
+- act in two tabs at once; change something in one and use the other;
+- reload in the middle (a save, a sync, a game check), go Back, switch study chapters;
+- stop the app in the middle: `launchctl kill TERM gui/$(id -u)/com.openings.app`.
+
+**Use the extremes of the real data**, not `e4 e5`: the longest game
+(`sqlite3 chess_review.db "select id, length(pgn) from games order by 2 desc limit 3"`),
+every page of My games, a position past move 20, promotion, en passant, castling, mate, a
+repetition, a line saved for both colours, a name with `<b>`, quotes, `&` and an emoji.
+
+**Pages to cover:** `/analysis`, `/analysis/pgn/…`, a set-up position
+(`/analysis/standard/<fen>`), a variant (`/analysis/crazyhouse`), your own finished game,
+someone else's finished game, a study (switch chapters, open the explorer), `/practice/…`,
+and plain pages in a second tab (`/training`, `/practice`, `/streamer`) while watching the
+log above for a blink.
+
+**The live-game lock, every time** (it is the part that must never fail):
+
+1. Analysis tab with the log above. Second tab: `lichess.org/tv/classical` (slow games; a
+   bullet game ending looks like an unlock). The log must show `paused` within a second and
+   hold; `/api/lichess-engine` must say `paused: true` and answer "with nothing".
+2. Leave TV for a plain Lichess page, come back, close the tab: locked exactly while TV shows.
+3. A real game: Play → *Play against computer*, level 1, unlimited. **Abort before the first
+   move** (the ✖ under the moves). Then Rematch and abort again. The lock must hold from the
+   click until "aborted", and again through the rematch. Aborted games stay listed as
+   aborted on the account; they are not counted or imported.
+4. During a game: `touch extension/manifest.json`, reload the analysis tab (the extension
+   replaces itself). It must come back locked.
+5. Quit Chrome with a TV tab open and reopen it
+   (`osascript -e 'tell application "Google Chrome" to quit'`, `open -a "Google Chrome"`).
+   `/api/lichess-engine` must still say `paused: true`. Afterwards your tab group is gone:
+   make a new one, and close the restored test tabs
+   (`osascript -e 'tell application "Google Chrome" to close (every tab of every window whose URL contains "lichess.org/tv")'`).
+
+## Pass 3: what the user's Chrome can't show
+
+```bash
+node extension/scripts/real-extension.mjs     # the real extension, headless, fresh profile
+```
+
+Lichess's 3-, 2- and 1-column layouts (the user's window can't be resized) and the
+settings page (`chrome-extension://` pages can't be opened through Claude in Chrome).
+Screenshots: `extension/check-output/real-*.png`; look at them. It refuses to run while the
+lock is on, because a second copy of the extension would tell the app no game is on.
+
+## Pass 4: attack the service
+
+```bash
+venv/bin/python extension/scripts/service-fuzz.py
+```
+
+Bad input on every route, a thousand requests at once, and simultaneous changes to one
+repertoire line, against its own service on a **copy** of the database (port 8011). Any
+500, traceback or leftover row fails it. When you add a route or a field, add its bad
+inputs to `bad_input()` there.
+
+## When something looks wrong
+
+- **Find the cause before calling it a bug or dismissing it.** Repeat it under conditions
+  that remove the innocent explanation (the "lock released during TV" was a bullet game
+  ending: on `/tv/classical` it never happened). When it depends on Lichess, read Lichess's
+  source (`https://raw.githubusercontent.com/lichess-org/lila/master/…`) instead of guessing.
+- **Not a bug of ours:** Lichess runs its engine in one tab at a time; the size of a
+  study's chapter list and chat is the user's own dragging, stored by Lichess; Lichess TV
+  unlocks for a few seconds between games, while the result shows.
+- **Every fix gets a check** that fails without it: a fixture page in `scripts/check.mjs`
+  (see `gamePage`, `/ox-fixture/checking`), a case in `scripts/live-lock-test.mjs`, a test in
+  `backend/tests/`, or a line in `service-fuzz.py`. Then confirm the fix in the real Chrome.
+- Fix the cause in the smallest place; keep every Lichess selector in `src/anchors.js`; the
+  safety rules in `REPAIR.md` (step 4) hold for fixes too. Bump `version` in `manifest.json`.
+- Restart the app after backend changes: `launchctl kickstart -k gui/$(id -u)/com.openings.app`.
+
+## Leave things as you found them
+
+Delete the repertoire lines you saved for testing and compare the counts with the backup
+(`select count(*) from repertoire_branches`, `… repertoire_nodes`). Close the tabs you
+opened. Never sign out, never bypass Lichess's bot check, never play moves in a real game.
+Run all the suites once more at the end, not after every change.
+
+## Report
+
+One line per finding, most serious first: what the user would see, how to make it happen,
+the cause (file and line), whether it is fixed, and which check now covers it. Say what
+you did **not** test. "No bugs found" is only worth saying together with the list of what
+was tried.
+
+## Two agents
+
+Two agents running the same checks find the same nothing. Split it:
+
+- **One attacks** (passes 1, 2 and 4) and writes its findings and suspicions down before
+  fixing anything.
+- **The other reviews**: reads that list and the diff, tries to break each fix, runs
+  pass 3 and all the suites, and looks for what the first one's list has no entry for.
+- Swap roles next time. Both work in this folder at once, so read `git status` and
+  `git diff` before committing, and commit only when the suites pass on the combined tree.

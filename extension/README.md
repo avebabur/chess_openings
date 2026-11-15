@@ -106,3 +106,6 @@ prints what's showing. To fix, hand an agent `extension/REPAIR.md`.
 - `scripts/engine_check.py`: asks Lichess's engine service for an analysis the way Lichess's page does, to test the engine link without a browser.
 - `../backend/lichess_engine_provider.py`: the app side that serves your Stockfish to Lichess.
 - `scripts/check.mjs`: the on-demand check.
+- `scripts/real-extension.mjs`: the real extension in a separate headless Chrome, at each of Lichess's layout widths, and its settings page.
+- `scripts/service-fuzz.py`: bad and simultaneous requests against a throwaway copy of the service and database.
+- `TESTING.md`: how an agent hunts for bugs (the two scripts above are part of it); `REPAIR.md`: what to do when Lichess changes.
