@@ -1,19 +1,25 @@
 // Starts the extension on a lichess.org page.
 (async () => {
   const OX = globalThis.OX;
+  OX.bridge.onPaused(paused => {
+    OX.state.pauseRevision++;
+    OX.state.paused = paused;
+    if (OX.started) OX.runner.tick();
+  });
   try {
     OX.settings = { ...OX.defaultSettings, ...(await OX.bridge.loadSettings()) };
   } catch { /* defaults */ }
+  const revision = OX.state.pauseRevision;
   try {
     const status = await OX.bridge.status();
-    OX.state.paused = !!status?.paused;
+    if (status?.reloading) return;
+    if (revision === OX.state.pauseRevision) OX.state.paused = status?.paused !== false;
     if (status?.autostart) OX.state.autostart = status.autostart;
   } catch {
     // Not answered: a game may be on in another tab, so stay paused until the
     // background script answers this page's own report (core.js reportPlaying).
-    OX.state.paused = true;
+    if (revision === OX.state.pauseRevision) OX.state.paused = true;
   }
-  OX.bridge.onPaused(paused => { OX.state.paused = paused; OX.runner.tick(); });
   const api = OX.bridge.api.bind(OX.bridge);
   OX.bridge.api = async (...args) => {
     try {
@@ -26,5 +32,6 @@
       throw error;
     }
   };
+  OX.started = true;
   OX.runner.start();
 })();

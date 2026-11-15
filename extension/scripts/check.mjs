@@ -109,10 +109,50 @@ const customStart = `<!doctype html><body>${topnav}
 <move p="(0"><san>Nf3</san></move><move p="(0aA" class="active"><san>Nc6</san></move></div></div></div>
 <div class="analyse__underboard"><div class="copyables"><div class="pair"><input class="copyable" value="r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3"></div></div></div>
 </main></body>`;
+// A study chapter that starts from a set-up position (an endgame lesson):
+// no FEN box, and Lichess lists no FEN among the chapter's tags, so only its
+// controller (window.site.analysis) knows the position.
+const SETUP_FEN = '8/8/2K5/3R4/8/8/8/k7 w - - 0 1';
+const studySetUp = `<!doctype html><body>${topnav}
+<main class="analyse variant-standard"><aside class="analyse__side"></aside>
+<div class="analyse__board main-board"><div class="cg-wrap orientation-white"></div></div>
+<div class="analyse__tools"><div class="ceval"></div><div class="analyse__moves areplay"><div class="tview2"></div></div></div>
+<div class="analyse__underboard"><table class="study__tags"><tbody><tr><th>Event</th><td>Rook endgames</td></tr></tbody></table></div>
+</main><script>window.site = { analysis: { node: { fen: '${SETUP_FEN}' }, tree: { root: { fen: '${SETUP_FEN}' } } } };</script></body>`;
+// A finished Lichess game's page with the two players named in the left
+// column and someone else among the spectators under the chat (Lichess lists
+// whoever is looking at the page there).
+const gamePage = (white, black, spectator) => finishedGame.replace('<div class="mselect"></div>',
+  `<div class="game__meta"><div class="game__meta__players">
+  <div class="player color-icon is white text"><a class="user-link" href="/@/${white}">${white}</a></div>
+  <div class="player color-icon is black text"><a class="user-link" href="/@/${black}">${black}</a></div></div></div>`)
+  .replace('</main>', `<div class="chat__members"><div class="chat__members__inner"><a class="user-link" href="/@/${spectator}">${spectator}</a></div></div></main>`);
+// The explorer with its settings open (the gear), as lila draws it.
+const explorerSettings = explorerPage.replace('explorer-box sub-box', 'explorer-box sub-box explorer__config')
+  .replace('<div class="data">', '<div class="config">');
 const fixtures = {
+  '/ox-fixture/checking': finishedGame,
+  '/ox-fixture/review': finishedGame,
+  '/ox-fixture/explorer-settings': explorerSettings,
+  '/ox-fixture/study-set-up': studySetUp,
+  '/ox-fixture/explorer-variant': explorerPage.replace('variant-standard', 'variant-crazyhouse'),
   '/ox-fixture/custom-start': customStart,
   '/ox-fixture/game': finishedGame,
+  '/ox-fixture/practice': finishedGame.replace('</main></body>', `</main><script>
+    let explorerOpen = false;
+    let running = true;
+    window.site = { analysis: {
+      togglePractice(enabled) { if (enabled) this.practice = { running: () => running, resume: () => { running = true; } }; },
+      activeControlBarTool: () => explorerOpen ? 'opening-explorer' : false,
+      explorer: { enabled: enabled => { explorerOpen = enabled; } },
+      actionMenu() {},
+      redraw() { document.body.classList.toggle('practice-visible', !!this.practice && running && !explorerOpen); },
+      suspendPractice() { explorerOpen = true; running = false; this.redraw(); },
+    } };
+  </script></body>`),
   '/ox-fixture/explorer': explorerPage,
+  '/ox-fixture/repertoire-delete': explorerPage,
+  '/ox-fixture/pagination': explorerPage,
   '/ox-fixture/live': `<!doctype html><body>${topnav}<main class="round"><div class="rclock rclock-bottom running"></div></main></body>`,
   '/ox-fixture/finished': `<!doctype html><body>${topnav}<main class="round"><div class="rmoves"><div class="result-wrap">1-0</div></div></main></body>`,
 };
@@ -128,6 +168,8 @@ const record = (page, ok, text) => {
 const browser = await chromium.launch({ channel: process.env.OX_CHROME_CHANNEL || 'chrome', headless: true });
 const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, bypassCSP: true });
 await context.addInitScript({ content: injected });
+let pageAttempts = 0;
+let deleteAttempts = 0;
 await context.route('https://ox.invalid/**', async route => {
   const request = route.request();
   const cors = {
@@ -136,6 +178,61 @@ await context.route('https://ox.invalid/**', async route => {
     'access-control-allow-methods': 'GET, POST, PUT, DELETE',
   };
   if (request.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors });
+  if (request.url() === 'https://ox.invalid/api/games/7' && new URL(request.frame().url()).pathname === '/ox-fixture/review') {
+    return route.fulfill({ status: 200, headers: cors, json: {
+      id: 7, source: 'chesscom', pgn: '1. e4 e5', user_color: 'white', white: 'You', black: 'Them',
+      result: '1-0', mistakes_analyzed_at: '2026-01-01', mistakes: [
+        { ply: 0, played_san: 'e4', best_san: 'd4', cp_before: 20, cp_after: -100 },
+      ],
+    } });
+  }
+  if (new URL(request.frame().url()).pathname === '/ox-fixture/repertoire-delete') {
+    const url = new URL(request.url());
+    const headers = { ...cors, 'content-type': 'application/json' };
+    if (url.pathname === '/api/repertoire/tree') {
+      const color = url.searchParams.get('color');
+      const branches = color === 'white' && !deleteAttempts
+        ? [{ id: 1, name: 'Disposable fixture line', moves_san: 'e4 e5', label: 'main' }]
+        : [];
+      return route.fulfill({ status: 200, headers, json: { color, branches } });
+    }
+    if (url.pathname === '/api/repertoire/tree/branches/1' && request.method() === 'DELETE') {
+      const first = ++deleteAttempts === 1;
+      await new Promise(resolve => setTimeout(resolve, 250));
+      return route.fulfill({ status: first ? 200 : 404, headers, json: {} });
+    }
+  }
+  if (new URL(request.frame().url()).pathname === '/ox-fixture/checking') {
+    const url = new URL(request.url());
+    const headers = { ...cors, 'content-type': 'application/json' };
+    if (url.pathname === '/api/games/7') {
+      return route.fulfill({ status: 200, headers, json: {
+        id: 7, source: 'chesscom', pgn: '1. e4 e5', user_color: 'white', white: 'You', black: 'Them',
+        result: '1-0', mistakes: [], mistakes_analyzed_at: null,
+      } });
+    }
+    if (url.pathname === '/api/analysis') {
+      return route.fulfill({ status: 200, headers, json: { running: true, game_id: 7, moves_done: 3, moves_total: 10, title: 'You vs Them' } });
+    }
+  }
+  if (new URL(request.frame().url()).pathname === '/ox-fixture/pagination') {
+    const url = new URL(request.url());
+    const headers = { ...cors, 'content-type': 'application/json' };
+    if (url.pathname === '/api/opening-tree') {
+      return route.fulfill({ status: 200, headers, json: {
+        total_games: 16, summary: { score: 50 },
+        moves: [{ san: 'e5', uci: 'e7e5', games: 16, win: 8, loss: 8, draw: 0, score: 50 }],
+      } });
+    }
+    if (url.pathname === '/api/position-games') {
+      const offset = Number(url.searchParams.get('offset'));
+      if (offset && ++pageAttempts === 1) return route.fulfill({ status: 503, headers, json: {} });
+      const games = Array.from({ length: offset ? 1 : 15 }, (_, i) => ({
+        id: i + offset + 1, user_color: 'white', white: 'White', black: 'Black', result: '1/2-1/2',
+      }));
+      return route.fulfill({ status: 200, headers, json: { games, total: 16 } });
+    }
+  }
   try {
     const res = await fetch(request.url().replace('https://ox.invalid', BACKEND), {
       method: request.method(),
@@ -154,6 +251,15 @@ await context.route('https://ox.invalid/**', async route => {
 await context.route('https://lichess.org/ox-fixture/**', route => {
   const html = fixtures[new URL(route.request().url()).pathname];
   return route.fulfill({ status: 200, contentType: 'text/html', body: html });
+});
+
+// Finished-game pages need a game's address (the card looks the game up by it).
+const lichessAccount = await fetch(`${BACKEND}/api/accounts`).then(r => r.json())
+  .then(accounts => accounts.find(a => a.platform === 'lichess')?.username).catch(() => null);
+await context.route('https://lichess.org/game/oxFixt0*', route => {
+  const mine = new URL(route.request().url()).pathname.endsWith('2');
+  const body = mine ? gamePage(lichessAccount, 'Opponent', 'Onlooker') : gamePage('Someone', 'Opponent', lichessAccount);
+  return route.fulfill({ status: 200, contentType: 'text/html', body });
 });
 
 const page = await context.newPage();
@@ -225,12 +331,48 @@ if (engineState.state === 'ready') {
 await page.screenshot({ path: join(outDir, 'analysis.png') });
 realReports.push(await lastReport());
 
+await page.setViewportSize({ width: 420, height: 900 });
+const narrowLayout = () => {
+  const board = document.querySelector('main.analyse .cg-wrap').getBoundingClientRect();
+  const panel = document.querySelector('[data-ox-host=repertoire]');
+  return {
+    stacked: panel.getBoundingClientRect().top >= board.bottom - 2,
+    cap: panel.style.getPropertyValue('--ox-max'),
+    overflow: document.documentElement.scrollWidth - innerWidth,
+  };
+};
+let narrow;
+for (let attempt = 0; attempt < 10; attempt++) {
+  narrow = await page.evaluate(narrowLayout);
+  if (narrow.stacked && !narrow.cap && narrow.overflow <= 1) break;
+  await page.waitForTimeout(250);
+}
+record('narrow analysis', narrow.stacked && !narrow.cap && narrow.overflow <= 1,
+  `narrow analysis: stacked ${narrow.stacked}, height cap ${narrow.cap || 'none'}, overflow ${narrow.overflow}px`);
+await page.setViewportSize({ width: 1440, height: 1000 });
+
 // Stepping back a move updates every feature to the new position.
 const fenBefore = await page.evaluate(() => globalThis.OX.state.position?.fen);
 await page.keyboard.press('ArrowLeft');
 await page.waitForTimeout(1200);
 const fenAfter = await page.evaluate(() => globalThis.OX.state.position?.fen);
 record('analysis', fenBefore && fenAfter && fenBefore !== fenAfter, 'analysis: the extension follows moves on the board');
+
+// Saving a line: the opening's name is suggested, selected so that typing
+// a name of your own replaces it.
+{
+  const form = await page.evaluate(async () => {
+    const root = document.querySelector('[data-ox-host=repertoire]')?.shadowRoot;
+    [...(root?.querySelectorAll('button') || [])].find(b => /save this line/i.test(b.textContent))?.click();
+    await new Promise(resolve => setTimeout(resolve, 1500));
+    const name = root?.querySelector('.saveform input');
+    const state = name && { value: name.value, selected: name.selectionStart === 0 && name.selectionEnd === name.value.length, focused: root.activeElement === name };
+    [...(root?.querySelectorAll('.saveform button') || [])].find(b => b.textContent === 'Cancel')?.click();
+    return state;
+  });
+  record('analysis', !!form?.value && form.selected && form.focused,
+    `analysis: Save this line suggests the opening's name, selected for typing over (“${form?.value || ''}”)`);
+}
 
 // 2. A study: no FEN box, so the position comes from the move list.
 const STUDY = process.env.OX_CHECK_STUDY || 'https://lichess.org/study/Of3mcPk8';
@@ -265,7 +407,10 @@ realReports.push(await lastReport());
 // 4. Your game, opened from My games: the game card in the left column.
 console.log('\nOpening one of your games');
 const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
-const someGame = (await (await fetch(`${BACKEND}/api/position-games?${new URLSearchParams({ fen: START_FEN, limit: 1 })}`)).json()).games?.[0];
+const history = (await (await fetch(`${BACKEND}/api/position-games?${new URLSearchParams({ fen: START_FEN, limit: 100 })}`)).json()).games || [];
+// A native Lichess game already shows both names. Use the Chess.com route
+// for the imported card assertions below, independent of the latest sync.
+const someGame = history.find(game => game.source === 'chesscom');
 if (someGame) {
   await open('https://lichess.org/analysis');
   await Promise.all([page.waitForNavigation({ waitUntil: 'domcontentloaded' }), page.evaluate(id => globalThis.OX.openMyGame(id, 6), someGame.id)]);
@@ -325,9 +470,101 @@ await page.click('.explorer-title .button-link:not(.ox-tab)');
 await page.waitForTimeout(400);
 record('explorer', await page.evaluate(() => !document.querySelector('.explorer-box').classList.contains('ox-mine')),
   "explorer: choosing one of Lichess's tabs leaves My games");
+await open('https://lichess.org/ox-fixture/game');
 record('finished-game layout',
   (await page.evaluate(() => globalThis.OX.state.position?.fen))?.startsWith('rnbqkbnr/pppppppp/8/8/4P3'),
   'finished-game layout: the position is read from the game page\'s FEN box');
+
+await open('https://lichess.org/ox-fixture/pagination');
+await page.getByRole('button', { name: 'My games' }).click();
+await page.locator('.ox-side').focus();
+await page.keyboard.press('Enter');
+await page.waitForFunction(() => document.activeElement?.matches('.ox-side'));
+record('explorer keyboard', await page.locator('.ox-side').textContent() === 'As black ⇄',
+  'explorer: switching sides with Enter keeps focus on the side button');
+await page.keyboard.press('Tab');
+await page.keyboard.press('Tab');
+record('explorer keyboard', await page.evaluate(() => document.activeElement?.getAttribute('aria-label') === 'Play e5'),
+  'explorer: Tab reaches the move button');
+await page.keyboard.press('Tab');
+record('explorer keyboard', await page.evaluate(() => document.activeElement?.getAttribute('aria-label') === 'Open White vs Black'),
+  'explorer: Tab reaches the first game button');
+await page.getByRole('button', { name: 'More games' }).press('Enter');
+const retry = page.getByRole('button', { name: 'Retry loading more games' });
+await retry.waitFor({ timeout: 5000 });
+const rows = page.locator('.ox-mine-content .games tbody tr');
+record('pagination', await rows.count() === 15 && await retry.evaluate(el => el === document.activeElement),
+  'pagination: a failed request keeps the games already loaded and focuses retry');
+await retry.press('Enter');
+await rows.nth(15).waitFor({ timeout: 5000 });
+record('pagination', await rows.count() === 16 && pageAttempts === 2
+  && await rows.nth(15).evaluate(el => el.contains(document.activeElement)),
+  'pagination: retry appends the missing games once and focuses the first new game');
+
+await open('https://lichess.org/ox-fixture/repertoire-delete');
+await page.getByRole('button', { name: 'Browse 1 line' }).click();
+await page.getByRole('button', { name: 'Delete this line' }).click();
+await page.getByRole('button', { name: 'Delete', exact: true }).dblclick();
+const repertoire = page.locator('[data-ox-host=repertoire]');
+await repertoire.getByText('Line deleted.').waitFor();
+record('repertoire delete', deleteAttempts === 1 && await repertoire.getByText('Disposable fixture line').count() === 0,
+  'repertoire: double-clicking Delete removes the line and sends one request');
+
+await open('https://lichess.org/ox-fixture/practice');
+record('practice', await page.evaluate(() => globalThis.OX.lichess.practice()
+  && document.body.classList.contains('practice-visible')), 'practice: starting Practice redraws Lichess controls');
+record('practice', await page.evaluate(() => {
+  window.site.analysis.suspendPractice();
+  return globalThis.OX.lichess.practice() && document.body.classList.contains('practice-visible');
+}), 'practice: starting from a different move resumes Practice and closes the explorer');
+await page.evaluate(() => globalThis.__oxHarness.setPaused(true));
+record('practice', await page.evaluate(() => !globalThis.OX.lichess.practice()),
+  'practice: the live lock blocks the Practice command');
+
+// The gear closes Lichess's explorer settings; with My games chosen on top of
+// them, that must not leave My games.
+await open('https://lichess.org/ox-fixture/explorer-settings');
+if (!await page.evaluate(() => document.querySelector('.explorer-box').classList.contains('ox-mine'))) await page.click('.ox-tab');
+await page.waitForTimeout(400);
+await page.click('.explorer-title .toconf');
+await page.waitForTimeout(400);
+record('explorer', await page.evaluate(() => document.querySelector('.explorer-box').classList.contains('ox-mine')),
+  "explorer: closing Lichess's settings keeps My games chosen");
+await page.click('.explorer-title .button-link:not(.ox-tab)');
+await page.waitForTimeout(400);
+
+// A check already running for the game on the board shows its own progress.
+await open('https://lichess.org/ox-fixture/checking');
+await page.evaluate(() => sessionStorage.setItem('ox.game:/ox-fixture/checking', '7'));
+await open('https://lichess.org/ox-fixture/checking');
+await page.waitForTimeout(1500);
+{
+  const text = await page.evaluate(() =>
+    [...(document.querySelector('[data-ox-host=game]')?.shadowRoot?.querySelectorAll('button') || [])].map(b => b.textContent).join(' | '));
+  record('your game', /Checking… move 4 of 10/.test(text), `your game: a running check of this game shows how far it is (“${text.slice(0, 60)}”)`);
+}
+await page.evaluate(() => sessionStorage.setItem('ox.game:/ox-fixture/review', '7'));
+await open('https://lichess.org/ox-fixture/review');
+await page.evaluate(() => document.addEventListener('ox-lichess', event => {
+  const { name, args } = JSON.parse(event.detail);
+  if (name === 'jumpToMain') window.reviewJump = args[0];
+}));
+await page.getByRole('button', { name: /e4.*best d4/ }).press('Enter');
+record('your game', await page.evaluate(() => window.reviewJump === 0),
+  'your game: Enter on a mistake jumps to the position before it');
+
+// "Sync games" is offered on your own Lichess games only, not on a game you
+// are merely looking at (Lichess lists you among its spectators).
+if (lichessAccount) {
+  const offer = () => page.evaluate(() =>
+    /isn't in My games yet/.test(document.querySelector('[data-ox-host=game]')?.shadowRoot?.textContent || ''));
+  await open('https://lichess.org/game/oxFixt01');
+  await page.waitForTimeout(1000);
+  record('your game', !(await offer()), "someone else's game: Sync games is not offered because you are watching it");
+  await open('https://lichess.org/game/oxFixt02');
+  await page.waitForTimeout(1000);
+  record('your game', await offer(), 'your own Lichess game, not imported yet: Sync games is offered');
+}
 
 await open('https://lichess.org/ox-fixture/custom-start');
 await page.waitForTimeout(1500);
@@ -335,16 +572,41 @@ record('custom start', await page.evaluate(() => globalThis.OX.currentLine() ===
   && !/save this line/i.test(document.querySelector('[data-ox-host=repertoire]')?.shadowRoot?.textContent || '')),
   'custom start: moves from a set-up position are not offered as a line to save');
 
+await open('https://lichess.org/ox-fixture/study-set-up');
+await page.waitForTimeout(1000);
+record('study from a position', await page.evaluate(fen => globalThis.OX.state.position?.fen === fen
+  && globalThis.OX.currentLine() === null, SETUP_FEN),
+  "study from a set-up position: the position is Lichess's own, not the normal start");
+
+await open('https://lichess.org/ox-fixture/explorer');
+record('explorer', await page.evaluate(() => getComputedStyle(document.querySelector('.explorer-title .player')).display === 'none'),
+  "explorer: Lichess's Player tab gives way to My games");
+await page.evaluate(() => globalThis.__oxHarness.setPaused(true));
+record('explorer', await page.evaluate(() => getComputedStyle(document.querySelector('.explorer-title .player')).display !== 'none'
+  && !document.querySelector('.ox-tab')), 'explorer: the live lock restores Lichess’s Player tab');
+await open('https://lichess.org/ox-fixture/explorer-variant');
+record('explorer', await page.evaluate(() => getComputedStyle(document.querySelector('.explorer-title .player')).display !== 'none'
+  && !document.querySelector('.ox-tab')),
+  "explorer: on a variant board (no My games) Lichess's Player tab stays");
+
 await open('https://lichess.org/ox-fixture/finished');
 record('finished game', (await page.evaluate(() => globalThis.__oxHarness.playing.at(-1))) === false,
   'finished game: the lock is released once the result shows');
 
 await open('https://lichess.org/analysis/pgn/e4_e5');
+await page.evaluate(() => {
+  const host = document.querySelector('[data-ox-host=repertoire]');
+  if (host) host.after(host.cloneNode(false));
+});
 await page.evaluate(() => globalThis.__oxHarness.setPaused(true)); // a game started in another tab
 await page.waitForTimeout(800);
 const paused = await statuses();
 expectStatuses('paused', paused, { engine: 'paused', repertoire: 'paused', mine: 'paused' });
-record('paused', (await hosts()).length === 0, 'paused: the boxes are removed while a game runs elsewhere');
+const pausedHosts = await hosts();
+record('paused', pausedHosts.length === 0,
+  `paused: the boxes are removed while a game runs elsewhere (${pausedHosts.map(host => host.id).join(', ') || 'none'})`);
+record('paused', await page.evaluate(() => document.documentElement.hasAttribute('data-ox-paused')
+  && !globalThis.OX.lichess.restartCeval()), 'paused: the page bridge refuses to restart analysis');
 await page.evaluate(() => globalThis.__oxHarness.setPaused(false));
 await page.waitForTimeout(800);
 record('paused', (await statuses()).engine === 'ok', 'paused: everything returns when the game ends');
@@ -375,6 +637,55 @@ page.on('pageerror', error => pageErrors.push(String(error)));
 await page.keyboard.press('ArrowLeft');
 await page.waitForTimeout(800);
 record('simulated change', pageErrors.length === 0, `simulated change: Lichess's page has no errors (${pageErrors.length})`);
+
+// Settings use a separate extension context in Chrome. Simulate only
+// its message API so destructive controls are exercised on disposable data.
+const settingsContext = await browser.newContext();
+await settingsContext.addInitScript(() => {
+  let accounts = [{ id: 1, platform: 'lichess', username: 'Fixture', games: 10 }];
+  let offline = true;
+  window.settingsWrites = 0;
+  window.chrome.runtime = {
+    async sendMessage({ method, path }) {
+      if (offline) {
+        offline = false;
+        return { ok: false, offline: true };
+      }
+      if (method === 'DELETE') {
+        window.settingsWrites++;
+        accounts = [];
+      }
+      return { ok: true, data: path === '/analysis'
+        ? { running: false, unchecked: 8 }
+        : { accounts, has_lichess_token: true } };
+    },
+  };
+});
+await settingsContext.route('https://settings.invalid/**', route => {
+  const name = new URL(route.request().url()).pathname.slice(1);
+  const contentType = { 'settings.html': 'text/html', 'settings.js': 'text/javascript', 'settings.css': 'text/css' }[name];
+  return contentType ? route.fulfill({ status: 200, contentType, body: read(name) }) : route.abort();
+});
+const settingsPage = await settingsContext.newPage();
+await settingsPage.goto('https://settings.invalid/settings.html');
+await settingsPage.getByText('Local service is starting. Try again shortly.').waitFor();
+await settingsPage.getByText('Connected to the local service').waitFor();
+record('settings', await settingsPage.getByText('2 of 10 games are checked.', { exact: false }).isVisible(),
+  'settings: recovers from an offline service and shows progress');
+await settingsPage.getByLabel('Username').fill('bad/name');
+await settingsPage.getByRole('button', { name: 'Add and import' }).click();
+record('settings', await settingsPage.getByText('usernames can\'t contain spaces', { exact: false }).isVisible(),
+  'settings: rejects an invalid username before importing');
+await settingsPage.getByRole('button', { name: 'Remove', exact: true }).dblclick();
+const confirm = settingsPage.getByRole('button', { name: 'Confirm deletion of Fixture and its imported games' });
+record('settings', await confirm.isVisible() && await settingsPage.evaluate(() => window.settingsWrites) === 0,
+  'settings: double-clicking Remove only arms the confirmation');
+await settingsPage.getByRole('button', { name: 'Cancel', exact: true }).click();
+await settingsPage.getByRole('button', { name: 'Remove', exact: true }).press('Enter');
+await confirm.press('Enter');
+await settingsPage.getByText('Fixture removed.').waitFor();
+record('settings', await settingsPage.evaluate(() => window.settingsWrites) === 1,
+  'settings: cancellation preserves the account and explicit keyboard confirmation removes it once');
 
 await browser.close();
 

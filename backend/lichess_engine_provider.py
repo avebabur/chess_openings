@@ -54,6 +54,7 @@ KEEP_ALIVE_SECONDS = 300  # an idle Stockfish is closed after this
 # makes every normal-Practice search that many seconds, sent at the end.
 PRACTICE_SECONDS = float(os.environ.get("OPENINGS_PRACTICE_SECONDS", "0"))
 SECRET_SETTING = "lichess_engine_secret"
+EMPTY_SEARCH = b"bestmove (none)\n"
 
 
 def search_command(work, practice_seconds=PRACTICE_SECONDS):
@@ -208,7 +209,7 @@ class UciProcess:
                 log.warning("Lichess engine: Stockfish did not stop in time")
         self.searching = False
 
-    async def analyse(self, job, started, practice_seconds=PRACTICE_SECONDS, record=None):
+    async def analyse(self, job, started, practice_seconds=PRACTICE_SECONDS, record=None, interrupted=lambda: False):
         """Run one job, yielding the lines Lichess expects. ``record`` (a dict)
         is filled in as it runs, for GET /api/lichess-engine's "recent"."""
         work = job["work"]
@@ -237,18 +238,24 @@ class UciProcess:
             moves = " ".join(work.get("moves") or [])
             await self.send(f"position fen {work['initialFen']}" + (f" moves {moves}" if moves else ""))
             command, quiet = search_command(work, practice_seconds)
-            await self.send(command)
+            if interrupted():
+                record["ended"] = "paused: answered with nothing"
+                yield EMPTY_SEARCH
+                return
             self.searching = True
+            await self.send(command)
             started.set()
             record.update(go=command, quiet=quiet, lines=0, ended="running")
 
             last_info = None
             last_rest = None  # the newest report sent, to restate as complete
             last_ping = time.monotonic()
-            while True:
+            while not interrupted():
                 try:
                     head, rest = await self.recv(timeout=max(0.01, 15 + last_ping - time.monotonic()))
                 except asyncio.TimeoutError:
+                    if interrupted():
+                        break
                     record["keepalives"] = record.get("keepalives", 0) + 1
                     yield b'{"keepalive":true}\n'
                     last_ping = time.monotonic()
@@ -256,6 +263,9 @@ class UciProcess:
                 self.last_used = time.monotonic()
                 if head == "bestmove":
                     self.searching = False
+                if interrupted():
+                    break
+                if head == "bestmove":
                     if quiet and last_info:
                         record["lines"] += 1
                         yield last_info
@@ -264,6 +274,8 @@ class UciProcess:
                         if complete != last_rest:
                             record["completed"] = True
                             yield f"info {complete}\n".encode()
+                    if interrupted():
+                        break
                     record.update(ended=f"bestmove {rest.split()[0] if rest else ''}",
                                   seconds=round(time.monotonic() - began, 2))
                     yield f"bestmove {rest}\n".encode()
@@ -286,6 +298,8 @@ class UciProcess:
                         last_rest = rest
                         record["lines"] += 1
                         yield f"info {rest}\n".encode()
+            record.update(ended="paused: answered with nothing", seconds=round(time.monotonic() - began, 2))
+            yield EMPTY_SEARCH
         finally:
             started.set()
             if record.get("ended") == "running":
@@ -340,6 +354,7 @@ class LichessEngineProvider:
         # starts paused (main.py): until the extension has said whether a game
         # is on, one may be.
         self.paused = bool(paused)
+        self._pause_generation = 0
         self.recent = collections.deque(maxlen=40)  # what Lichess asked, newest last
 
     def status(self):
@@ -356,10 +371,12 @@ class LichessEngineProvider:
         }
 
     async def set_paused(self, paused):
+        if paused and not self.paused:
+            self._pause_generation += 1
         self.paused = bool(paused)
-        if self.paused and self._engine and self._engine.alive():
+        if self.paused and self._engine and self._engine.searching:
             try:
-                await self._engine.stop()  # the job in progress ends with what it has
+                await self._engine.stop()
             except EOFError:
                 pass
 
@@ -460,6 +477,11 @@ class LichessEngineProvider:
             if self.paused:
                 await self._answer_nothing(http, job)
                 continue
+            generation = self._pause_generation
+
+            def interrupted(generation=generation):
+                return self.paused or generation != self._pause_generation
+
             if self._engine and self._engine.alive():
                 try:
                     await self._engine.stop()
@@ -467,10 +489,13 @@ class LichessEngineProvider:
                     pass
             if self._job_task:
                 await asyncio.gather(self._job_task, return_exceptions=True)
+            if interrupted():
+                await self._answer_nothing(http, job)
+                continue
             if not (self._engine and self._engine.alive()):
                 self._engine = await UciProcess.create(self._stockfish_path)
             started = asyncio.Event()
-            self._job_task = asyncio.create_task(self._handle(http, job, started))
+            self._job_task = asyncio.create_task(self._handle(http, job, started, interrupted))
             await started.wait()
 
     async def _answer_nothing(self, http, job):
@@ -486,12 +511,12 @@ class LichessEngineProvider:
         self.recent.append(record)
         try:
             res = await http.post(f"{BROKER}/api/external-engine/work/{job['id']}",
-                                  content=b"bestmove (none)\n", timeout=10)
+                                  content=EMPTY_SEARCH, timeout=10)
             record["broker"] = res.status_code
         except httpx.HTTPError as exc:
             record["broker"] = f"error: {exc.__class__.__name__}"
 
-    async def _handle(self, http, job, started):
+    async def _handle(self, http, job, started, interrupted):
         self.jobs += 1
         if self._on_activity:
             self._on_activity()
@@ -502,7 +527,7 @@ class LichessEngineProvider:
             "moves": len(work.get("moves") or []),
         }
         self.recent.append(record)
-        lines = self._engine.analyse(job, started, record=record)
+        lines = self._engine.analyse(job, started, record=record, interrupted=interrupted)
         try:
             res = await http.post(f"{BROKER}/api/external-engine/work/{job['id']}",
                                   content=lines, timeout=httpx.Timeout(None))

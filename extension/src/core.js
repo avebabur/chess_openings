@@ -44,7 +44,7 @@
     }
   };
 
-  OX.state = { paused: false, position: null, offline: false, autostart: null };
+  OX.state = { paused: true, pauseRevision: 0, position: null, offline: false, autostart: null };
   // mineOpen: the explorer's My games tab is the chosen one.
   OX.defaultSettings = { mineOpen: false };
 
@@ -60,9 +60,17 @@
     OX.emit('settings', key);
   };
 
-  // Position key for matching FENs: placement, side to move, castling. The
-  // en-passant field is left out (Lichess and the app may disagree on it).
-  OX.positionKey = fen => fen.split(' ').slice(0, 3).join(' ');
+  // Match the app's EPD key: en passant distinguishes a position only when
+  // the capture is legal. Lichess may include an unplayable square in its FEN;
+  // chess.js removes it. Most positions need no replay at all.
+  OX.positionKey = fen => {
+    const fields = fen.split(' ');
+    if (fields[3] && fields[3] !== '-') {
+      try { fields[3] = new globalThis.OXChess(fen).fen().split(' ')[3]; }
+      catch { /* An incomplete FEN simply won't match a prepared position. */ }
+    }
+    return fields.slice(0, 4).join(' ');
+  };
 
   // "+0.20", "-1.35", "#3", "#-2" from a White-POV eval (mates are ±(1000+n)).
   OX.formatEval = value => {
@@ -106,10 +114,11 @@
 
   // The id of the Lichess game this page is about (/abcd1234, /abcd1234/black,
   // /game/abcd1234, or the 12-character address of a game you played), or
-  // null. "/analysis" has the same shape as a game id and is not one.
+  // null. "/analysis" and a few other pages have the shape of a game id and
+  // are not one (OX.notGames in anchors.js).
   OX.lichessGameId = () => {
     const id = /^\/(?:game\/)?([A-Za-z0-9]{8})(?:[A-Za-z0-9]{4})?(?:\/(?:white|black))?\/?$/.exec(location.pathname)?.[1];
-    return id && id !== 'analysis' ? id : null;
+    return id && !OX.notGames.includes(id) ? id : null;
   };
 
   // Pages where the analysis features are expected, so a missing anchor there
@@ -126,6 +135,13 @@
     return variants.length === 0 || variants.some(c => OX.standardVariantClasses.includes(c));
   };
 
+  // Lichess's one-column layout (a narrow window). It says how many columns
+  // it draws in a CSS variable on <body> (lila ui/lib displayColumns).
+  OX.oneColumn = () => {
+    try { return getComputedStyle(document.body).getPropertyValue('---display-columns').trim() === '1'; }
+    catch { return false; }
+  };
+
   OX.interactiveLesson = () =>
     !!OX.$(A.analysePage.selector)?.classList.contains(OX.gamebookClass);
 
@@ -138,7 +154,14 @@
   };
 
   OX.readPosition = () => {
-    if (OX.positionAnchor() === 'moveList') return positionFromMoves();
+    if (OX.positionAnchor() === 'moveList') {
+      // No FEN box (a study): Lichess's own controller knows the position,
+      // also in a chapter that starts from a set-up position. The move list
+      // is replayed only when the controller can't be reached.
+      const fen = OX.lichess.position()?.fen;
+      if (fen && fen.split(' ').length >= 4) return { fen, key: OX.positionKey(fen) };
+      return positionFromMoves();
+    }
     const fen = OX.$(A.fenInput.selector)?.value?.trim();
     if (!fen || fen.split(' ').length < 4) return null;
     return { fen, key: OX.positionKey(fen) };
@@ -147,7 +170,12 @@
   const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
   let movesCache = { id: null, position: null };
 
+  // The position the board started from. Lichess's controller says (a study
+  // does not list a chapter's set-up position among its tags); the tags are
+  // read only when the controller can't be reached.
   function chapterStartFen() {
+    const start = OX.lichess.position()?.start;
+    if (start && start.split(' ').length >= 4) return start;
     const tags = OX.$(A.studyTags.selector);
     if (!tags) return START_FEN;
     for (const row of tags.querySelectorAll('tr')) {
@@ -164,7 +192,7 @@
   // position). Not checked against the board: see currentLine.
   OX.movesOnBoard = () => {
     const list = OX.$(A.moveList.selector);
-    if (!list || chapterStartFen() !== START_FEN) return null;
+    if (!list || OX.positionKey(chapterStartFen()) !== OX.positionKey(START_FEN)) return null;
     const path = OX.$(A.activeMove.selector, list)?.getAttribute('p') || '';
     const sans = [];
     for (let end = 2; end <= path.length; end += 2) {
@@ -209,12 +237,12 @@
       }
       if (ok) position = { fen: chess.fen(), key: OX.positionKey(chess.fen()) };
     } catch { position = null; }
-    movesCache = { id, position };
+    if (position) movesCache = { id, position };
     return position;
   }
 
   // ---------- features ----------
-  // A feature: { id, name, pages, anchors, place?, needsPosition, create() }
+  // A feature: { id, name, pages, anchors, place?, needsPosition, expected?, create() }
   //   place: { anchor, where: 'after' | 'prepend' | 'append', order, shadow }
   //   create(host, root) -> { update(position), destroy() }
   const features = [];
@@ -263,8 +291,11 @@
     if (!due) return;
     lastPlaying = playing;
     playingSentAt = Date.now();
+    const revision = OX.state.pauseRevision;
     OX.bridge.setPlaying(playing).then(res => {
-      if (res && typeof res.paused === 'boolean') OX.state.paused = res.paused;
+      if (typeof res?.paused === 'boolean') {
+        if (revision === OX.state.pauseRevision && playing === lastPlaying) OX.state.paused = res.paused;
+      }
       else setTimeout(() => { lastPlaying = null; }, 1000); // not heard: say it again shortly
     });
   }
@@ -353,16 +384,22 @@
     const playing = OX.liveGameOnPage();
     reportPlaying(playing);
     const paused = OX.state.paused || playing;
+    if (kind === 'analyse') document.documentElement.toggleAttribute('data-ox-paused', paused);
     // A game elsewhere just ended: during it your Stockfish answered this
     // page's engine bar with nothing, so ask Lichess to search again (once
     // the engine has surely heard; the background tells it first).
-    if (wasPaused && !paused && kind === 'analyse') setTimeout(() => { if (!OX.state.paused) OX.lichess.restartCeval(); }, 500);
+    if (wasPaused && !paused && kind === 'analyse') {
+      setTimeout(() => { if (!OX.retired && !OX.state.paused) OX.lichess.restartCeval(); }, 500);
+    }
     wasPaused = paused;
     const inGrace = Date.now() - pageStart < GRACE_MS;
     const position = kind === 'analyse' && !paused && OX.standardVariant() ? OX.readPosition() : null;
     OX.state.position = position;
-    const positionChanged = (position?.key || null) !== lastPositionKey;
-    lastPositionKey = position?.key || null;
+    // A repetition or transposition can keep the same position but change
+    // which line to save, what to extend, and where it left the repertoire.
+    const positionKey = position ? `${position.fen}|${OX.$(A.activeMove.selector)?.getAttribute('p') || ''}` : null;
+    const positionChanged = positionKey !== lastPositionKey;
+    lastPositionKey = positionKey;
 
     for (const feature of features) {
       const entry = run.get(feature.id) || {};
@@ -370,7 +407,7 @@
       if (paused && feature.pauses !== false) { teardown(feature.id); setStatus(feature.id, 'paused'); continue; }
       if (entry.failed) continue; // stays out until the page reloads
       if (kind === 'analyse' && !OX.standardVariant()) { teardown(feature.id); setStatus(feature.id, 'n/a', 'variant'); continue; }
-      if (kind === 'analyse' && OX.interactiveLesson() && feature.needsPosition) {
+      if (kind === 'analyse' && OX.interactiveLesson()) {
         teardown(feature.id); setStatus(feature.id, 'n/a', 'interactive lesson'); continue;
       }
 
@@ -385,7 +422,9 @@
       }
       if (missing.length || (feature.needsPosition && !position)) {
         teardown(feature.id);
-        const expected = kind !== 'analyse' || OX.analysisExpected();
+        // feature.expected: the feature's own say on whether its place
+        // should exist on this page (Lichess leaves its engine out of some).
+        const expected = (kind !== 'analyse' || OX.analysisExpected()) && feature.expected?.() !== false;
         // A feature that was showing and lost its anchor gets a short wait
         // (Lichess may be mid-redraw); one never seen gets the page-load grace.
         const gone = run.get(feature.id) || {};
@@ -409,6 +448,12 @@
           entry.needsUpdate = true;
         }
       } catch (error) { fail(feature, error); continue; }
+    }
+
+    // A redraw or reinjection can leave copies of hosts the current runner
+    // does not own. Remove those too, so pause and reload leave one clear state.
+    for (const host of document.querySelectorAll('[data-ox-host]')) {
+      if (run.get(host.dataset.oxHost)?.host !== host) host.remove();
     }
 
     // Place every mounted host (re-inserting any Lichess's re-draw removed).
@@ -438,7 +483,9 @@
         if (entry.needsUpdate || positionChanged) {
           entry.needsUpdate = false;
           // update() may be async: a rejection takes just this feature out too.
-          Promise.resolve(entry.instance.update?.(position)).catch(error => fail(feature, error));
+          Promise.resolve(entry.instance.update?.(position)).catch(error => {
+            if (run.get(feature.id) === entry) fail(feature, error);
+          });
         }
         entry.instance.tick?.(position);
       } catch (error) { fail(feature, error); continue; }
@@ -469,7 +516,8 @@
     if (statuses.some(([, s]) => s === 'waiting')) return; // never report a moment mid-redraw
     const report = {
       page_kind: kind,
-      url: location.origin + location.pathname,
+      // A game opened from My games has all its moves in its address.
+      url: (location.origin + location.pathname).slice(0, 300),
       extension_version: OX.bridge.version,
       features: Object.fromEntries(features.map(f => {
         const entry = run.get(f.id) || {};

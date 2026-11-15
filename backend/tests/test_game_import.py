@@ -32,6 +32,34 @@ class GameImportTests(unittest.TestCase):
             with self.assertRaisesRegex(module.ImportError_, "could not be reached"):
                 module.sync_account(account)
 
+    def test_chesscom_import_skips_games_from_a_set_up_position(self):
+        module = importlib.reload(game_import)
+
+        def game(uuid, pgn):
+            return {
+                "uuid": uuid, "rules": "chess", "time_class": "rapid", "end_time": 1_700_000_000,
+                "white": {"username": "me", "rating": 1100}, "black": {"username": "opp", "rating": 1090},
+                "pgn": pgn,
+            }
+
+        games = [
+            game("normal", '[Result "1-0"]\n\n1. e4 e5 1-0'),
+            game("odds", '[SetUp "1"]\n[FEN "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBN1 w Qkq - 0 1"]\n\n1. e4 e5 1-0'),
+            game("normal-with-fen", '[SetUp "1"]\n[FEN "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"]\n\n1. d4 d5 1-0'),
+        ]
+
+        def answer(request):
+            if request.url.path.endswith("/archives"):
+                return httpx.Response(200, json={"archives": ["https://api.chess.com/pub/player/me/games/2023/11"]})
+            return httpx.Response(200, json={"games": games})
+
+        saved = []
+        with httpx.Client(transport=httpx.MockTransport(answer)) as client, \
+                patch.object(module.db, "save_imported_games",
+                             side_effect=lambda batch: saved.extend(batch) or {"imported": len(batch)}):
+            module.import_chesscom("me", 1, client=client)
+        self.assertEqual(sorted(g["external_id"] for g in saved), ["normal", "normal-with-fen"])
+
     def test_lichess_import_skips_games_that_were_never_played(self):
         module = importlib.reload(game_import)
 

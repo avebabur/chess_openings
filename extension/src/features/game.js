@@ -29,13 +29,13 @@
       location.href = `/${lichessId}${game.user_color === 'black' ? '/black' : ''}#${ply ?? plies}`;
       return;
     }
-    try { localStorage.setItem(KEY, JSON.stringify({ id: gameId, path })); } catch { /* blocked */ }
+    try { sessionStorage.setItem(`${KEY}:${decodeURIComponent(path)}`, String(gameId)); } catch { /* blocked */ }
     location.href = `${path}#${ply ?? plies}`;
   };
 
   // Brings in your newest games from every account (chess.com and Lichess),
-  // as the app's Sync button does. Resolves with how many new games came in;
-  // onProgress(text) is told what is happening. The app checks new games for
+  // as the app's Sync button does. Reports partial failures as well as games
+  // imported by the accounts that did finish. The app checks new games for
   // mistakes on its own after a sync.
   let syncing = null;
   OX.syncGames = (onProgress = () => {}) => {
@@ -44,23 +44,46 @@
       const accounts = await OX.bridge.api('GET', '/accounts');
       if (!accounts.length) throw new Error('No game accounts yet. Click the extension icon to add one.');
       onProgress('Syncing your games…');
-      let jobs = await Promise.all(accounts.map(a => OX.bridge.api('POST', `/accounts/${a.id}/sync`)));
+      let jobs = await Promise.all(accounts.map(async account => {
+        try { return { account, job: await OX.bridge.api('POST', `/accounts/${account.id}/sync`) }; }
+        catch (error) { return { account, error }; }
+      }));
       const started = Date.now();
-      while (jobs.some(j => j.status === 'queued' || j.status === 'running')) {
+      while (jobs.some(({ job }) => job?.status === 'queued' || job?.status === 'running')) {
         if (Date.now() - started > 5 * 60 * 1000) throw new Error('The sync is taking longer than expected. Check its progress in extension settings.');
         await new Promise(resolve => setTimeout(resolve, 1500));
-        jobs = await Promise.all(jobs.map(j => (j.status === 'queued' || j.status === 'running'
-          ? OX.bridge.api('GET', `/sync-jobs/${j.id}`) : j)));
-        const seen = jobs.reduce((n, j) => n + (j.seen || 0), 0);
+        jobs = await Promise.all(jobs.map(async item => {
+          const { job } = item;
+          if (job?.status !== 'queued' && job?.status !== 'running') return item;
+          try { return { ...item, job: await OX.bridge.api('GET', `/sync-jobs/${job.id}`), pollFailures: 0 }; }
+          catch (error) {
+            const pollFailures = (item.pollFailures || 0) + 1;
+            // One missed reply does not mean the server-side job stopped.
+            if (pollFailures < 3) return { ...item, pollFailures };
+            return { ...item, job: { ...job, status: 'failed' }, error };
+          }
+        }));
+        const seen = jobs.reduce((n, { job }) => n + (job?.seen || 0), 0);
         if (seen) onProgress(`Syncing your games… ${seen} looked at`);
       }
-      const failed = jobs.filter(j => j.status === 'failed');
-      if (failed.length === jobs.length) throw new Error(failed[0].error || "The sync didn't work.");
-      return jobs.reduce((n, j) => n + (j.imported || 0), 0);
+      const failures = jobs.flatMap(({ account, job, error }) => {
+        const cause = error?.message || (job?.status === 'failed' ? job.error || 'sync failed' : job?.status === 'cancelled' ? 'cancelled' : null);
+        return cause ? [`${account.username}: ${cause}`] : [];
+      });
+      const warnings = jobs.flatMap(({ account, job }) => (job?.warnings || []).map(warning => `${account.username}: ${warning}`));
+      return { count: jobs.reduce((n, { job }) => n + (job?.imported || 0), 0), failures, warnings };
     })().finally(() => { syncing = null; });
     return syncing;
   };
-  OX.syncedText = count => (count ? `${count} new game${count === 1 ? '' : 's'} synced` : 'Up to date: no new games');
+  OX.syncedText = ({ count, failures = [], warnings = [] }) => {
+    const base = count ? `${count} new game${count === 1 ? '' : 's'} synced`
+      : failures.length ? 'No new games synced' : 'Up to date: no new games';
+    const problems = [
+      failures.length ? `${failures.length} account${failures.length === 1 ? '' : 's'} failed: ${failures.join('; ')}` : '',
+      warnings.length ? `${warnings.length} warning${warnings.length === 1 ? '' : 's'}: ${warnings.join('; ')}` : '',
+    ].filter(Boolean);
+    return problems.length ? `${base}. ${problems.join('. ')}` : base;
+  };
   OX.syncErrorText = error => (error.offline ? OX.offlineText() : error.status ? "Couldn't sync your games." : error.message);
 
   const moveLabel = (ply, san) => `${Math.floor(ply / 2) + 1}${ply % 2 ? '…' : '.'} ${san}`;
@@ -80,8 +103,14 @@
 
   function current() {
     try {
+      const path = decodeURIComponent(location.pathname);
+      // As a number, like the app's own ids: the check's progress is told
+      // apart from another game's by comparing the two.
+      const id = Number(sessionStorage.getItem(`${KEY}:${path}`));
+      if (id > 0) return { id };
+      // Older builds shared a single record across every Lichess tab.
       const saved = JSON.parse(localStorage.getItem(KEY) || 'null');
-      return saved && decodeURIComponent(location.pathname) === decodeURIComponent(saved.path) ? saved : null;
+      return saved && path === decodeURIComponent(saved.path) ? saved : null;
     } catch { return null; }
   }
 
@@ -178,7 +207,9 @@
         try { accounts = await OX.bridge.api('GET', '/accounts'); } catch { return; }
         if (!alive) return;
         const names = accounts.filter(a => a.platform === 'lichess').map(a => a.username.toLowerCase());
-        const players = [...document.querySelectorAll('a.user-link[href^="/@/"]')]
+        // The two players only: Lichess lists you among the spectators of
+        // any game you look at, and names in the chat are links too.
+        const players = [...document.querySelectorAll(OX.anchors.gamePlayers.selector)]
           .map(a => decodeURIComponent(a.getAttribute('href').slice(3)).split(/[/?#]/)[0].toLowerCase());
         if (!names.some(name => players.includes(name))) return; // not one of your games
         const button = OX.el('button', { class: 'btn primary', text: 'Sync games' });
@@ -186,10 +217,10 @@
         button.addEventListener('click', async () => {
           button.disabled = true;
           try {
-            const count = await OX.syncGames(text => { note.textContent = text; });
-            note.textContent = OX.syncedText(count);
+            const result = await OX.syncGames(text => { note.textContent = text; });
+            note.textContent = OX.syncedText(result);
             if (await find()) { load(); return; }
-            note.textContent = `${OX.syncedText(count)}, but not this game yet: Lichess can take a minute to list it.`;
+            if (!result.failures.length) note.textContent += ', but not this game yet: Lichess can take a minute to list it.';
           } catch (error) {
             note.textContent = OX.syncErrorText(error);
           }
@@ -224,8 +255,8 @@
         const label = `vs ${opponent}`;
         const mistakes = game.mistakes || [];
         // A row jumps to the position before the mistake.
-        const list = mistakes.map(m => OX.el('div', {
-          class: 'mistake',
+        const list = mistakes.map(m => OX.el('button', {
+          type: 'button', class: 'mistake',
           title: "Go to the position before this move.\nThe evaluation before → after it, from White's side, as on Lichess's bar.",
           onclick: () => OX.lichess.jumpToPly(m.ply),
         },
@@ -260,7 +291,13 @@
             game.mistakes_analyzed_at ? null : check,
             OX.el('button', {
               class: 'btn', title: "Lichess's Practice with computer, on your Stockfish, from the position on the board",
-              onclick: () => OX.lichess.practice(), text: 'Practice from here',
+              onclick: () => {
+                if (OX.lichess.practice()) return;
+                const message = OX.el('span', { class: 'dim', role: 'status', text: 'Practice is unavailable at this position.' });
+                const controls = body.querySelector('.btns');
+                if (controls && !controls.querySelector('[role=status]')) controls.append(message);
+              },
+              text: 'Practice from here',
             })),
         );
       }

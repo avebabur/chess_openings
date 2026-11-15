@@ -17,14 +17,19 @@
     const chess = new globalThis.OXChess(START);
     const keys = [OX.positionKey(START)];
     const ucis = [];
+    const played = [];
     try {
       for (const san of sans) {
         const move = chess.move(san);
+        // The move as chess.js writes it, so a line from the app and the
+        // same line from Lichess's move list compare equal however each
+        // wrote a move ("Nge2" / "Ne2", with or without "+").
+        played.push(move.san);
         ucis.push(move.from + move.to + (move.promotion || ''));
         keys.push(OX.positionKey(chess.fen()));
       }
     } catch { return null; }
-    return { sans: [...sans], ucis, keys };
+    return { sans: played, ucis, keys };
   }
 
   // positions: key -> { moves: {white: Map(san -> move), black}, reached, ends }

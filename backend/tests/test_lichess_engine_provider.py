@@ -252,6 +252,36 @@ class AnalyseTests(unittest.TestCase):
         lines = self._lines(_job(nodes=600000))
         self.assertEqual(lines, ["info depth 3 score cp 30 nodes 600000 pv e2e4", "bestmove e2e4"])
 
+    def test_search_paused_before_go_sends_no_analysis(self):
+        async def go():
+            engine = await lep.UciProcess.create(str(self.engine_path))
+            try:
+                started = asyncio.Event()
+                lines = [line async for line in engine.analyse(_job(), started, interrupted=lambda: True)]
+                self.assertEqual(lines, [lep.EMPTY_SEARCH])
+                self.assertTrue(started.is_set())
+                self.assertFalse(engine.searching)
+            finally:
+                await engine.terminate()
+
+        asyncio.run(go())
+
+    def test_pausing_active_search_discards_remaining_lines_and_move(self):
+        async def go():
+            engine = await lep.UciProcess.create(str(self.engine_path))
+            paused = False
+            try:
+                lines = engine.analyse(_job(), asyncio.Event(), interrupted=lambda: paused)
+                self.assertTrue((await anext(lines)).startswith(b"info"))
+                paused = True
+                await engine.stop()
+                self.assertEqual([line async for line in lines], [lep.EMPTY_SEARCH])
+                self.assertFalse(engine.searching)
+            finally:
+                await engine.terminate()
+
+        asyncio.run(go())
+
 
 if __name__ == "__main__":
     unittest.main()

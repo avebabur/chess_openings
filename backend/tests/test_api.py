@@ -50,6 +50,54 @@ class ApiContractTests(unittest.TestCase):
         self.assertNotIn("access-control-allow-origin", res.headers)
         self.assertGreaterEqual(res.status_code, 400)
 
+    def test_a_health_report_from_a_page_with_a_long_address_is_kept(self):
+        # A game opened from My games has all its moves in its address
+        # (/analysis/pgn/d4_d5_c4…): 700 characters and more. Such a report
+        # was refused, so that page's missing features were never written down.
+        report_path = Path(self.temp_dir.name) / "health.json"
+        with patch.dict(os.environ, {"OPENINGS_EXTENSION_HEALTH_PATH": str(report_path)}):
+            res = self.client.post("/api/extension/health", json={
+                "page_kind": "analyse",
+                "url": "https://lichess.org/analysis/pgn/" + "_".join(["Nf3"] * 400),
+                "extension_version": "test",
+                "features": {"repertoire": {"name": "Your repertoire", "status": "missing"}},
+            })
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json(), {"broken": 1})
+        self.assertIn('"repertoire"', report_path.read_text())
+
+    def test_settings_only_changes_advance_the_extension_build(self):
+        root = Path(self.temp_dir.name) / "extension"
+        root.mkdir()
+        for name in ("manifest.json", "settings.html", "settings.js", "settings.css"):
+            asset = root / name
+            asset.touch()
+            os.utime(asset, (1000, 1000))
+        with patch.object(self.main, "OPENINGS_ROOT", self.temp_dir.name):
+            self.assertEqual(self.client.get("/api/extension/build").json(), {"build": 1000})
+            for new_build, name in enumerate(("settings.html", "settings.js", "settings.css"), 1001):
+                with self.subTest(asset=name):
+                    os.utime(root / name, (new_build, new_build))
+                    self.assertEqual(self.client.get("/api/extension/build").json(), {"build": new_build})
+
+    def test_the_same_new_line_saved_from_two_tabs_at_once_is_saved_once(self):
+        # Both saves found the line's moves missing and both added them; the
+        # second failed on the duplicate (a 500, "Couldn't save it").
+        from concurrent.futures import ThreadPoolExecutor
+        db = self.main.db
+
+        def save(n):
+            return db.save_repertoire_branch("white", f"tab {n}", "h4 a5 h5 a4 h6 a3")
+
+        with ThreadPoolExecutor(8) as pool:
+            saved = list(pool.map(save, range(8)))
+        self.assertEqual(len({branch["id"] for branch in saved}), 1)
+        tree = self.client.get("/api/repertoire/tree", params={"color": "white"}).json()
+        self.assertEqual([b["moves_san"] for b in tree["branches"]], ["h4 a5 h5 a4 h6 a3"])
+
+    def test_a_number_too_large_to_be_an_id_is_refused_not_an_error(self):
+        self.assertEqual(self.client.get("/api/games/9223372036854775808").status_code, 422)
+
     def test_only_the_local_address_is_answered(self):
         # A website whose own domain name points at 127.0.0.1 (DNS rebinding).
         res = self.client.get("/api/backup", headers={"Host": "evil.example"})

@@ -29,6 +29,13 @@
     name: 'Your Stockfish in Lichess',
     pages: ['analyse'],
     anchors: ['ceval'],
+    // Lichess has no engine bar in a study whose author switched computer
+    // analysis off, in an interactive lesson, with ?evals=0 (lila
+    // analyse/src/ctrl.ts isCevalAllowed), or in its one-column layout (a
+    // narrow window: only a switch among the buttons under the board). Its
+    // absence there is not a change in Lichess's page, so it isn't reported
+    // as one.
+    expected: () => !OX.isStudy() && new URLSearchParams(location.search).get('evals') !== '0' && !OX.oneColumn(),
     order: 1,
     place: { anchor: 'ceval', where: 'after', zeroHeightOk: true },
 
@@ -36,6 +43,7 @@
       let status = null;
       let checkedAt = 0;
       let needsReload = false;
+      let alive = true;
 
       const show = (...nodes) => {
         root.replaceChildren(...nodes);
@@ -90,6 +98,7 @@
         // engine bar is left showing an error), or the app, which starts
         // paused, has just heard that no game is on (it answered this page
         // with nothing meanwhile): have Lichess search again.
+        if (!alive || OX.state.paused) return;
         if (before && before !== 'ready' && status.state === 'ready' && !status.paused && !needsReload) OX.lichess.restartCeval();
         render();
       }
@@ -105,7 +114,7 @@
           const every = settled ? 60_000 : 4000;
           if (Date.now() - checkedAt > every) refresh();
         },
-        destroy() {},
+        destroy() { alive = false; },
       };
     },
   });

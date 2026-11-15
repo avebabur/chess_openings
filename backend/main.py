@@ -222,7 +222,7 @@ def add_account(input: AccountInput, request: Request):
 
 
 @api.post("/accounts/{account_id}/sync", status_code=202)
-def sync_account(request: Request, account_id: int = Path(gt=0)):
+def sync_account(request: Request, account_id: int = Path(gt=0, lt=2**63)):
     account = db.get_account(account_id)
     if not account:
         raise HTTPException(404, "Account not found")
@@ -255,7 +255,7 @@ def cancel_sync_job(
 
 
 @api.delete("/accounts/{account_id}")
-def remove_account(request: Request, account_id: int = Path(gt=0)):
+def remove_account(request: Request, account_id: int = Path(gt=0, lt=2**63)):
     """Removes the account together with its imported games."""
     account = db.get_account(account_id)
     if account and (account.get("sync_job") or {}).get("status") in ("queued", "running"):
@@ -300,7 +300,10 @@ def _external_network_allowed():
 
 class ExtensionHealthInput(BaseModel):
     page_kind: Literal["analyse", "round", "other"]
-    url: str = Field(default="", max_length=500)
+    # Long on purpose: a game opened from My games has all its moves in its
+    # address, and a report refused for its length is a report lost
+    # (extension_health keeps the first 300 characters).
+    url: str = Field(default="", max_length=8000)
     extension_version: str = Field(default="", max_length=40)
     features: dict = Field(default_factory=dict)
 
@@ -347,7 +350,8 @@ def extension_build():
         for dirpath, _, files in os.walk(os.path.join(root, folder)):
             for name in files:
                 newest = max(newest, os.path.getmtime(os.path.join(dirpath, name)))
-    newest = max(newest, os.path.getmtime(os.path.join(root, "manifest.json")))
+    for name in ("manifest.json", "settings.html", "settings.js", "settings.css"):
+        newest = max(newest, os.path.getmtime(os.path.join(root, name)))
     return {"build": int(newest)}
 
 
@@ -425,7 +429,7 @@ def analysis_stop(request: Request):
 
 
 @api.get("/games/{game_id}")
-def get_game(game_id: int = Path(gt=0)):
+def get_game(game_id: int = Path(gt=0, lt=2**63)):
     """Full game including PGN and the mistakes found in it."""
     game = db.get_game(game_id)
     if not game:
@@ -469,14 +473,14 @@ def save_repertoire_branch(input: RepertoireBranchInput):
 
 
 @api.delete("/repertoire/tree/branches/{branch_id}")
-def delete_repertoire_branch(branch_id: int = Path(gt=0)):
+def delete_repertoire_branch(branch_id: int = Path(gt=0, lt=2**63)):
     if not db.delete_repertoire_branch(branch_id):
         raise HTTPException(404, "Branch not found")
     return {"success": True}
 
 
 @api.patch("/repertoire/tree/branches/{branch_id}")
-def update_repertoire_branch(input: RepertoireBranchPatch, branch_id: int = Path(gt=0)):
+def update_repertoire_branch(input: RepertoireBranchPatch, branch_id: int = Path(gt=0, lt=2**63)):
     name = input.name
     if name is not None:
         # An emptied name gets the opening's name rather than the raw moves.

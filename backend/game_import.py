@@ -59,6 +59,18 @@ def _pgn_headers(pgn):
     return {m.group(1): m.group(2) for m in _HEADER_RE.finditer(pgn or "")}
 
 
+_NORMAL_START = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq"
+
+
+def _from_set_up_position(pgn):
+    """Did this game start from a set-up position? chess.com lists those as
+    ordinary chess (Lichess has its own variant for them, left out already).
+    They are no part of an opening history, and their moves can't be opened on
+    Lichess's board from the normal start."""
+    fen = _pgn_headers(pgn).get("FEN")
+    return bool(fen) and not fen.startswith(_NORMAL_START)
+
+
 def _epoch_to_iso(epoch):
     try:
         return datetime.fromtimestamp(int(epoch), tz=timezone.utc).isoformat()
@@ -136,7 +148,7 @@ def import_chesscom(username, account_id, progress=None, cancelled=None, client=
                 if g.get("rules") != "chess":
                     continue
                 pgn = g.get("pgn")
-                if not pgn:
+                if not pgn or _from_set_up_position(pgn):
                     continue
                 seen += 1
                 white = g.get("white") or {}

@@ -24,6 +24,19 @@
     flip: () => command('flip'),
     // Lichess's engine bar searches the position on the board again.
     restartCeval: () => command('restartCeval'),
+    // The position on the board and the one the board started from, as
+    // Lichess's controller holds them: { fen, start }, or null when the
+    // controller can't be reached.
+    position() {
+      const root = document.documentElement;
+      root.removeAttribute('data-ox-value');
+      if (!command('position')) return null;
+      try {
+        const value = JSON.parse(root.getAttribute('data-ox-value'));
+        root.removeAttribute('data-ox-value');
+        return typeof value?.fen === 'string' && typeof value?.start === 'string' ? value : null;
+      } catch { return null; }
+    },
     // Put `color` at the bottom of the board (your side of your own game).
     showSide(color) {
       const black = document.querySelector('main.analyse .cg-wrap')?.classList.contains('orientation-black');

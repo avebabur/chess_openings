@@ -14,7 +14,7 @@ Lichess starts it (after the one-time `sh extension/native/install.sh`).
 | Lichess's own engine bar, eval bar and "Practice with computer" | **Your Stockfish in Lichess** | Lichess's engine runs on your Mac's Stockfish 19 through Lichess's official "external engine", so only one Stockfish runs. Lichess's engine settings (search time 8 s by default, lines, memory) apply. Practice answers as Lichess asks: normal Practice in about a second, Mastery mode in your search time (8 s by default; lower it in Lichess's engine settings for faster replies). `OPENINGS_PRACTICE_SECONDS` forces a fixed time. A small box under the engine bar appears only when something needs you. |
 | Left column (the WikiBook is hidden) | **Your game** | When you open one of your games from My games, or open one of your own Lichess games: the My game tab lists the mistakes your Stockfish found, each with the better move; a row jumps to that position. A Lichess game opens on its own Lichess page (computer analysis, notes), a chess.com game on the analysis board. A game not checked yet has **Check with your Stockfish**, which shows how far it has got (move 12 of 48, about 20 s left). The settings page can check all unchecked games. Evaluations are from White's side, as on Lichess's bar. A game you just played that the app hasn't imported yet has **Sync games**. Practice from here vs your Stockfish. |
 | Left column | **Repertoire** | Per colour: your move here (main line marked) or the moves you're ready for, and your main line onward; **Lines through here** with play-the-rest, rename, main/sideline and delete (lines that share a name show the moves that tell them apart); **Extend** a line you've played past; **Save this line**; a warning saying where the game left the repertoire of the side at the bottom of the board. Everything is looked up by position, so a position reached by another move order shows what you prepared for it, and a line can be extended from there. Everything the app's Repertoire tab did for managing lines. |
-| Left column, under the repertoire | **Opening explorer** | Lichess's explorer moved from the right column (which keeps the engine and moves). Its **My games** tab replaces Lichess's Player tab: your chess.com and Lichess games as one history, newest first; it shows the side at the bottom of the board, and **As white ⇄** switches. Results are green for a win and red for a loss. **Sync games** brings in your newest games from every account. |
+| Left column, under the repertoire | **Opening explorer** | Lichess's explorer moved from the right column (which keeps the engine and moves). Its **My games** tab replaces Lichess's Player tab (on variant boards, where My games has nothing, Lichess's Player tab stays): your chess.com and Lichess games as one history, newest first; it shows the side at the bottom of the board, and **As white ⇄** switches. Results are green for a win and red for a loss. **Sync games** brings in your newest games from every account. |
 
 These run on the analysis board, your games and studies (interactive lessons excluded). No
 links lead out of Lichess.
@@ -40,7 +40,7 @@ links lead out of Lichess.
 
 - While **any** Lichess tab shows a game in progress (yours or one you're watching, Lichess
   TV included), every feature in every Lichess tab is removed, and your Stockfish answers
-  Lichess with nothing, so Lichess's engine bar in another tab stays empty (no error).
+  Lichess with no new analysis or best move. Lichess can still display its cached evaluations.
   Checking your games for mistakes waits too, so Stockfish is quiet. The toolbar icon
   shows **live**. Everything comes back when the game's result appears, and Lichess's
   engine bar searches the position on the board again by itself.
@@ -102,7 +102,7 @@ prints what's showing. To fix, hand an agent `extension/REPAIR.md`.
 - `src/background.js`: talks to the app on 127.0.0.1:8001, keeps the lock across tabs, starts the app, tells it every half minute that Lichess is still open, stops it when the last Lichess tab closes, replaces itself after a code change.
 - `src/engine-select.js`: before Lichess starts, picks your Stockfish in Lichess's engine choice.
 - `native/`: the start/stop helper Chrome runs, and `install.sh` that sets it up.
-- `src/page-bridge.js`: runs in Lichess's page world (the only place that reaches Lichess's analysis controller) and carries out play-a-move, jump and Practice for the other scripts.
+- `src/page-bridge.js`: runs in Lichess's page world (the only place that reaches Lichess's analysis controller) and carries out play-a-move, jump and Practice for the other scripts, and tells them the position in studies.
 - `scripts/engine_check.py`: asks Lichess's engine service for an analysis the way Lichess's page does, to test the engine link without a browser.
 - `../backend/lichess_engine_provider.py`: the app side that serves your Stockfish to Lichess.
 - `scripts/check.mjs`: the on-demand check.

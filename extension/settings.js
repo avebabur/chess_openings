@@ -62,11 +62,17 @@ function confirmable(control, { idle, armed, label, run }) {
     control.removeAttribute('aria-label');
   };
   control.textContent = idle;
-  control.addEventListener('click', async () => {
+  control.addEventListener('keydown', event => {
+    if (event.repeat && (event.key === 'Enter' || event.key === ' ')) event.preventDefault();
+  });
+  control.addEventListener('click', async event => {
+    // A double-click on Remove should only open the confirmation, even if
+    // the newly displayed Cancel button ends up under the pointer.
+    if (event.detail > 1) return;
     if (!timer) {
       control.textContent = armed;
       control.setAttribute('aria-label', label);
-      cancel = button('Cancel', disarm, 'quiet');
+      cancel = button('Cancel', event => { if (event.detail < 2) disarm(); }, 'quiet');
       control.after(cancel);
       timer = setTimeout(disarm, ARMED_MS);
       return;
@@ -195,11 +201,13 @@ function renderToken() {
 
 async function load() {
   try {
+    const firstConnection = profile === null;
     profile = await api('GET', '/profile');
     connection.textContent = 'Connected to the local service';
     delete connection.dataset.error;
     renderAccounts();
     renderToken();
+    if (firstConnection) loadChecks();
     reportFinishedSyncs();
     const active = profile.accounts.some(a => ['queued', 'running'].includes(a.sync_job?.status));
     clearTimeout(refreshTimer);
@@ -317,4 +325,4 @@ confirmable($('remove-token'), {
   },
 });
 
-load().then(loadChecks);
+load();

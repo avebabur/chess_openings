@@ -18,7 +18,8 @@
   const A = OX.anchors;
   const GAP = 12;
   const PANEL_MIN = 150;    // the panel never gets less than this
-  const EXPLORER_MIN = 260; // room kept for the explorer while it is open
+  const EXPLORER_MIN = 200;
+  const EXPLORER_PREFERRED = 260;
   const CHAT_MIN = 190;     // room kept for Lichess's chat / notes
 
   OX.defineFeature({
@@ -75,12 +76,15 @@
         if (sideRect.right > boardRect.left || sideRect.width < 200) { limit(panel, null); fitChat(null); return release(); }
 
         const chat = OX.$('main.analyse > .mchat');
-        const box = chat ? null : OX.$(A.explorerBox.selector);
+        const panelTop = panel?.getBoundingClientRect().top;
+        const available = boardRect.bottom - (panelTop ?? host.getBoundingClientRect().top);
+        const canMoveExplorer = !chat && available >= (panel ? PANEL_MIN : 0) + EXPLORER_MIN + GAP;
+        const box = canMoveExplorer ? OX.$(A.explorerBox.selector) : null;
         const tools = box?.parentElement;
         const bottom = boardRect.bottom - (chat ? CHAT_MIN + GAP : 0);
         if (panel) {
-          const reserved = box && tools ? EXPLORER_MIN + GAP : 0;
-          limit(panel, Math.max(PANEL_MIN, bottom - panel.getBoundingClientRect().top - reserved));
+          const reserved = box && tools ? Math.min(EXPLORER_PREFERRED, available - PANEL_MIN - GAP) + GAP : 0;
+          limit(panel, Math.max(PANEL_MIN, bottom - panelTop - reserved));
         } else limit(null);
 
         if (!box || !tools) {
@@ -94,7 +98,7 @@
         moved = box;
         box.classList.add('ox-left');
         const spaceTop = host.getBoundingClientRect().top + GAP;
-        const height = Math.max(200, bottom - spaceTop);
+        const height = Math.max(EXPLORER_MIN, bottom - spaceTop);
         host.style.height = `${height + GAP}px`;
         const toolsRect = tools.getBoundingClientRect();
         box.style.top = `${spaceTop - toolsRect.top}px`;

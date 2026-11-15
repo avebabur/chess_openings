@@ -35,6 +35,7 @@
   const cache = { index: null, at: 0, loading: null };
   const label = color => (color === 'white' ? 'White' : 'Black');
   const LABELS = { main: 'Main', sideline: 'Side', alternative: 'Alt', trap: 'Trap' };
+  const LINE_KINDS = { main: 'Main line', sideline: 'Sideline', alternative: 'Alternative', trap: 'Trap' };
   // The side at the bottom of the board: the one you are looking from.
   const boardSide = () =>
     (document.querySelector('main.analyse .cg-wrap')?.classList.contains('orientation-black') ? 'black' : 'white');
@@ -62,6 +63,7 @@
       root.classList.add('card', 'rep');
       let index = null;
       let position = null;
+      let movePath = null;
       let token = 0;
       let alive = true;
       let showAllLines = false;
@@ -98,7 +100,13 @@
       // A line's name, or its last moves when it has none.
       const nameOf = branch => branch.name || branch.sans.slice(-3).join(' ');
 
+      // One change at a time: a second click on Delete (the row is still
+      // there until the app has answered) asked for the same line again and
+      // said "That didn't work" about a delete that did.
+      let busy = false;
       async function act(work, done) {
+        if (busy) return;
+        busy = true;
         try {
           await work();
           if (done) say(done);
@@ -106,7 +114,7 @@
           say(error.offline ? OX.offlineText() : "That didn't work.");
         }
         cache.index = null;
-        await refresh();
+        try { if (alive) await refresh(); } finally { busy = false; }
       }
 
       // The moves on the board from the normal start, replayed: null when the
@@ -299,15 +307,24 @@
         let color = boardSide();
         const name = OX.el('input', { type: 'text', placeholder: "Name (empty: the opening's name)", maxlength: 120, 'aria-label': 'Name of the line' });
         const kind = OX.el('select', { 'aria-label': 'Kind of line' },
-          OX.el('option', { value: 'main', text: 'Main line' }),
-          OX.el('option', { value: 'sideline', text: 'Sideline' }));
+          Object.entries(LINE_KINDS).map(([value, text]) => OX.el('option', { value, text })));
         const sides = OX.el('div', { class: 'seg' });
         // What is already saved for this exact line, or for its last position
         // by another move order.
         const known = OX.el('div', { class: 'dim small' });
+        // The name and kind follow what is known (the saved line's own, else
+        // the opening's name) until you change them yourself: saving a line
+        // again without touching them must not rename it.
+        let suggested = '';
+        let named = false;
+        let kindChosen = false;
+        name.addEventListener('input', () => { named = true; });
+        kind.addEventListener('change', () => { kindChosen = true; });
         const drawKnown = () => {
           const moves = line.join(' ');
           const same = index.branches.find(b => b.color === color && b.sans.join(' ') === moves);
+          if (!named) name.value = same ? same.name || '' : suggested;
+          if (!kindChosen) kind.value = same?.label || 'main';
           const others = path ? (index.through.get(path.keys[path.keys.length - 1]) || [])
             .filter(({ branch, at }) => branch.color === color && branch !== same && R.otherOrder(branch, at, path)) : [];
           if (same) known.textContent = `Already saved as “${nameOf(same)}”. Saving again changes its name and kind.`;
@@ -324,28 +341,36 @@
         };
         drawSides();
         const status = OX.el('span', { class: 'dim' });
+        const submit = OX.el('button', { class: 'btn primary', text: 'Save' });
         const save = async () => {
+          if (submit.disabled || form !== draft) return;
+          submit.disabled = true;
+          const savedColor = color;
           status.textContent = 'Saving…';
           try {
-            await OX.bridge.api('POST', '/repertoire/tree/branches', { color, name: name.value.trim(), moves_san: line.join(' '), label: kind.value });
+            await OX.bridge.api('POST', '/repertoire/tree/branches', { color: savedColor, name: name.value.trim(), moves_san: line.join(' '), label: kind.value });
           } catch (error) {
             status.textContent = error.offline ? OX.offlineText() : "Couldn't save it.";
+            submit.disabled = false;
             return;
           }
-          form = null;
-          say(`Saved to your ${label(color)} repertoire.`);
           cache.index = null;
-          refresh();
+          if (!alive) return;
+          if (form === draft) form = null;
+          say(`Saved to your ${label(savedColor)} repertoire.`);
+          await refresh();
         };
+        submit.addEventListener('click', save);
         name.addEventListener('keydown', event => { if (event.key === 'Enter') save(); });
-        form = OX.el('div', { class: 'saveform' },
+        const draft = OX.el('div', { class: 'saveform' },
           OX.el('div', { class: 'section-title', text: 'Save this line' }),
           OX.el('div', { class: 'dim moves', text: OX.numberMoves(START, line) }),
           sides, known, name, kind,
           OX.el('div', { class: 'btns' },
-            OX.el('button', { class: 'btn primary', onclick: save, text: 'Save' }),
+            submit,
             OX.el('button', { class: 'btn', onclick: () => { form = null; render(); }, text: 'Cancel' }),
             status));
+        form = draft;
         // The list of lines would push the form out of sight below it.
         showAllLines = false;
         lineFilter = '';
@@ -355,7 +380,14 @@
         name.focus();
         try {
           const found = await OX.bridge.api('GET', `/openings/classify?moves_san=${encodeURIComponent(line.join(' '))}`);
-          if (found?.name && !name.value) name.value = found.name;
+          if (found?.name) {
+            suggested = found.name;
+            drawKnown();
+            // The suggestion arrives a moment after the cursor is in the box:
+            // select it, so typing a name of your own replaces it instead of
+            // being added to its end.
+            if (!named && form === draft && root.getRootNode().activeElement === name) name.select();
+          }
         } catch { /* type a name */ }
       }
 
@@ -400,7 +432,8 @@
 
       return {
         async update(next) {
-          if (position && next.key !== position.key) {
+          const nextPath = OX.$(OX.anchors.activeMove.selector)?.getAttribute('p') || '';
+          if (position && (next.fen !== position.fen || nextPath !== movePath)) {
             editing = deleting = null;
             showAllLines = false;
             lineFilter = '';
@@ -408,6 +441,7 @@
             pathRetries = 0;
           }
           position = next;
+          movePath = nextPath;
           await refresh();
         },
         // Flipping the board changes whose repertoire the warning is about.

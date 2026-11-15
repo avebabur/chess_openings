@@ -62,6 +62,14 @@ def _ensure_repertoire_nodes(conn, color, moves_san):
     return " ".join(path), terminal_node_id
 
 
+def _begin_change(conn):
+    """Start a change to the repertoire holding the write lock from the first
+    read. Two saves of new moves at the same moment (two Lichess tabs) both
+    found a move missing and both added it: the second one failed. Now it waits
+    for the first (get_db's busy_timeout) and finds the move there."""
+    conn.execute("BEGIN IMMEDIATE")
+
+
 def _branch(conn, branch_id):
     row = conn.execute(
         "SELECT * FROM repertoire_branches WHERE id = ?", (branch_id,),
@@ -89,6 +97,7 @@ def save_repertoire_branch(color, name, moves_san, label="main"):
     label = _repertoire_label(label, "main")
     conn = get_db()
     try:
+        _begin_change(conn)
         moves, terminal_node_id = _ensure_repertoire_nodes(conn, color, moves_san)
         name = (name or "").strip() or _default_repertoire_branch_name(moves)
         existing = conn.execute(
@@ -120,6 +129,7 @@ def update_repertoire_branch(branch_id, name=None, moves_san=None, label=None):
     """Rename a line, relabel it, or replace its moves. None leaves a field as it is."""
     conn = get_db()
     try:
+        _begin_change(conn)
         branch = _branch(conn, branch_id)
         if not branch:
             return None
@@ -154,6 +164,7 @@ def update_repertoire_branch(branch_id, name=None, moves_san=None, label=None):
 def delete_repertoire_branch(branch_id):
     conn = get_db()
     try:
+        _begin_change(conn)
         branch = _branch(conn, branch_id)
         if not branch:
             return False

@@ -32,7 +32,7 @@
     },
     moveList: {
       selector: 'main.analyse .analyse__moves',
-      what: "The move list. Where there is no FEN box (studies) the position is worked out from the moves leading to the highlighted one.",
+      what: "The move list. The moves of the line on the board are read from it. Where there is no FEN box (studies) the position itself is asked of Lichess's controller (src/page-bridge.js), and worked out from these moves only if that can't be reached.",
     },
     activeMove: {
       selector: 'move.active',
@@ -40,7 +40,7 @@
     },
     studyTags: {
       selector: 'main.analyse .study__tags',
-      what: 'The PGN tags of a study chapter. A FEN tag there is the chapter\'s starting position (optional).',
+      what: 'The PGN tags of a study chapter. Only a fallback: Lichess does not list a chapter\'s starting position here, its controller has it (src/page-bridge.js).',
     },
     ceval: {
       selector: 'main.analyse .analyse__tools > .ceval',
@@ -58,7 +58,17 @@
       selector: 'main.analyse section.explorer-box .explorer-title',
       what: "The explorer's tab row (Masters / Lichess / Player). The My games tab is added before its gear button. Only exists while the explorer is open and has data, so its absence is normal.",
     },
+    gamePlayers: {
+      selector: 'main.analyse .game__meta__players a.user-link[href^="/@/"]',
+      what: "On a finished game's page: the two players' names in the box at the top of the left column. Says whether the game is one of yours (Lichess lists you among the spectators of every game you look at, so other user links on the page don't).",
+    },
   };
+
+  // Lichess pages whose address has the shape of a game's (8 letters and
+  // digits) but are not games: every such top-level page in lila's conf/routes.
+  // Without this list, opening Puzzles or Practice counted as a game for the
+  // moment the page took to load, and every other tab blinked.
+  OX.notGames = ['analysis', 'bookmark', 'features', 'insights', 'markdown', 'password', 'practice', 'streamer', 'timeline', 'training'];
 
   // main.analyse carries variant-<key>; features only make sense for these.
   OX.standardVariantClasses = ['variant-standard', 'variant-fromPosition'];

@@ -32,10 +32,23 @@ Only `missing`, `hidden` and `error` need fixing.
 | mine (My games tab) | analyse | `explorerTitle` (optional: `n/a` while the explorer is closed) | in the explorer's tab row, before the gear; its content goes in the explorer's `.data` |
 
 "analyse" covers the analysis board, finished games and studies. The **position** comes
-from `fenInput` (analysis board, finished games) or, in studies, from `moveList` +
-`activeMove` (+ the optional `studyTags` FEN), replayed with `vendor/chess.js`.
-Interactive study lessons (`OX.gamebookClass` on `main`) deliberately show nothing.
-Page detection uses `analysePage`, `roundPage` and `roundFinished`.
+from `fenInput` (analysis board, finished games). Studies have no FEN box: there it is
+asked of Lichess's controller (`ctrl.node.fen`, and `ctrl.tree.root.fen` for where the
+chapter starts, through `src/page-bridge.js`), because a chapter that starts from a set-up
+position does not list its FEN anywhere on the page. Only if the controller can't be
+reached is it replayed from `moveList` + `activeMove` (+ a `studyTags` FEN) with
+`vendor/chess.js`. Interactive study lessons (`OX.gamebookClass` on `main`) deliberately
+show nothing. Page detection uses `analysePage`, `roundPage` and `roundFinished`.
+`gamePlayers` (the two players named on a finished game's page) decides whether an
+unimported game is yours and gets **Sync games**. `OX.notGames` in `src/anchors.js` lists
+the Lichess pages whose address has the shape of a game id but are not games (`/training`,
+`/practice`…, from lila's `conf/routes`): a game's address locks every tab while it loads,
+so if opening some Lichess page makes the boxes in other tabs blink, add its name there.
+
+Not reported as broken, because Lichess itself leaves the engine bar out there: `engine`
+in studies (the author can switch computer analysis off), with `?evals=0`, and in Lichess's
+one-column layout of a narrow window (`OX.oneColumn`, the `---display-columns` variable on
+`<body>`). See `expected` in `src/features/engine.js`.
 
 Things that rely on Lichess internals rather than selectors, and fail quietly:
 - **Lichess's controller** (`src/lichess.js`): `window.site.analysis` with `playUci`,
@@ -48,7 +61,12 @@ Things that rely on Lichess internals rather than selectors, and fail quietly:
   answer from `ctrl.node.ceval`, and in Practice calls `ctrl.practice.onJump()` so the
   computer takes its turn again (lila `ui/analyse/src/practice/practiceCtrl.ts`, its
   `played` flag). If the bar no longer restarts by itself, or Practice stays on
-  "Computer thinking…" after a game, check those names.
+  "Computer thinking…" after a game, check those names. Lichess runs its engine in one
+  tab at a time (lila `ui/lib/src/ceval/ctrl.ts`, `ceval.fen` / `wasUnloadedByAnotherWindow`):
+  a tab that starts a search switches the engine off in the others. So only the tab you
+  are in searches again; another tab does only when its position has no answer at all,
+  and a hidden one waits until it is shown. If after a game the engine is switched off in
+  the tab in front, look there.
 - **Practice stuck on "Computer thinking…"** (`src/page-bridge.js`, `nudgePractice`): in
   Practice's Mastery mode Lichess only moves once the engine is idle, and with an external
   engine nothing re-checks after it stops. The bridge calls `ctrl.practice.onCeval()` when

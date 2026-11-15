@@ -44,6 +44,7 @@ function tree(color, lines) {
 const key = moves => R.replay(moves ? moves.split(' ') : []).keys.at(-1);
 const path = moves => R.replay(moves.split(' '));
 const sans = moves => moves.map(m => m.san);
+const positionFixtures = JSON.parse(readFileSync(join(src, '../backend/tests/data/position_key_fixtures.json'), 'utf8'));
 
 let passed = 0;
 function test(name, run) {
@@ -66,10 +67,29 @@ test('a position has one key whatever the move order', () => {
   assert.notEqual(key('d4 Nf6 c4 e6'), key('d4 Nf6 c4'));
 });
 
-test('the key ignores the en-passant square, which Lichess and the app may write differently', () => {
-  const withSquare = 'rnbqkbnr/ppp1pppp/8/3pP3/8/8/PPPP1PPP/RNBQKBNR w KQkq d6 0 2';
-  const without = 'rnbqkbnr/ppp1pppp/8/3pP3/8/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2';
+test('a legal en-passant capture distinguishes otherwise identical positions', () => {
+  const board = new OXChess();
+  for (const move of ['e4', 'Nf6', 'e5', 'd5']) board.move(move);
+  const withSquare = board.fen();
+  const without = withSquare.replace(' d6 ', ' - ');
+  assert.notEqual(OX.positionKey(withSquare), OX.positionKey(without));
+  const epIndex = R.buildIndex([tree('white', [[3, 'En passant', 'e4 Nf6 e5 d5 exd6']]), black]);
+  assert.deepEqual(sans(R.sorted(epIndex.positions.get(OX.positionKey(withSquare)).moves.white)), ['exd6']);
+  assert.equal(epIndex.positions.get(OX.positionKey(without)), undefined);
+});
+
+test('an en-passant square without a legal capture is ignored', () => {
+  const withSquare = 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1';
+  const without = withSquare.replace(' e3 ', ' - ');
   assert.equal(OX.positionKey(withSquare), OX.positionKey(without));
+});
+
+test('extension position keys match the backend chess fixtures', () => {
+  for (const fixture of positionFixtures) {
+    const board = new OXChess(fixture.fen);
+    for (const move of fixture.line.split(' ').filter(Boolean)) board.move(move);
+    assert.equal(OX.positionKey(board.fen()), fixture.key, fixture.name);
+  }
 });
 
 test('what was prepared shows after another move order', () => {
