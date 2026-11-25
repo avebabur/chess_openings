@@ -70,6 +70,10 @@
   // moment the page took to load, and every other tab blinked.
   OX.notGames = ['analysis', 'bookmark', 'features', 'insights', 'markdown', 'password', 'practice', 'streamer', 'timeline', 'training'];
 
+  // Lichess serves the forecast board for an active game here, and redirects
+  // replayable games to their normal review page.
+  OX.isGameForecastPath = pathname => /^\/game\/[A-Za-z0-9]{8}\/(?:white|black)\/analysis\/?$/.test(pathname);
+
   // main.analyse carries variant-<key>; features only make sense for these.
   OX.standardVariantClasses = ['variant-standard', 'variant-fromPosition'];
   // main.analyse carries this while a study chapter is an interactive lesson

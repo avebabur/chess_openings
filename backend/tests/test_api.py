@@ -3,6 +3,7 @@ import os
 import sqlite3
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -126,6 +127,37 @@ class ApiContractTests(unittest.TestCase):
         enqueue.assert_not_called()
         self.assertEqual(self.client.get("/api/accounts").json(), [])
 
+    def test_a_sync_queued_before_account_removal_takes_the_write_lock_is_kept(self):
+        db = self.main.db
+        account_id = db.create_account("lichess", "sync-race")["id"]
+        delete = db.delete_account
+
+        def queue_before_delete(target):
+            db.create_sync_job(target)
+            return delete(target)
+
+        with patch.object(db, "delete_account", side_effect=queue_before_delete):
+            response = self.client.delete(f"/api/accounts/{account_id}")
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(db.get_account(account_id)["sync_job"]["status"], "queued")
+
+    def test_a_sync_queued_after_account_removal_returns_not_found(self):
+        db = self.main.db
+        account_id = db.create_account("lichess", "remove-race")["id"]
+        service = self.main.app.state.sync_service
+        enqueue = service.enqueue
+
+        def remove_before_queue(target):
+            self.assertTrue(db.delete_account(target))
+            return enqueue(target)
+
+        with patch.object(service, "enqueue", side_effect=remove_before_queue):
+            response = self.client.post(f"/api/accounts/{account_id}/sync")
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(db.list_queued_sync_jobs(), [])
+
     def test_branches_are_validated_and_a_changed_line_replaces_its_moves(self):
         invalid = self.client.post("/api/repertoire/tree/branches", json={
             "color": "green", "name": "bad", "moves_san": "e4",
@@ -152,6 +184,79 @@ class ApiContractTests(unittest.TestCase):
         self.client.patch(f"/api/repertoire/tree/branches/{saved['id']}", json={"name": "mine"})
         again = self.client.patch(f"/api/repertoire/tree/branches/{saved['id']}", json={"name": ""}).json()
         self.assertEqual(again["name"], "Caro-Kann Defense")
+
+    def test_stale_save_cannot_overwrite_a_created_or_renamed_line(self):
+        path = "/api/repertoire/tree/branches"
+        line = {"color": "white", "moves_san": "a3 h6 a4"}
+        first = self.client.post(path, json={**line, "name": "First tab", "label": "trap", "expected": "new"})
+        self.assertEqual(first.status_code, 200)
+        before = {key: first.json()[key] for key in ("id", "name", "label")}
+        stale = self.client.post(path, json={**line, "expected": "new"})
+        self.assertEqual(stale.status_code, 409)
+
+        intentional = self.client.post(path, json={**line, "name": "Updated", "label": "sideline", "expected": before})
+        self.assertEqual(intentional.status_code, 200)
+        stale_again = self.client.post(path, json={**line, "name": "Old draft", "expected": before})
+        self.assertEqual(stale_again.status_code, 409)
+        tree = self.client.get("/api/repertoire/tree", params={"color": "white"}).json()
+        self.assertEqual([(b["name"], b["label"]) for b in tree["branches"]], [("Updated", "sideline")])
+
+    def test_stale_extend_preserves_the_first_continuation(self):
+        path = "/api/repertoire/tree/branches"
+        original = "b3 a6 Bb2 h6"
+        branch = self.client.post(path, json={"color": "white", "moves_san": original}).json()
+        edit = f"{path}/{branch['id']}"
+        first = self.client.patch(edit, json={"moves_san": original + " e3", "expected_moves_san": original})
+        stale = self.client.patch(edit, json={"moves_san": original + " g3", "expected_moves_san": original})
+        self.assertEqual((first.status_code, stale.status_code), (200, 409))
+        tree = self.client.get("/api/repertoire/tree").json()
+        self.assertEqual([b["moves_san"] for b in tree["branches"]], [original + " e3"])
+
+    def test_stale_rename_and_delete_preserve_a_changed_line(self):
+        path = "/api/repertoire/tree/branches"
+        branch = self.client.post(path, json={"color": "white", "name": "First", "moves_san": "a3 h6"}).json()
+        edit = f"{path}/{branch['id']}"
+        before = {key: branch[key] for key in ("name", "label", "moves_san")}
+        changed = self.client.patch(edit, json={"name": "Kept", "moves_san": "a3 h6 a4", "expected": before})
+        self.assertEqual(changed.status_code, 200)
+        self.assertEqual(self.client.patch(edit, json={"name": "Stale", "expected": before}).status_code, 409)
+        self.assertEqual(self.client.request("DELETE", edit, json=before).status_code, 409)
+        tree = self.client.get("/api/repertoire/tree").json()
+        self.assertEqual([(b["name"], b["moves_san"]) for b in tree["branches"]], [("Kept", "a3 h6 a4")])
+        current = {key: changed.json()[key] for key in before}
+        self.assertEqual(self.client.request("DELETE", edit, json=current).status_code, 200)
+        self.assertEqual(self.client.request("DELETE", edit, json=current).status_code, 409)
+
+    def test_game_pagination_rejects_a_stale_offset_even_if_the_count_matches(self):
+        import chess
+        params = {"fen": chess.STARTING_FEN, "limit": 1}
+        cache = self.main.app.state.opening_tree_cache
+        with patch.object(cache, "games_through", return_value=[({"id": 2}, 0), ({"id": 1}, 0)]) as found, \
+                patch.object(self.main.db, "get_game_summaries", side_effect=lambda ids: {i: {"id": i} for i in ids}):
+            first = self.client.get("/api/position-games", params=params).json()
+            next_page = {**params, "offset": 1, "revision": first["revision"]}
+            second = self.client.get("/api/position-games", params=next_page).json()
+            self.assertEqual([g["id"] for g in first["games"] + second["games"]], [2, 1])
+            found.return_value = [({"id": 3}, 0), ({"id": 2}, 0)]
+            self.assertEqual(self.client.get("/api/position-games", params=next_page).status_code, 409)
+            fresh = self.client.get("/api/position-games", params=params).json()
+            self.assertEqual((fresh["total"], fresh["games"][0]["id"]), (2, 3))
+
+    def test_repertoire_refuses_unplayable_null_moves(self):
+        result = self.client.post("/api/repertoire/tree/branches", json={"color": "white", "moves_san": "e4 -- e5"})
+        self.assertEqual(result.status_code, 400)
+        tree = self.client.get("/api/repertoire/tree").json()
+        self.assertEqual(tree["root"]["children"], [])
+        self.assertEqual(tree["branches"], [])
+
+    def test_long_repertoire_line_cannot_make_the_whole_tree_unreadable(self):
+        path = "/api/repertoire/tree"
+        moves = " ".join(["Nf3 Nf6 Ng1 Ng8"] * 100)
+        line = {"color": "white", "moves_san": moves}
+        self.assertEqual(self.client.post(path + "/branches", json=line).status_code, 200)
+        too_long = self.client.post(path + "/branches", json={**line, "moves_san": moves + " Nf3"})
+        self.assertEqual(too_long.status_code, 400)
+        self.assertEqual([b["moves_san"] for b in self.client.get(path).json()["branches"]], [moves])
 
     def test_an_opening_name_is_stored_in_the_eco_spelling(self):
         saved = self.client.post("/api/repertoire/tree/branches", json={
@@ -188,10 +293,108 @@ class ApiContractTests(unittest.TestCase):
 
     def test_checking_a_game_that_does_not_exist_is_refused(self):
         self.assertEqual(self.client.post("/api/analysis", json={"game_id": 987654}).status_code, 404)
+        self.assertEqual(self.client.post("/api/analysis", json={"game_id": 2**63}).status_code, 422)
         self.assertEqual(self.client.post("/api/analysis", json={}).status_code, 422)
         self.assertEqual(self.client.post("/api/analysis", json={"game_id": 1, "all": True}).status_code, 422)
         status = self.client.get("/api/analysis").json()
         self.assertEqual((status["running"], status["unchecked"]), (False, 0))
+
+    def test_analysis_counts_include_only_games_that_can_be_checked(self):
+        db = self.main.db
+        account_id = db.create_account("lichess", "AnalysisFixture")["id"]
+        db.save_imported_games([
+            {"account_id": account_id, "source": "lichess", "external_id": f"game-{i}",
+             "user_color": color, "pgn": "1. e4 e5"}
+            for i, color in enumerate(("white", "black", None))
+        ])
+        first = self.client.get("/api/analysis").json()
+        self.assertEqual((first["total_games"], first["unchecked"]), (2, 2))
+        game = db.find_game_by_external_id("lichess", "game-0")
+        self.main.game_analysis.store_mistakes(game["id"], [])
+        checked = self.client.get("/api/analysis").json()
+        self.assertEqual((checked["total_games"], checked["unchecked"]), (2, 1))
+
+    def test_a_game_check_waits_for_the_first_unlocked_browser_report(self):
+        analyzer = self.main.app.state.game_analyzer
+        jobs = [{"id": 1, "white": "White", "black": "Black", "pgn": "1. e4 e5", "user_color": "white"}]
+
+        def check_moves(*args, should_stop, **kwargs):
+            return None if should_stop() else []
+
+        with patch.object(analyzer, "_engine_factory", return_value=None), \
+                patch.object(self.main.game_analysis, "pending_games", return_value=jobs), \
+                patch.object(self.main.game_analysis, "find_mistakes", side_effect=check_moves), \
+                patch.object(self.main.game_analysis, "store_mistakes") as store:
+            self.assertEqual(self.client.post("/api/analysis", json={"all": True}).status_code, 202)
+            deadline = time.monotonic() + 2
+            while not (status := self.client.get("/api/analysis").json())["held"] and status["running"]:
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(0.01)
+            self.assertTrue(status["held"])
+            store.assert_not_called()
+            self.assertEqual(self.client.put("/api/lichess-engine/paused", json={"paused": False}).status_code, 200)
+            analyzer.join(2)
+            store.assert_called_once_with(1, [])
+
+
+    def test_lichess_analysis_for_this_computer_streams_what_the_broker_would(self):
+        import json
+        import stat
+        import textwrap
+        engine = Path(self.temp_dir.name) / "fake-engine"
+        engine.write_text(textwrap.dedent(f"""\
+            #!{sys.executable}
+            import sys
+            for line in sys.stdin:
+                cmd = line.strip()
+                if cmd == "uci": print("uciok", flush=True)
+                elif cmd == "isready": print("readyok", flush=True)
+                elif cmd.startswith("go"):
+                    print("info depth 7 score cp 25 nodes 700 time 3 pv e2e4 e7e5", flush=True)
+                    print("bestmove e2e4", flush=True)
+            """))
+        engine.chmod(engine.stat().st_mode | stat.S_IEXEC)
+        provider = self.main.app.state.lichess_engine
+        provider._stockfish_path = str(engine)
+        provider.engine_id = "eei_mine"
+        work = {"sessionId": "s", "threads": 1, "hash": 16, "multiPv": 1, "variant": "chess",
+                "initialFen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", "moves": [], "movetime": 500}
+        ask = lambda **body: self.client.post("/api/lichess-engine/analyse", json={"engineId": "eei_mine", "work": work, **body})
+
+        # The app starts paused (fail-closed): nothing until the lock says no game is on.
+        paused = ask()
+        self.assertEqual(paused.status_code, 200)
+        self.assertEqual([json.loads(l) for l in paused.text.splitlines()],
+                         [{"time": 0, "depth": 0, "nodes": 0, "pvs": [], "bestmove": "(none)"}])
+        self.assertIsNone(provider._engine)
+
+        self.client.put("/api/lichess-engine/paused", json={"paused": False})
+        res = ask()
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.headers["content-type"].startswith("application/x-ndjson"))
+        self.assertNotIn("gzip", res.headers.get("content-encoding", ""))
+        lines = [json.loads(l) for l in res.text.splitlines()]
+        self.assertEqual(lines[0], {"time": 3, "depth": 7, "nodes": 700,
+                                    "pvs": [{"moves": ["e2e4", "e7e5"], "cp": 25, "depth": 7}]})
+        self.assertEqual(lines[-1]["bestmove"], "e2e4")
+
+        # Not this app's engine (another external engine chosen in Lichess):
+        # the extension sends it to Lichess's broker as before.
+        self.assertEqual(ask(engineId="eei_other").status_code, 404)
+        self.assertEqual(ask(work={**work, "variant": "atomic"}).status_code, 400)
+        provider.engine_id = None
+        self.assertEqual(ask().status_code, 404)
+        provider.engine_id = "eei_mine"
+        provider._stockfish_path = str(Path(self.temp_dir.name) / "missing")
+        self.assertEqual(ask().status_code, 503)
+
+    def test_websites_cannot_start_lichess_analysis(self):
+        # A website may send a plain-text POST without asking first; only JSON
+        # (which needs CORS, which this service never grants) is taken.
+        res = self.client.post("/api/lichess-engine/analyse", content='{"engineId":"x","work":{}}',
+                               headers={"Content-Type": "text/plain", "Origin": "https://example.com"})
+        self.assertEqual(res.status_code, 415)
 
     def test_keepalive_answers(self):
         res = self.client.post("/api/keepalive")

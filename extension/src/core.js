@@ -108,7 +108,8 @@
     return 'other';
   };
 
-  OX.liveGameOnPage = () => OX.pageKind() === 'round' && !OX.$(A.roundFinished.selector);
+  OX.liveGameOnPage = () =>
+    OX.isGameForecastPath(location.pathname) || (OX.pageKind() === 'round' && !OX.$(A.roundFinished.selector));
 
   OX.isStudy = () => /^\/study\/[A-Za-z0-9]{8}/.test(location.pathname);
 
@@ -260,10 +261,13 @@
     const root = document.createElement('div');
     root.className = 'ox';
     shadowRoot.append(style, root);
-    // Typing in our boxes must not trigger Lichess's keyboard shortcuts.
+    // Keep text entry and native Space activation inside our controls.
     for (const type of ['keydown', 'keypress', 'keyup']) {
       shadowRoot.addEventListener(type, event => {
-        if (event.target?.matches?.('input, select')) event.stopPropagation();
+        const target = event.target;
+        if (target?.matches?.('input, select') || (event.key === ' ' && target?.closest?.('button'))) {
+          event.stopPropagation();
+        }
       });
     }
     return { host, root };

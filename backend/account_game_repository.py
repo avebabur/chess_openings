@@ -30,6 +30,10 @@ def set_setting(key, value):
 PLATFORMS = ("chesscom", "lichess")
 
 
+class ActiveAccountSync(Exception):
+    """A queued or running sync prevents account removal."""
+
+
 def _account_row(conn, row):
     """An accounts row + how many of its games are imported + its latest sync."""
     games = conn.execute(
@@ -133,6 +137,11 @@ def mark_account_synced(account_id, complete=True):
 def create_sync_job(account_id):
     conn = get_db()
     try:
+        # Account removal uses the same lock. Either the account is already
+        # gone or the job is in the queue before removal checks for active jobs.
+        conn.execute("BEGIN IMMEDIATE")
+        if not conn.execute("SELECT 1 FROM accounts WHERE id = ?", (account_id,)).fetchone():
+            return None, False
         active = conn.execute(
             """SELECT * FROM account_sync_jobs
                WHERE account_id = ? AND status IN ('queued', 'running')
@@ -142,23 +151,13 @@ def create_sync_job(account_id):
         if active:
             return _sync_job_row(active), False
         job_id = str(uuid.uuid4())
-        try:
-            conn.execute(
-                "INSERT INTO account_sync_jobs (id, account_id) VALUES (?, ?)",
-                (job_id, account_id),
-            )
-        except sqlite3.IntegrityError:
-            active = conn.execute(
-                """SELECT * FROM account_sync_jobs
-                   WHERE account_id = ? AND status IN ('queued', 'running')
-                   ORDER BY created_at DESC LIMIT 1""",
-                (account_id,),
-            ).fetchone()
-            if active:
-                return _sync_job_row(active), False
-            raise
+        conn.execute(
+            "INSERT INTO account_sync_jobs (id, account_id) VALUES (?, ?)",
+            (job_id, account_id),
+        )
+        job = conn.execute("SELECT * FROM account_sync_jobs WHERE id = ?", (job_id,)).fetchone()
         conn.commit()
-        return get_sync_job(job_id), True
+        return _sync_job_row(job), True
     finally:
         conn.close()
 
@@ -169,6 +168,26 @@ def get_sync_job(job_id):
         return _sync_job_row(conn.execute(
             "SELECT * FROM account_sync_jobs WHERE id = ?", (job_id,),
         ).fetchone())
+    finally:
+        conn.close()
+
+
+def claim_sync_job(job_id):
+    """Start a queued job only if cancellation has not already won."""
+    conn = get_db()
+    try:
+        started = conn.execute(
+            """UPDATE account_sync_jobs
+               SET status = 'running', error = '',
+                   started_at = COALESCE(started_at, datetime('now')), updated_at = datetime('now')
+               WHERE id = ? AND status = 'queued' AND cancel_requested = 0""",
+            (job_id,),
+        )
+        if not started.rowcount:
+            return None
+        row = conn.execute("SELECT * FROM account_sync_jobs WHERE id = ?", (job_id,)).fetchone()
+        conn.commit()
+        return _sync_job_row(row)
     finally:
         conn.close()
 
@@ -213,28 +232,19 @@ def update_sync_job(job_id, *, status=None, seen=None, imported=None, total=None
 def request_sync_job_cancel(job_id):
     conn = get_db()
     try:
-        job = conn.execute(
-            "SELECT status FROM account_sync_jobs WHERE id = ?", (job_id,),
-        ).fetchone()
-        if not job or job["status"] not in ("queued", "running"):
-            return None
-        if job["status"] == "queued":
-            conn.execute(
-                """UPDATE account_sync_jobs
-                   SET status = 'cancelled', cancel_requested = 1,
-                       finished_at = datetime('now'), updated_at = datetime('now')
-                   WHERE id = ?""",
-                (job_id,),
-            )
-        else:
-            conn.execute(
+        requested = conn.execute(
             """UPDATE account_sync_jobs
-               SET cancel_requested = 1, updated_at = datetime('now')
-               WHERE id = ?""",
-                (job_id,),
-            )
+               SET cancel_requested = 1, updated_at = datetime('now'),
+                   status = CASE WHEN status = 'queued' THEN 'cancelled' ELSE status END,
+                   finished_at = CASE WHEN status = 'queued' THEN datetime('now') ELSE finished_at END
+               WHERE id = ? AND status IN ('queued', 'running')""",
+            (job_id,),
+        )
+        if not requested.rowcount:
+            return None
+        row = conn.execute("SELECT * FROM account_sync_jobs WHERE id = ?", (job_id,)).fetchone()
         conn.commit()
-        return get_sync_job(job_id)
+        return _sync_job_row(row)
     finally:
         conn.close()
 
@@ -270,6 +280,13 @@ def delete_account(account_id):
     """Remove an account; its imported games and their mistakes go with it."""
     conn = get_db()
     try:
+        conn.execute("BEGIN IMMEDIATE")
+        if conn.execute(
+            """SELECT 1 FROM account_sync_jobs
+               WHERE account_id = ? AND status IN ('queued', 'running')""",
+            (account_id,),
+        ).fetchone():
+            raise ActiveAccountSync
         cur = conn.execute("DELETE FROM accounts WHERE id = ?", (account_id,))
         conn.commit()
         return cur.rowcount > 0

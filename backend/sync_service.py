@@ -54,11 +54,8 @@ class AccountSyncService:
             self._worker.join(timeout=3)
         self._worker = None
 
-    def _cancelled(self, job_id):
-        return self._stopping.is_set() or db.sync_job_cancel_requested(job_id)
-
     def _throttled_cancel_check(self, job_id):
-        """``_cancelled`` for the importers' per-game polling: shutdown is seen
+        """Check cancellation during imports: shutdown is seen
         at once, a user's cancel within CANCEL_POLL_SECS."""
         state = {"checked_at": None, "cancelled": False}
 
@@ -83,18 +80,15 @@ class AccountSyncService:
             self._run_job(job_id)
 
     def _run_job(self, job_id):
-        job = db.get_sync_job(job_id)
-        if not job or job["status"] != "queued":
+        if self._stopping.is_set():
             return
-        if self._cancelled(job_id):
-            db.update_sync_job(job_id, status="cancelled")
+        job = db.claim_sync_job(job_id)
+        if not job:
             return
         account = db.get_account(job["account_id"])
         if not account:
             db.update_sync_job(job_id, status="failed", error="Account not found")
             return
-
-        db.update_sync_job(job_id, status="running", error="")
 
         def progress(**values):
             db.update_sync_job(job_id, **values)
@@ -105,9 +99,12 @@ class AccountSyncService:
         # stay invisible in the opening tree until the next successful sync.
         try:
             try:
+                cancelled = self._throttled_cancel_check(job_id)
+                if cancelled():
+                    raise game_import.SyncCancelled()
                 kwargs = {
                     "progress": progress,
-                    "cancelled": self._throttled_cancel_check(job_id),
+                    "cancelled": cancelled,
                 }
                 if self._import_client is not None:
                     kwargs["client"] = self._import_client

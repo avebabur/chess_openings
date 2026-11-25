@@ -6,6 +6,27 @@
 (() => {
   const OX = globalThis.OX;
   const KEY = 'ox.game';
+  let orientedGame = null;
+
+  function splitPgn(pgn) {
+    const tag = /\s*\[\s*(\w+)\s+"((?:[^"\\\r\n]|\\[^\r\n])*)"\s*\]/y;
+    const entries = [];
+    let end = 0;
+    for (let match; (match = tag.exec(pgn));) {
+      entries.push([match[1], match[2]]);
+      end = tag.lastIndex;
+    }
+    return { tags: Object.fromEntries(entries), moves: pgn.slice(end).trim() };
+  }
+
+  function studyTags(game) {
+    const { tags } = splitPgn(game.pgn || '');
+    const escape = value => (value || '').replace(/[\r\n]/g, ' ').replace(/["\\]/g, '\\$&');
+    tags.White ||= escape(game.white);
+    tags.Black ||= escape(game.black);
+    tags.Result = game.result || tags.Result || '*';
+    return tags;
+  }
 
   // The analysis-board address of one of your games (its moves in the URL).
   function gamePath(game) {
@@ -29,8 +50,21 @@
       location.href = `/${lichessId}${game.user_color === 'black' ? '/black' : ''}#${ply ?? plies}`;
       return;
     }
-    try { sessionStorage.setItem(`${KEY}:${decodeURIComponent(path)}`, String(gameId)); } catch { /* blocked */ }
-    location.href = `${path}#${ply ?? plies}`;
+    const hash = `#${ply ?? plies}`;
+    try {
+      const decoded = decodeURIComponent(path);
+      const sameBoard = decodeURIComponent(location.pathname) === decoded;
+      const attachingGame = sameBoard && Number(current()?.id) !== Number(gameId);
+      sessionStorage.setItem(`${KEY}:${decoded}`, JSON.stringify({ id: Number(gameId), studyTags: studyTags(game) }));
+      if (attachingGame) {
+        // Changing only the fragment keeps the existing game card (or no
+        // card at all). Remount it for the newly selected imported game.
+        location.hash = hash;
+        location.reload();
+        return;
+      }
+    } catch { /* storage blocked */ }
+    location.href = path + hash;
   };
 
   // Brings in your newest games from every account (chess.com and Lichess),
@@ -106,8 +140,10 @@
       const path = decodeURIComponent(location.pathname);
       // As a number, like the app's own ids: the check's progress is told
       // apart from another game's by comparing the two.
-      const id = Number(sessionStorage.getItem(`${KEY}:${path}`));
-      if (id > 0) return { id };
+      const savedInTab = JSON.parse(sessionStorage.getItem(`${KEY}:${path}`) || 'null');
+      // Older tabs stored just the id.
+      if (typeof savedInTab === 'number' && savedInTab > 0) return { id: savedInTab };
+      if (savedInTab?.id > 0) return savedInTab;
       // Older builds shared a single record across every Lichess tab.
       const saved = JSON.parse(localStorage.getItem(KEY) || 'null');
       return saved && path === decodeURIComponent(saved.path) ? saved : null;
@@ -143,6 +179,23 @@
       let gameId = saved?.id;
       let polling = null;
       let wanted = true; // load() is still to run (first time, or again once the app is back)
+      let importedTags = saved?.studyTags;
+
+      // Lichess writes the current move tree on submit. Add the imported
+      // game's tags to the resulting form data, before Lichess's study picker.
+      function addStudyTags(event) {
+        if (!importedTags || !event.target.matches('form[method="post"][action="/study/as"]')) return;
+        const data = event.formData;
+        const pgn = data.get('pgn');
+        if (typeof pgn !== 'string' || !pgn || data.get('gameId')) return;
+        const { tags, moves } = splitPgn(pgn);
+        const result = /^(?:1-0|0-1|1\/2-1\/2)$/.test(importedTags.Result) ? importedTags.Result : '*';
+        const headers = { ...importedTags, ...tags, Result: result };
+        const headerText = Object.entries(headers).map(([name, value]) => `[${name} "${value}"]`).join('\n');
+        const moveText = moves.replace(/(?:^|\s)(?:1-0|0-1|1\/2-1\/2|\*)$/, '').trimEnd();
+        data.set('pgn', `${headerText}\n\n${[moveText, result].filter(Boolean).join(' ')}`);
+      }
+      if (saved) document.addEventListener('formdata', addStudyTags);
 
       async function find() {
         if (gameId) return gameId;
@@ -167,13 +220,13 @@
           button.disabled = false;
           return;
         }
-        watchCheck(button);
+        if (alive) watchCheck(button, true);
       }
 
       // Shows how the check of this game is going until it is done. Also
       // picks up a check started earlier (the box is drawn again after a
       // live game in another tab, or the page was reloaded meanwhile).
-      function watchCheck(button) {
+      function watchCheck(button, requested = false) {
         button.disabled = true;
         clearTimeout(polling);
         let ownSince = 0;     // when this game's turn came
@@ -185,7 +238,10 @@
           if (!status) { polling = setTimeout(wait, 2000); return; }
           const own = status?.running && status.game_id === gameId;
           // Done: nothing is running any more, or the run has moved on to another game.
-          if (!status?.running || (ownSince && !own)) return load();
+          if (!status.running || (ownSince && !own)) {
+            const failed = status.error && (requested || ownSince);
+            return load(failed ? 'Stockfish could not finish the check. You can try again.' : '');
+          }
           if (own) {
             const { moves_done: done, moves_total: total } = status;
             if (!ownSince) { ownSince = Date.now(); ownStartedAt = done; }
@@ -231,7 +287,7 @@
         body.replaceChildren(note, OX.el('div', { class: 'btns' }, button));
       }
 
-      async function load() {
+      async function load(checkError = '') {
         wanted = false;
         if (!(await find())) {
           if (onLichessGame && !wanted && alive) offerSync();
@@ -248,8 +304,9 @@
           return;
         }
         if (!alive) return;
+        if (saved && !importedTags) importedTags = studyTags(game);
         show();
-        if (!onLichessGame) OX.lichess.showSide(game.user_color);
+        if (!onLichessGame && orientedGame !== gameId && OX.lichess.showSide(game.user_color)) orientedGame = gameId;
         const result = resultFor(game);
         const opponent = (game.user_color === 'white' ? game.black : game.white) || 'the computer';
         const label = `vs ${opponent}`;
@@ -286,6 +343,8 @@
           mistakes.length
             ? OX.el('div', { class: 'list' }, list)
             : OX.el('div', { class: 'dim row', text: game.mistakes_analyzed_at ? 'Your Stockfish found none in this game.' : 'Not checked yet.' }),
+          ...(!game.mistakes_analyzed_at && checkError
+            ? [OX.el('div', { class: 'bad row', role: 'status', text: checkError })] : []),
           // Stays in view while a long list of mistakes scrolls.
           OX.el('div', { class: 'btns sticky' },
             game.mistakes_analyzed_at ? null : check,
@@ -306,7 +365,12 @@
         // Runs once the box is on the page, on every move, and when the app
         // comes back after being down: only load when there is something to.
         update() { if (wanted) load(); },
-        destroy() { alive = false; clearTimeout(polling); OX.sidePanel.set('game', { available: false }); },
+        destroy() {
+          alive = false;
+          clearTimeout(polling);
+          document.removeEventListener('formdata', addStudyTags);
+          OX.sidePanel.set('game', { available: false });
+        },
       };
     },
   });

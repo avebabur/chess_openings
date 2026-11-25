@@ -121,6 +121,24 @@ SCHEMA = """
         value TEXT
     );
 
+    -- New games on their way to a Lichess study with a deep analysis
+    -- (study_analysis.py): queued -> imported (a chapter exists) -> ready
+    -- (analysed, waiting for the extension to publish) -> published; or
+    -- skipped / failed. `scores` keeps the positions already analysed, so a
+    -- restart picks up where it stopped.
+    CREATE TABLE IF NOT EXISTS study_games (
+        game_id INTEGER PRIMARY KEY REFERENCES games(id) ON DELETE CASCADE,
+        state TEXT NOT NULL DEFAULT 'queued',
+        study_id TEXT,
+        chapter_id TEXT,
+        scores JSON,
+        document JSON,
+        error TEXT DEFAULT '',
+        attempts INTEGER NOT NULL DEFAULT 0,
+        retry_at TEXT,
+        created_at TEXT DEFAULT (datetime('now')),
+        updated_at TEXT DEFAULT (datetime('now'))
+    );
     -- Exact endgame results from the Lichess tablebase. `position` is the
     -- FEN without its fullmove number (the halfmove clock stays: the 50-move
     -- rule can change the result). Rows never go stale.
@@ -186,6 +204,7 @@ def create_database_backup(target_path):
 
 # The repositories live in their own modules; callers reach them as `db.<name>`.
 from account_game_repository import (  # noqa: E402,F401
+    claim_sync_job,
     create_account,
     create_sync_job,
     delete_account,

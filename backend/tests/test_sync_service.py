@@ -1,6 +1,7 @@
 import sys
 import unittest
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 
@@ -22,8 +23,8 @@ class AccountSyncServiceTests(unittest.TestCase):
             return {"seen": 40, "imported": 3, "warnings": ["one archive failed"]}
 
         with (
-            patch.object(sync_service.db, "get_sync_job", return_value={
-                "id": "job", "account_id": 1, "status": "queued",
+            patch.object(sync_service.db, "claim_sync_job", return_value={
+                "id": "job", "account_id": 1, "status": "running",
             }),
             patch.object(sync_service.db, "get_account", return_value={
                 "id": 1, "platform": "chesscom", "username": "player",
@@ -35,7 +36,7 @@ class AccountSyncServiceTests(unittest.TestCase):
         ):
             service._run_job("job")
 
-        self.assertEqual(updates[0]["status"], "running")
+        self.assertEqual(updates[0]["seen"], 40)
         self.assertEqual(updates[-1]["status"], "warning")
         self.assertEqual(updates[-1]["imported"], 3)
         invalidate.assert_called_once()
@@ -51,8 +52,8 @@ class AccountSyncServiceTests(unittest.TestCase):
             raise RuntimeError("network dropped mid-import")
 
         with (
-            patch.object(sync_service.db, "get_sync_job", return_value={
-                "id": "job", "account_id": 7, "status": "queued",
+            patch.object(sync_service.db, "claim_sync_job", return_value={
+                "id": "job", "account_id": 7, "status": "running",
             }),
             patch.object(sync_service.db, "get_account", return_value={
                 "id": 7, "platform": "chesscom", "username": "player",
@@ -67,19 +68,55 @@ class AccountSyncServiceTests(unittest.TestCase):
         self.assertEqual(update.call_args_list[-1].kwargs["status"], "failed")
         invalidate.assert_called_once_with(7)
 
-    def test_cancelled_queued_job_never_calls_upstream(self):
-        service = sync_service.AccountSyncService()
+class SyncCancellationTests(unittest.TestCase):
+    def setUp(self):
+        self.db = sync_service.db
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        database_path = patch.object(self.db, "DB_PATH", str(Path(directory.name) / "sync.db"))
+        database_path.start()
+        self.addCleanup(database_path.stop)
+        self.db.init_db()
+        account = self.db.create_account("lichess", "SyncFixture")
+        job, _ = self.db.create_sync_job(account["id"])
+        self.job_id = job["id"]
+        self.service = sync_service.AccountSyncService(invalidate_cache=lambda _: None)
+
+    def test_cancelled_queued_job_cannot_be_claimed(self):
+        cancelled = self.service.cancel(self.job_id)
+        self.assertEqual(cancelled["status"], "cancelled")
+        self.assertIsNotNone(cancelled["finished_at"])
+        self.assertIsNone(self.db.claim_sync_job(self.job_id))
+        with patch.object(sync_service.game_import, "sync_account") as upstream:
+            self.service._run_job(self.job_id)
+        upstream.assert_not_called()
+        self.assertEqual(self.db.get_sync_job(self.job_id)["status"], "cancelled")
+
+    def test_cancel_during_start_is_pending_until_worker_acknowledges_it(self):
+        get_account = self.db.get_account
+
+        def cancel_during_start(account_id):
+            pending = self.service.cancel(self.job_id)
+            self.assertEqual(pending["status"], "running")
+            self.assertTrue(pending["cancel_requested"])
+            self.assertIsNone(pending["finished_at"])
+            return get_account(account_id)
+
         with (
-            patch.object(sync_service.db, "get_sync_job", return_value={
-                "id": "job", "account_id": 1, "status": "queued",
-            }),
-            patch.object(sync_service.db, "sync_job_cancel_requested", return_value=True),
-            patch.object(sync_service.db, "update_sync_job") as update,
+            patch.object(self.db, "get_account", side_effect=cancel_during_start),
             patch.object(sync_service.game_import, "sync_account") as upstream,
         ):
-            service._run_job("job")
-        update.assert_called_once_with("job", status="cancelled")
+            self.service._run_job(self.job_id)
         upstream.assert_not_called()
+        self.assertEqual(self.db.get_sync_job(self.job_id)["status"], "cancelled")
+
+    def test_finished_sync_cannot_be_cancelled(self):
+        self.db.claim_sync_job(self.job_id)
+        self.db.update_sync_job(self.job_id, status="completed")
+        self.assertIsNone(self.service.cancel(self.job_id))
+        finished = self.db.get_sync_job(self.job_id)
+        self.assertEqual(finished["status"], "completed")
+        self.assertFalse(finished["cancel_requested"])
 
 
 if __name__ == "__main__":
@@ -91,8 +128,8 @@ class FollowUpTests(unittest.TestCase):
         service = sync_service.AccountSyncService(on_imported=on_imported)
         updates = []
         with (
-            patch.object(sync_service.db, "get_sync_job", return_value={
-                "id": "job", "account_id": 4, "status": "queued",
+            patch.object(sync_service.db, "claim_sync_job", return_value={
+                "id": "job", "account_id": 4, "status": "running",
             }),
             patch.object(sync_service.db, "get_account", return_value={
                 "id": 4, "platform": "chesscom", "username": "player",

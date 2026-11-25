@@ -38,9 +38,11 @@ const harnessBridge = `
   const OX = (globalThis.OX = globalThis.OX || {});
   const client = globalThis.OX_createBackendClient('https://ox.invalid/api');
   let onPaused = null;
+  let onRepertoireChanged = null;
   const H = (globalThis.__oxHarness = {
     reports: [], playing: [], paused: false,
     setPaused(paused) { H.paused = paused; onPaused && onPaused(paused); },
+    repertoireChanged() { onRepertoireChanged?.(); },
   });
   OX.bridge = {
     version: ${JSON.stringify(manifest.version)} + '-check',
@@ -56,6 +58,7 @@ const harnessBridge = `
     async setPlaying(playing) { H.playing.push(playing); return { paused: H.paused || playing }; },
     async status() { return { paused: H.paused }; },
     onPaused(callback) { onPaused = callback; },
+    onRepertoireChanged(callback) { onRepertoireChanged = callback; },
     // Kept between pages, like the real extension's storage.
     async loadSettings() { try { return JSON.parse(localStorage.getItem('ox.check.settings') || '{}'); } catch { return {}; } },
     saveSettings(settings) { try { localStorage.setItem('ox.check.settings', JSON.stringify(settings)); } catch {} },
@@ -151,7 +154,13 @@ const fixtures = {
     } };
   </script></body>`),
   '/ox-fixture/explorer': explorerPage,
-  '/ox-fixture/repertoire-delete': explorerPage,
+  // A position past the moves My games follows, in an explorer with nothing
+  // of Lichess's own to show: lila keeps that state's text on one line.
+  '/ox-fixture/explorer-late': explorerPage.replace('<div class="data">', '<div class="data empty">')
+    .replace('rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1', '6k1/5ppp/8/8/8/8/5PPP/6K1 w - - 0 41')
+    .replace('<main', '<style>.explorer-box { width: 350px; overflow: hidden; } .explorer-box .data.empty { white-space: nowrap; }</style><main'),
+  '/ox-fixture/repertoire-delete': explorerPage.replace('<div class="ceval"></div>',
+    '<div class="ceval"></div><div class="analyse__moves"><move p="aa" class="active"><san>e4</san></move></div>'),
   '/ox-fixture/pagination': explorerPage,
   '/ox-fixture/live': `<!doctype html><body>${topnav}<main class="round"><div class="rclock rclock-bottom running"></div></main></body>`,
   '/ox-fixture/finished': `<!doctype html><body>${topnav}<main class="round"><div class="rmoves"><div class="result-wrap">1-0</div></div></main></body>`,
@@ -169,13 +178,18 @@ const browser = await chromium.launch({ channel: process.env.OX_CHROME_CHANNEL |
 const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, bypassCSP: true });
 await context.addInitScript({ content: injected });
 let pageAttempts = 0;
+let historyChanged = false;
 let deleteAttempts = 0;
+let deleteSnapshot = null;
+let editPatch = null;
+let repertoireFetches = 0;
+let checkingFailed = false;
 await context.route('https://ox.invalid/**', async route => {
   const request = route.request();
   const cors = {
     'access-control-allow-origin': '*',
     'access-control-allow-headers': '*',
-    'access-control-allow-methods': 'GET, POST, PUT, DELETE',
+    'access-control-allow-methods': 'GET, POST, PUT, PATCH, DELETE',
   };
   if (request.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors });
   if (request.url() === 'https://ox.invalid/api/games/7' && new URL(request.frame().url()).pathname === '/ox-fixture/review') {
@@ -190,16 +204,23 @@ await context.route('https://ox.invalid/**', async route => {
     const url = new URL(request.url());
     const headers = { ...cors, 'content-type': 'application/json' };
     if (url.pathname === '/api/repertoire/tree') {
+      repertoireFetches++;
       const color = url.searchParams.get('color');
-      const branches = color === 'white' && !deleteAttempts
-        ? [{ id: 1, name: 'Disposable fixture line', moves_san: 'e4 e5', label: 'main' }]
-        : [];
+      const branches = color === 'white' ? [
+        { id: 2, name: editPatch?.name ?? 'Fixture opening', moves_san: editPatch?.moves_san ?? 'e4 e5 Nf3 Nc6', label: editPatch?.label ?? 'main' },
+        ...(!deleteAttempts ? [{ id: 1, name: '', moves_san: 'Nf3 Nc6 e4 e5', label: 'sideline' }] : []),
+      ] : [];
       return route.fulfill({ status: 200, headers, json: { color, branches } });
     }
     if (url.pathname === '/api/repertoire/tree/branches/1' && request.method() === 'DELETE') {
       const first = ++deleteAttempts === 1;
+      deleteSnapshot = request.postDataJSON();
       await new Promise(resolve => setTimeout(resolve, 250));
       return route.fulfill({ status: first ? 200 : 404, headers, json: {} });
+    }
+    if (url.pathname === '/api/repertoire/tree/branches/2' && request.method() === 'PATCH') {
+      editPatch = request.postDataJSON();
+      return route.fulfill({ status: 200, headers, json: {} });
     }
   }
   if (new URL(request.frame().url()).pathname === '/ox-fixture/checking') {
@@ -212,7 +233,9 @@ await context.route('https://ox.invalid/**', async route => {
       } });
     }
     if (url.pathname === '/api/analysis') {
-      return route.fulfill({ status: 200, headers, json: { running: true, game_id: 7, moves_done: 3, moves_total: 10, title: 'You vs Them' } });
+      const json = checkingFailed ? { running: false, error: 'Fixture engine stopped' }
+        : { running: true, game_id: 7, moves_done: 3, moves_total: 10, title: 'You vs Them' };
+      return route.fulfill({ status: 200, headers, json });
     }
   }
   if (new URL(request.frame().url()).pathname === '/ox-fixture/pagination') {
@@ -227,10 +250,13 @@ await context.route('https://ox.invalid/**', async route => {
     if (url.pathname === '/api/position-games') {
       const offset = Number(url.searchParams.get('offset'));
       if (offset && ++pageAttempts === 1) return route.fulfill({ status: 503, headers, json: {} });
+      if (offset && url.searchParams.get('revision') === 'old' && historyChanged) {
+        return route.fulfill({ status: 409, headers, json: {} });
+      }
       const games = Array.from({ length: offset ? 1 : 15 }, (_, i) => ({
-        id: i + offset + 1, user_color: 'white', white: 'White', black: 'Black', result: '1/2-1/2',
+        id: i + offset + 1 + Number(historyChanged), user_color: 'white', white: 'White', black: 'Black', result: '1/2-1/2',
       }));
-      return route.fulfill({ status: 200, headers, json: { games, total: 16 } });
+      return route.fulfill({ status: 200, headers, json: { games, total: 16, revision: historyChanged ? 'new' : 'old' } });
     }
   }
   try {
@@ -331,25 +357,32 @@ if (engineState.state === 'ready') {
 await page.screenshot({ path: join(outDir, 'analysis.png') });
 realReports.push(await lastReport());
 
-await page.setViewportSize({ width: 420, height: 900 });
-const narrowLayout = () => {
-  const board = document.querySelector('main.analyse .cg-wrap').getBoundingClientRect();
-  const panel = document.querySelector('[data-ox-host=repertoire]');
-  return {
-    stacked: panel.getBoundingClientRect().top >= board.bottom - 2,
-    cap: panel.style.getPropertyValue('--ox-max'),
-    overflow: document.documentElement.scrollWidth - innerWidth,
+if (process.env.OX_CHECK_NARROW === '1') {
+  await page.setViewportSize({ width: 420, height: 900 });
+  const narrowLayout = () => {
+    const board = document.querySelector('main.analyse .cg-wrap').getBoundingClientRect();
+    const panel = document.querySelector('[data-ox-host=repertoire]');
+    const overflow = document.documentElement.scrollWidth - innerWidth;
+    return {
+      stacked: panel.getBoundingClientRect().top >= board.bottom - 2,
+      cap: panel.style.getPropertyValue('--ox-max'),
+      overflow,
+      overflowing: overflow > 1 ? [...document.querySelectorAll('body *')]
+        .filter(element => element.getBoundingClientRect().right > innerWidth + 1)
+        .slice(0, 8).map(element => `${element.localName}.${element.getAttribute('class') || ''}`) : [],
+    };
   };
-};
-let narrow;
-for (let attempt = 0; attempt < 10; attempt++) {
-  narrow = await page.evaluate(narrowLayout);
-  if (narrow.stacked && !narrow.cap && narrow.overflow <= 1) break;
-  await page.waitForTimeout(250);
+  let narrow;
+  for (let attempt = 0; attempt < 10; attempt++) {
+    narrow = await page.evaluate(narrowLayout);
+    if (narrow.stacked && !narrow.cap && narrow.overflow <= 1) break;
+    await page.waitForTimeout(250);
+  }
+  record('narrow analysis', narrow.stacked && !narrow.cap && narrow.overflow <= 1,
+    `narrow analysis: stacked ${narrow.stacked}, height cap ${narrow.cap || 'none'}, overflow ${narrow.overflow}px`
+      + (narrow.overflowing.length ? ` (${narrow.overflowing.join(', ')})` : ''));
+  await page.setViewportSize({ width: 1440, height: 1000 });
 }
-record('narrow analysis', narrow.stacked && !narrow.cap && narrow.overflow <= 1,
-  `narrow analysis: stacked ${narrow.stacked}, height cap ${narrow.cap || 'none'}, overflow ${narrow.overflow}px`);
-await page.setViewportSize({ width: 1440, height: 1000 });
 
 // Stepping back a move updates every feature to the new position.
 const fenBefore = await page.evaluate(() => globalThis.OX.state.position?.fen);
@@ -367,11 +400,20 @@ record('analysis', fenBefore && fenAfter && fenBefore !== fenAfter, 'analysis: t
     await new Promise(resolve => setTimeout(resolve, 1500));
     const name = root?.querySelector('.saveform input');
     const state = name && { value: name.value, selected: name.selectionStart === 0 && name.selectionEnd === name.value.length, focused: root.activeElement === name };
-    [...(root?.querySelectorAll('.saveform button') || [])].find(b => b.textContent === 'Cancel')?.click();
     return state;
   });
   record('analysis', !!form?.value && form.selected && form.focused,
     `analysis: Save this line suggests the opening's name, selected for typing over (“${form?.value || ''}”)`);
+  await page.getByRole('button', { name: 'As Black', exact: true }).press('Enter');
+  record('repertoire', await page.evaluate(() => {
+    const root = document.querySelector('[data-ox-host=repertoire]').shadowRoot;
+    return root.activeElement?.textContent === 'As Black' && root.activeElement.getAttribute('aria-pressed') === 'true';
+  }), 'repertoire: keyboard color selection keeps focus and exposes the selected side');
+  await page.getByRole('textbox', { name: 'Name of the line' }).press('Escape');
+  record('repertoire', await page.evaluate(() => {
+    const root = document.querySelector('[data-ox-host=repertoire]').shadowRoot;
+    return !root.querySelector('.saveform') && root.activeElement?.classList.contains('ox-open-save');
+  }), 'repertoire: Escape closes the save form and returns focus to Save this line');
 }
 
 // 2. A study: no FEN box, so the position comes from the move list.
@@ -422,10 +464,33 @@ if (someGame) {
   record('your game', (await page.evaluate(() => globalThis.OX.state.position?.fen?.split(' ')[5])) === '4',
     'your game: opened at the requested move');
   await page.screenshot({ path: join(outDir, 'your-game.png') });
+
+  // The same PGN can already be open as a plain analysis board. A fragment
+  // change alone leaves its content scripts and empty game card mounted.
+  const gameAddress = new URL(page.url());
+  await page.evaluate(path => sessionStorage.removeItem(`ox.game:${decodeURIComponent(path)}`), gameAddress.pathname);
+  gameAddress.hash = '';
+  await open('https://lichess.org/analysis');
+  await open(gameAddress.href);
+  const gameCard = page.locator('[data-ox-host=game] .subhead').filter({ hasText: 'Your mistakes' });
+  record('your game', !await gameCard.isVisible(), 'your game: plain analysis of the same PGN has no game card');
+  await page.evaluate(id => { globalThis.OX.openMyGame(id, 6); }, someGame.id);
+  await gameCard.waitFor({ timeout: 6000 }).catch(() => {});
+  const requestedPly = await page.evaluate(() => globalThis.OX.state.position?.fen?.split(' ').slice(4)[1]);
+  record('your game', await gameCard.isVisible() && requestedPly === '4',
+    'your game: opening the already displayed PGN attaches the review card at the requested ply');
 }
 
 // 5. Safety self-tests on local copies of Lichess's game page.
 console.log('\nSafety self-tests');
+await context.route('https://lichess.org/game/oxFixt03/black/analysis', route =>
+  route.fulfill({ status: 200, contentType: 'text/html', body: explorerPage }));
+await open('https://lichess.org/game/oxFixt03/black/analysis');
+expectStatuses('game forecast', await statuses(), { engine: 'paused', repertoire: 'paused' });
+record('game forecast', (await hosts()).length === 0 &&
+  (await page.evaluate(() => globalThis.__oxHarness.playing.at(-1))) === true,
+  'game forecast: an analysis-looking forecast locks every Lichess tab and shows no extension controls');
+
 await open('https://lichess.org/ox-fixture/live');
 const live = await statuses();
 expectStatuses('live game', live, { engine: 'n/a', repertoire: 'n/a' });
@@ -500,15 +565,100 @@ await rows.nth(15).waitFor({ timeout: 5000 });
 record('pagination', await rows.count() === 16 && pageAttempts === 2
   && await rows.nth(15).evaluate(el => el.contains(document.activeElement)),
   'pagination: retry appends the missing games once and focuses the first new game');
+await page.locator('.ox-side').click();
+await rows.first().waitFor();
+historyChanged = true;
+await page.getByRole('button', { name: 'More games' }).press('Enter');
+await page.getByText('Your game list changed. Showing the newest games again.').waitFor();
+record('pagination', await rows.count() === 15 && await rows.first().getAttribute('data-id') === '2',
+  'pagination: an import between pages refreshes the first page without appending duplicates');
 
 await open('https://lichess.org/ox-fixture/repertoire-delete');
-await page.getByRole('button', { name: 'Browse 1 line' }).click();
-await page.getByRole('button', { name: 'Delete this line' }).click();
-await page.getByRole('button', { name: 'Delete', exact: true }).dblclick();
 const repertoire = page.locator('[data-ox-host=repertoire]');
+const savedLines = repertoire.locator('.saved-line');
+const moveOrder = line => line.locator('.line-moves');
+record('repertoire position', await savedLines.count() === 1 && await moveOrder(savedLines.first()).textContent() === '1. e4 e5 2. Nf3 Nc6',
+  'repertoire: the current position shows its saved line immediately');
+await repertoire.getByRole('button', { name: 'Manage saved lines' }).click();
+const lineSearch = page.getByRole('searchbox', { name: 'Find a repertoire line' });
+await lineSearch.fill('Nf3 Nc6 e4');
+await lineSearch.press('ArrowLeft');
+const beforeRefresh = repertoireFetches;
+await page.evaluate(() => globalThis.__oxHarness.repertoireChanged());
+await page.waitForFunction(() => {
+  const root = document.querySelector('[data-ox-host=repertoire]').shadowRoot;
+  return root.querySelector('.line-matches')?.textContent === '1 of 2';
+});
+// Wait for both replies and the asynchronous redraw, before inspecting focus.
+await page.waitForTimeout(400);
+record('repertoire filter', repertoireFetches === beforeRefresh + 2 &&
+  await lineSearch.evaluate(input => input === input.getRootNode().activeElement && input.selectionStart === 9),
+  'repertoire: a change in another tab keeps filter focus and cursor position');
+record('repertoire filter', await moveOrder(savedLines.filter({ visible: true }).first()).textContent() === '1. Nf3 Nc6 2. e4 e5',
+  'repertoire: an unnamed line is searchable by its moves');
+await repertoire.getByRole('button', { name: 'Back to board position' }).click();
+
+const setRepertoirePosition = sans => page.evaluate(moves => {
+  const chess = new globalThis.OXChess();
+  const list = document.querySelector('.analyse__moves');
+  list.replaceChildren(...moves.map((san, i) => {
+    chess.move(san);
+    const move = document.createElement('move');
+    move.setAttribute('p', 'aa'.repeat(i + 1));
+    move.classList.toggle('active', i === moves.length - 1);
+    const notation = document.createElement('san');
+    notation.textContent = san;
+    move.append(notation);
+    return move;
+  }));
+  document.querySelector('.copyable').value = chess.fen();
+}, sans);
+await setRepertoirePosition(['e4', 'c5']);
+await repertoire.getByRole('heading', { name: 'Saved lines before 1… c5' }).waitFor();
+record('repertoire position', await savedLines.count() === 1 && !await savedLines.first().getByRole('button', { name: /Play the rest/ }).count(),
+  'repertoire: an unsaved continuation shows the last saved position with its own heading');
+await setRepertoirePosition(['Nf3', 'Nc6', 'e4', 'e5']);
+await repertoire.getByRole('heading', { name: 'Saved lines at this position' }).waitFor();
+record('repertoire position', await savedLines.count() === 2 && await moveOrder(savedLines.first()).textContent() === '1. Nf3 Nc6 2. e4 e5'
+  && await savedLines.nth(1).getByText(/Other move order/).isVisible(),
+  'repertoire: the unnamed line on the board comes before the main line that transposes');
+await savedLines.first().getByRole('button', { name: 'Delete this line' }).click();
+const confirmation = repertoire.locator('.linerow.confirm');
+record('repertoire delete', await confirmation.getByText('1. Nf3 Nc6 2. e4 e5', { exact: true }).isVisible(),
+  'repertoire: the confirmation shows the exact move order of the line on the board');
+await confirmation.getByRole('button', { name: 'Cancel' }).click();
+record('repertoire delete', deleteAttempts === 0 && await confirmation.count() === 0,
+  'repertoire: cancelling leaves the line saved');
+await savedLines.first().getByRole('button', { name: 'Delete this line' }).click();
+await confirmation.getByRole('button', { name: 'Delete', exact: true }).dblclick();
 await repertoire.getByText('Line deleted.').waitFor();
-record('repertoire delete', deleteAttempts === 1 && await repertoire.getByText('Disposable fixture line').count() === 0,
+record('repertoire delete', deleteAttempts === 1 && await savedLines.count() === 1,
   'repertoire: double-clicking Delete removes the line and sends one request');
+record('repertoire delete', deleteSnapshot?.name === '' &&
+  deleteSnapshot?.moves_san === 'Nf3 Nc6 e4 e5' && deleteSnapshot?.label === 'sideline',
+  'repertoire: Delete sends the exact line that was confirmed');
+record('repertoire position', await repertoire.getByText('1. e4 e5 2. Nf3 Nc6', { exact: true }).isVisible(),
+  'repertoire: the other move order stays saved');
+
+await savedLines.first().getByRole('button', { name: 'Edit this line' }).click();
+const lineEditor = repertoire.locator('.line-editor');
+await lineEditor.getByRole('heading', { name: 'Edit White line' }).waitFor();
+const editName = lineEditor.getByRole('textbox', { name: 'Name' });
+const editKind = lineEditor.getByRole('combobox', { name: 'Line type' });
+const saveChanges = lineEditor.getByRole('button', { name: 'Save changes' });
+record('repertoire edit', await editName.inputValue() === 'Fixture opening' && await editKind.inputValue() === 'main'
+  && await saveChanges.isDisabled(), 'repertoire: Edit opens the existing line and only enables Save after a change');
+await setRepertoirePosition(['e4', 'c5', 'Nf3']);
+await page.waitForFunction(() => globalThis.OX.state.position?.fen.includes(' b '));
+await lineEditor.getByRole('button', { name: 'Use board moves' }).click();
+record('repertoire edit', await lineEditor.getByText('1. e4 c5 2. Nf3', { exact: true }).isVisible() && editPatch === null,
+  'repertoire: the editor stays open while the board changes and previews the replacement before saving');
+await saveChanges.click();
+await repertoire.getByText('Line updated.').waitFor();
+record('repertoire edit', editPatch?.moves_san === 'e4 c5 Nf3' && editPatch.expected?.moves_san === 'e4 e5 Nf3 Nc6'
+  && !('name' in editPatch) && !('label' in editPatch), 'repertoire: replacing moves updates the same line and retains its name and type');
+record('repertoire edit', await savedLines.count() === 1 && await moveOrder(savedLines.first()).textContent() === '1. e4 c5 2. Nf3',
+  'repertoire: the current position shows the updated line immediately');
 
 await open('https://lichess.org/ox-fixture/practice');
 record('practice', await page.evaluate(() => globalThis.OX.lichess.practice()
@@ -520,6 +670,22 @@ record('practice', await page.evaluate(() => {
 await page.evaluate(() => globalThis.__oxHarness.setPaused(true));
 record('practice', await page.evaluate(() => !globalThis.OX.lichess.practice()),
   'practice: the live lock blocks the Practice command');
+
+// A long "nothing here" sentence wraps inside the explorer instead of
+// running out of it ("…of each game; this p").
+await open('https://lichess.org/ox-fixture/explorer-late');
+if (!await page.evaluate(() => document.querySelector('.explorer-box').classList.contains('ox-mine'))) await page.click('.ox-tab');
+await page.waitForFunction(() => !!document.querySelector('.ox-mine-content .ox-empty'), null, { timeout: 15000 }).catch(() => {});
+{
+  const empty = await page.evaluate(() => {
+    const node = document.querySelector('.ox-mine-content .ox-empty');
+    return node && { text: node.textContent, fits: node.scrollWidth <= node.clientWidth };
+  });
+  record('explorer', !!empty && /this position is later/.test(empty.text) && empty.fits,
+    `explorer: a long empty-state sentence wraps inside the box (${empty ? `"${empty.text.slice(0, 40)}…", ${empty.fits ? 'fits' : 'cut off'}` : 'absent'})`);
+}
+await page.click('.explorer-title .button-link:not(.ox-tab)');
+await page.waitForTimeout(400);
 
 // The gear closes Lichess's explorer settings; with My games chosen on top of
 // them, that must not leave My games.
@@ -543,15 +709,42 @@ await page.waitForTimeout(1500);
     [...(document.querySelector('[data-ox-host=game]')?.shadowRoot?.querySelectorAll('button') || [])].map(b => b.textContent).join(' | '));
   record('your game', /Checking… move 4 of 10/.test(text), `your game: a running check of this game shows how far it is (“${text.slice(0, 60)}”)`);
 }
+checkingFailed = true;
+const checkFailure = page.getByText('Stockfish could not finish the check. You can try again.');
+await checkFailure.waitFor({ timeout: 5000 });
+record('your game', await checkFailure.isVisible() && await page.getByRole('button', { name: 'Check with your Stockfish' }).isEnabled(),
+  'your game: a failed background check explains what happened and can be retried');
 await page.evaluate(() => sessionStorage.setItem('ox.game:/ox-fixture/review', '7'));
 await open('https://lichess.org/ox-fixture/review');
-await page.evaluate(() => document.addEventListener('ox-lichess', event => {
-  const { name, args } = JSON.parse(event.detail);
-  if (name === 'jumpToMain') window.reviewJump = args[0];
-}));
-await page.getByRole('button', { name: /e4.*best d4/ }).press('Enter');
-record('your game', await page.evaluate(() => window.reviewJump === 0),
-  'your game: Enter on a mistake jumps to the position before it');
+await page.evaluate(() => {
+  window.reviewKeys = { jumps: [], redraws: 0, pageSpaces: 0 };
+  window.site = { analysis: {
+    jumpToMain(ply) { window.reviewKeys.jumps.push(ply); },
+    redraw() { window.reviewKeys.redraws++; },
+  } };
+  document.addEventListener('keydown', event => {
+    if (event.key !== ' ') return;
+    window.reviewKeys.pageSpaces++;
+    event.preventDefault(); // as when the page handles Space as a board shortcut
+  });
+});
+const mistake = page.getByRole('button', { name: /e4.*best d4/ });
+await mistake.press('Enter');
+await mistake.press('Space');
+record('your game', await page.evaluate(() => {
+  const { jumps, redraws, pageSpaces } = window.reviewKeys;
+  return jumps.length === 2 && jumps.every(ply => ply === 0) && redraws === 2 && pageSpaces === 0;
+}), 'your game: Enter and Space jump once each and redraw the move list');
+const sideTabs = () => page.evaluate(() => {
+  const root = document.querySelector('[data-ox-host=sidetabs]').shadowRoot;
+  return [root.activeElement?.textContent, root.querySelector('[aria-selected=true]')?.textContent];
+});
+await page.getByRole('tab', { name: 'Repertoire' }).press('Space');
+record('your game', (await sideTabs()).every(value => value === 'Repertoire'),
+  'your game: keyboard activation keeps focus on the selected Repertoire tab');
+await page.keyboard.press('ArrowLeft');
+record('your game', (await sideTabs()).every(value => value === 'My game'),
+  'your game: Left Arrow selects and focuses the My game tab');
 
 // "Sync games" is offered on your own Lichess games only, not on a game you
 // are merely looking at (Lichess lists you among its spectators).

@@ -148,6 +148,17 @@
     }).join(' ');
   }
 
+  // A line's row shows ten of its moves: the ones around move number
+  // `around` (where the board is, or where the line parts from it). A line
+  // that fits is shown whole, and one cut short at the front shows its last
+  // ten: "… 1… a6 2. b3 b6 3. h3" hid a single move behind its dots.
+  const EXCERPT_PLIES = 10;
+  function excerpt(sans, around) {
+    const from = Math.max(0, Math.min(around - 4, sans.length - EXCERPT_PLIES));
+    const to = from + EXCERPT_PLIES;
+    return `${from ? '… ' : ''}${numberFrom(from, sans.slice(from, to))}${to < sans.length ? ' …' : ''}`;
+  }
+
   const plain = name => (name || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 
   // Many lines share a name ("Caro-Kann Defense" twice). For those: the moves
@@ -175,5 +186,5 @@
     return out;
   }
 
-  OX.rep = { START, replay, buildIndex, sorted, mainLine, leftAt, extensions, otherOrder, numberFrom, tellApart, plain };
+  OX.rep = { START, replay, buildIndex, sorted, mainLine, leftAt, extensions, otherOrder, numberFrom, excerpt, tellApart, plain };
 })();

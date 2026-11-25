@@ -18,17 +18,26 @@ Protocol as in lichess-org/external-engine's example-provider.py (Sept 2026):
 node-limited search; Mastery mode uses your search time) unless
 OPENINGS_PRACTICE_SECONDS is set.
 
+The Lichess page on this computer skips the broker: the extension sends its
+analysis request to POST /api/lichess-engine/analyse (local_analysis below),
+answered with exactly what the broker would have streamed. Through the broker
+every position cost three requests against its per-address limit, and
+stepping through a game ran into it ("Loading engine" at every other move).
+The broker registration stays: Lichess lists the engine only because of it.
+
 Every job first makes sure no earlier search is still running (see
 UciProcess.settle): an abandoned search used to hand its stale bestmove to the
 next job, which left Practice stuck.
 """
 import asyncio
 import collections
+import json
 import logging
 import os
 import secrets
 import time
 
+import chess
 import httpx
 
 import stockfish
@@ -47,6 +56,7 @@ TOKEN_URL = (
     "https://lichess.org/account/oauth/token/create"
     "?scopes[]=engine:read&scopes[]=engine:write&description=Openings+app"
 )
+ENGINE_THREADS = 3
 MAX_HASH_MB = 1024
 KEEP_ALIVE_SECONDS = 300  # an idle Stockfish is closed after this
 # 0 = do what Lichess asks (its normal Practice searches ~600k nodes, under a
@@ -99,11 +109,205 @@ def complete_report(info, work):
 def registration(secret):
     return {
         "name": ENGINE_NAME,
-        "maxThreads": os.cpu_count() or 4,
+        "maxThreads": ENGINE_THREADS,
         "maxHash": MAX_HASH_MB,
         "variants": ["chess"],
         "providerSecret": secret,
     }
+
+
+# --- What Lichess's engine broker does, for the page on this computer ----------
+# lila-engine (Sept 2026): src/api.rs Work::sanitize checks the page's request
+# and hands it on; src/emit.rs turns the provider's UCI lines into the ndjson
+# that lila's ui/lib/src/ceval/engines/externalEngine.ts reads.
+MAX_MOVES = 600
+PV_MOVES = 30
+UCI_MOVE = frozenset("abcdefgh12345678qrbnkPNBRQK@")
+
+
+class InvalidWork(ValueError):
+    """The broker would refuse this request (400)."""
+
+
+def _whole(value, name, low=0):
+    if isinstance(value, bool) or not isinstance(value, int) or value < low:
+        raise InvalidWork(f"bad {name}")
+    return value
+
+
+def sanitize_work(work):
+    """The work Lichess's broker would hand this provider for a page's
+    request, and the position searched; InvalidWork if it would refuse."""
+    if not isinstance(work, dict):
+        raise InvalidWork("no work")
+    if isinstance(work.get("by"), dict):  # as search_command reads it
+        work = {**{k: v for k, v in work.items() if k != "by"}, **work["by"]}
+    search = next(({k: work[k]} for k in ("movetime", "depth", "nodes") if k in work), None)
+    if search is None:
+        raise InvalidWork("no search limit")
+    for name, value in search.items():
+        _whole(value, name)
+    if work.get("variant") != "chess":  # what this engine is registered for
+        raise InvalidWork("unsupported variant")
+    multi_pv = _whole(work.get("multiPv"), "multiPv")
+    if multi_pv > 5:
+        raise InvalidWork("multiPv: supported range is 1 to 5")
+    session = work.get("sessionId")
+    if not isinstance(session, str) or not session:
+        raise InvalidWork("bad sessionId")
+    fen, moves = work.get("initialFen"), work.get("moves")
+    if not isinstance(fen, str) or not isinstance(moves, list):
+        raise InvalidWork("bad position")
+    if len(moves) > MAX_MOVES:
+        raise InvalidWork("too many moves")
+    try:
+        board = chess.Board(fen, chess960=True)
+    except ValueError as exc:
+        raise InvalidWork(f"illegal initial position: {exc}") from exc
+    if not board.is_valid():
+        raise InvalidWork("illegal initial position")
+    initial_fen = board.fen()
+    played = []
+    for uci in moves:
+        try:
+            move = board.parse_uci(uci) if isinstance(uci, str) else None
+        except ValueError:
+            move = None
+        if move is None:
+            raise InvalidWork(f"illegal uci move: {uci!r}"[:80])
+        # Castling as king-takes-rook: Stockfish runs with UCI_Chess960.
+        played.append(board.uci(move, chess960=True))
+        board.push(move)
+    return {
+        "sessionId": session,
+        "threads": min(_whole(work.get("threads"), "threads", 1), ENGINE_THREADS),
+        "hash": min(_whole(work.get("hash"), "hash", 1), MAX_HASH_MB),
+        **search,
+        "multiPv": max(1, multi_pv),
+        "variant": "chess",
+        "initialFen": initial_fen,
+        "moves": played,
+    }, board
+
+
+def _parse_info(words):
+    """The fields of a UCI "info" line that the broker reads (src/uci.rs)."""
+    info = {}
+    i = 0
+    while i < len(words):
+        key = words[i]
+        i += 1
+        if key in ("multipv", "depth", "time", "nodes") and i < len(words):
+            try:
+                info[key] = int(words[i])
+            except ValueError:
+                return None  # the broker stops at a line it can't read
+            i += 1
+        elif key == "score" and i + 1 < len(words) and words[i] in ("cp", "mate"):
+            try:
+                info["score"] = (words[i], int(words[i + 1]))
+            except ValueError:
+                return None
+            i += 2
+            while i < len(words) and words[i] in ("lowerbound", "upperbound"):
+                info["bound"] = True
+                i += 1
+        elif key == "pv":
+            pv = []
+            while i < len(words) and 4 <= len(words[i]) <= 5 and set(words[i]) <= UCI_MOVE:
+                pv.append(words[i])
+                i += 1
+            info["pv"] = pv
+        elif key == "string":
+            break
+    return info
+
+
+class BrokerEmit:
+    """lila-engine's Emit: the provider's lines in, the page's ndjson out.
+
+    Each result is a snapshot of every line (MultiPV) at the newest depth,
+    sent once all of them are in; the last one carries the best move."""
+
+    def __init__(self, board):
+        self.board = board.copy(stack=False)
+        self.white = board.turn == chess.WHITE
+        self.time = self.depth = self.nodes = 0
+        self.pvs = []
+        self.done = False
+
+    def _snapshot(self, bestmove=None, ponder=None):
+        out = {"time": self.time, "depth": self.depth, "nodes": self.nodes,
+               "pvs": [pv for pv in self.pvs if pv is not None]}
+        if bestmove is not None:
+            out["bestmove"] = bestmove
+            if ponder:
+                out["ponder"] = ponder
+        return (json.dumps(out, separators=(",", ":")) + "\n").encode()
+
+    def _moves(self, pv):
+        board = self.board.copy(stack=False)
+        moves = []
+        for uci in pv[:PV_MOVES]:
+            try:
+                move = board.parse_uci(uci)
+            except ValueError:
+                break
+            moves.append(board.uci(move, chess960=True))
+            board.push(move)
+        return moves
+
+    def finish(self, bestmove="(none)", ponder=None):
+        if self.done:
+            return []
+        self.done = True
+        self.pvs = [pv for pv in self.pvs if pv is not None]
+        return [self._snapshot(bestmove, ponder)]
+
+    def feed(self, line):
+        """The ndjson lines to send for one line from analyse()."""
+        if self.done:
+            return []
+        text = line.decode("utf-8", errors="replace").strip()
+        if text.startswith("{"):
+            try:
+                control = json.loads(text)
+            except ValueError:
+                return self.finish()
+            return [b'{"keepalive":true}\n'] if control == {"keepalive": True} else self.finish()
+        words = text.split()
+        if not words:
+            return []
+        if words[0] == "bestmove":
+            best = words[1] if len(words) > 1 else "(none)"
+            ponder = words[3] if len(words) > 3 and words[2] == "ponder" and words[3] != "(none)" else None
+            return self.finish(best, ponder)
+        if words[0] != "info":
+            return []
+        info = _parse_info(words[1:])
+        if info is None:
+            return self.finish()
+        multi_pv = max(1, info.get("multipv", 1))
+        if multi_pv > 5:
+            return self.finish()
+        line_pv = None
+        if "depth" in info and "score" in info and "pv" in info and (multi_pv > 1 or not info.get("bound")):
+            kind, value = info["score"]
+            line_pv = {"moves": self._moves(info["pv"]), kind: value if self.white else -value, "depth": info["depth"]}
+        if multi_pv == 1:
+            for key in ("time", "depth", "nodes"):
+                if key in info:
+                    setattr(self, key, info[key])
+            self.pvs = [None] * len(self.pvs)
+        elif "depth" in info:
+            self.depth = min(self.depth, info["depth"])
+        if len(self.pvs) < multi_pv:
+            self.pvs += [None] * (multi_pv - len(self.pvs))
+        if line_pv is not None:
+            self.pvs[multi_pv - 1] = line_pv
+        if self.pvs and all(pv is not None for pv in self.pvs):
+            return [self._snapshot()]
+        return []
 
 
 class UciProcess:
@@ -222,7 +426,8 @@ class UciProcess:
                 await self.send("ucinewgame")
                 await self.isready()
             wanted = {
-                "Threads": work["threads"],
+                # Lichess may send an older saved thread preference.
+                "Threads": ENGINE_THREADS,
                 "Hash": min(int(work["hash"]), MAX_HASH_MB),
                 "MultiPV": work["multiPv"],
                 "UCI_Variant": work["variant"],
@@ -245,7 +450,7 @@ class UciProcess:
             self.searching = True
             await self.send(command)
             started.set()
-            record.update(go=command, quiet=quiet, lines=0, ended="running")
+            record.update(go=command, threads=self.options["Threads"], quiet=quiet, lines=0, ended="running")
 
             last_info = None
             last_rest = None  # the newest report sent, to restate as complete
@@ -348,6 +553,10 @@ class LichessEngineProvider:
         self.error = ""
         self.engine_id = None
         self.jobs = 0
+        self.local_jobs = 0  # of those, asked by the page on this computer directly
+        # One Stockfish serves both paths: a job (from the broker or the page)
+        # takes it only after the search before it has stopped and ended.
+        self._claim_lock = asyncio.Lock()
         # A game is in progress in a Lichess tab (the extension says so): every
         # request is answered with nothing and the search in progress stops, so
         # your Stockfish can't help in any Lichess tab during a game. The app
@@ -366,6 +575,7 @@ class LichessEngineProvider:
             "token_url": TOKEN_URL,
             "practice_seconds": PRACTICE_SECONDS,
             "jobs": self.jobs,
+            "local_jobs": self.local_jobs,
             "paused": self.paused,
             "recent": list(self.recent),
         }
@@ -469,6 +679,10 @@ class LichessEngineProvider:
                 if res.status_code >= 400:
                     self.error = f"Lichess's engine service answered {res.status_code}"
                     await asyncio.sleep(self._poll_pause)
+                else:
+                    # "Nothing to do yet" is an answer too: the service is
+                    # reachable again, so an earlier refusal no longer stands.
+                    self.error = ""
                 if self._engine and self._engine.alive() and self._engine.idle_time() > KEEP_ALIVE_SECONDS:
                     await self._engine.terminate()
                 continue
@@ -482,21 +696,120 @@ class LichessEngineProvider:
             def interrupted(generation=generation):
                 return self.paused or generation != self._pause_generation
 
-            if self._engine and self._engine.alive():
-                try:
-                    await self._engine.stop()
-                except EOFError:
-                    pass
-            if self._job_task:
-                await asyncio.gather(self._job_task, return_exceptions=True)
-            if interrupted():
+            async with self._claim_lock:
+                taken = await self._claim_engine(interrupted)
+                if taken:
+                    started = asyncio.Event()
+                    self._job_task = asyncio.create_task(self._handle(http, job, started, interrupted))
+                    await started.wait()
+            if not taken:
                 await self._answer_nothing(http, job)
-                continue
-            if not (self._engine and self._engine.alive()):
-                self._engine = await UciProcess.create(self._stockfish_path)
-            started = asyncio.Event()
-            self._job_task = asyncio.create_task(self._handle(http, job, started, interrupted))
-            await started.wait()
+
+    async def _claim_engine(self, interrupted):
+        """Stop the search in progress, wait for its job to end and make sure
+        Stockfish runs. False if a game started meanwhile. Under _claim_lock."""
+        if self._engine and self._engine.alive():
+            try:
+                await self._engine.stop()
+            except EOFError:
+                pass
+        if self._job_task and not self._job_task.done():
+            # wait(), not gather(): a page that goes away while this waits
+            # must not cancel the older job in the middle of its cleanup.
+            await asyncio.wait([self._job_task])
+        if interrupted():
+            return False
+        if not (self._engine and self._engine.alive()):
+            self._engine = await UciProcess.create(self._stockfish_path)
+        return True
+
+    def can_answer(self, engine_id):
+        """Whether a page's request for `engine_id` is this app's to answer."""
+        return bool(self.engine_id) and engine_id == self.engine_id
+
+    def stockfish_found(self):
+        return bool(self._stockfish_path and os.access(self._stockfish_path, os.X_OK))
+
+    async def local_analysis(self, work, board):
+        """Answer the Lichess page on this computer directly: the results
+        Lichess's broker would have streamed it (BrokerEmit), as ndjson lines.
+        ``work`` and ``board`` come from sanitize_work. The same rules as a
+        broker job: during a game it answers with nothing, a newer request
+        (from either path) stops this search, and closing the stream (Lichess
+        cancelled: you moved on) stops Stockfish."""
+        emit = BrokerEmit(board)
+        record = {"at": time.strftime("%H:%M:%S"), "via": "local",
+                  "ask": {k: work[k] for k in ("movetime", "depth", "nodes", "multiPv", "threads", "hash") if k in work},
+                  "moves": len(work.get("moves") or [])}
+        self.recent.append(record)
+        if self.paused:
+            record["ended"] = "paused: answered with nothing"
+            for chunk in emit.feed(EMPTY_SEARCH):
+                yield chunk
+            return
+        generation = self._pause_generation
+        gone = []  # set once the page stopped listening
+
+        def interrupted():
+            return bool(gone) or self.paused or generation != self._pause_generation
+
+        out = asyncio.Queue()
+        task = None
+        try:
+            async with self._claim_lock:
+                if await self._claim_engine(interrupted):
+                    started = asyncio.Event()
+                    task = self._job_task = asyncio.create_task(
+                        self._handle_local(work, emit, out, started, interrupted, record, gone))
+                    await started.wait()
+            if task is None:
+                record["ended"] = "paused: answered with nothing"
+                for chunk in emit.feed(EMPTY_SEARCH):
+                    yield chunk
+                return
+            while (chunk := await out.get()) is not None:
+                yield chunk
+        finally:
+            # No awaiting here: the stream is being cancelled (the page went),
+            # and inside a cancelled scope every await is cancelled again.
+            if task is not None and not task.done():
+                gone.append(True)
+                asyncio.get_running_loop().create_task(self._stop_for(task))
+
+    async def _stop_for(self, task):
+        """Stop the search of `task`'s job, unless a newer job has taken over."""
+        if self._job_task is task and not task.done() and self._engine:
+            try:
+                await self._engine.stop()
+            except EOFError:
+                pass
+
+    async def _handle_local(self, work, emit, out, started, interrupted, record, gone):
+        self.jobs += 1
+        self.local_jobs += 1
+        if self._on_activity:
+            self._on_activity()
+        lines = self._engine.analyse({"work": work}, started, record=record, interrupted=interrupted)
+        try:
+            async for line in lines:
+                for chunk in emit.feed(line):
+                    out.put_nowait(chunk)
+                if emit.done:
+                    break
+        except EOFError:
+            record["ended"] = "Stockfish exited"
+            log.warning("Lichess engine: Stockfish exited")
+        finally:
+            try:
+                await lines.aclose()  # runs analyse()'s cleanup: stop + drain
+            except (EOFError, RuntimeError):
+                pass
+            if gone:  # the page stopped listening (you moved on)
+                record["ended"] = "cancelled"
+            for chunk in emit.finish():
+                out.put_nowait(chunk)
+            out.put_nowait(None)
+            started.set()
 
     async def _answer_nothing(self, http, job):
         """During a game: answer Lichess with no analysis at all, just the
@@ -523,6 +836,7 @@ class LichessEngineProvider:
         work = job.get("work", {})
         record = {
             "at": time.strftime("%H:%M:%S"),
+            "via": "broker",
             "ask": {k: work[k] for k in ("movetime", "depth", "nodes", "by", "infinite", "multiPv", "threads", "hash") if k in work},
             "moves": len(work.get("moves") or []),
         }

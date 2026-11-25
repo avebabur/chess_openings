@@ -76,8 +76,10 @@
       let side = boardSide();
       let games = [];
       let total = 0;
+      let revision = null;
       let token = 0;
       let loadingMore = false;
+      let openingGame = false;
       let pageError = false;
       let alive = true;
       const open = () => !!OX.settings.mineOpen;
@@ -154,6 +156,17 @@
         const note = content.querySelector('.ox-mine-note');
         if (note) { note.textContent = text; note.title = text; }
       };
+      async function openGame(game) {
+        if (openingGame) return;
+        openingGame = true;
+        try {
+          await OX.openMyGame(game.id, game.ply || undefined);
+        } catch (error) {
+          showNote(error.offline ? OX.offlineText() : "Couldn't open this game. Try again.");
+        } finally {
+          openingGame = false;
+        }
+      }
       syncButton.addEventListener('click', async event => {
         event.stopPropagation();
         const run = ++syncRun;
@@ -228,7 +241,7 @@
               // At the starting position (your whole history) "this position"
               // is move 0: open the game at its end instead.
               'data-id': g.id, title: g.ply ? 'Open this game at this position' : 'Open this game',
-              onclick: () => OX.openMyGame(g.id, g.ply || undefined).catch(() => {}),
+              onclick: () => openGame(g),
             },
             OX.el('td', { class: 'game-rating' }, OX.el('span', { text: ratings[0] ?? '' }), OX.el('span', { text: ratings[1] ?? '' })),
             OX.el('td', {}, OX.el('button', {
@@ -251,6 +264,7 @@
 
       async function fetchGames(offset) {
         const query = new URLSearchParams({ fen: position.fen, color, limit: PAGE, offset });
+        if (offset && revision) query.set('revision', revision);
         return OX.bridge.api('GET', `/position-games?${query}`);
       }
 
@@ -262,7 +276,17 @@
         button.textContent = 'Loading…';
         const mine = token;
         const offset = games.length;
-        const res = await fetchGames(offset).catch(() => null);
+        let res;
+        try {
+          res = await fetchGames(offset);
+        } catch (error) {
+          if (mine !== token) return;
+          if (error.status === 409) {
+            showNote('Your game list changed. Showing the newest games again.');
+            await load(position, null, document.activeElement === button);
+            return;
+          }
+        }
         if (mine !== token) return;
         loadingMore = false;
         pageError = !res;
@@ -299,6 +323,7 @@
           if (mine !== token) return;
           games = res.games;
           total = res.total;
+          revision = res.revision;
           render();
           if (focusSide && open() && document.activeElement === document.body) content.querySelector('.ox-side')?.focus();
         } catch (error) {

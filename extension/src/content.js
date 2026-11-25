@@ -6,6 +6,11 @@
     OX.state.paused = paused;
     if (OX.started) OX.runner.tick();
   });
+  OX.bridge.onEngineResumed?.(() => {
+    if (OX.started && !OX.state.paused && OX.pageKind() === 'analyse' && !OX.liveGameOnPage()) {
+      OX.lichess.restartCeval();
+    }
+  });
   try {
     OX.settings = { ...OX.defaultSettings, ...(await OX.bridge.loadSettings()) };
   } catch { /* defaults */ }

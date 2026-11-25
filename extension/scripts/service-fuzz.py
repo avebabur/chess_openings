@@ -71,6 +71,7 @@ def bad_input():
         ("GET", f"/position-games?fen={f}&limit=101"),
         ("GET", f"/position-games?fen={f}&offset=-1"),
         ("GET", f"/position-games?fen={f}&offset=999999"),
+        ("GET", f"/position-games?fen={f}&revision=bogus"),
         ("GET", "/position-games?fen=" + quote("9/8/8/8/8/8/8/8 w - - 0 1")),
         ("GET", "/games/0"), ("GET", "/games/-5"), ("GET", "/games/abc"),
         ("GET", "/games/99999999"), ("GET", "/games/9223372036854775808"),
@@ -90,17 +91,21 @@ def bad_input():
         ("POST", "/repertoire/tree/branches", {"color": "red", "moves_san": "e4"}),
         ("POST", "/repertoire/tree/branches", {"color": "white", "moves_san": "e4", "label": "zzz"}),
         ("POST", "/repertoire/tree/branches", {"color": "white", "moves_san": "e4", "name": "x" * 121}),
+        ("POST", "/repertoire/tree/branches", {"color": "white", "moves_san": "e4", "expected": {"id": -1}}),
         ("POST", "/repertoire/tree/branches", {"color": "white", "moves_san": "1. e4 e5 2. Nf3 Nc6"}),
         ("POST", "/repertoire/tree/branches", [1, 2, 3]),
         ("PATCH", "/repertoire/tree/branches/0", {"name": "x"}),
         ("PATCH", "/repertoire/tree/branches/999999", {"name": "x"}),
+        ("PATCH", "/repertoire/tree/branches/999999", {"expected": {"name": "x", "label": "bad", "moves_san": "e4"}}),
         ("PATCH", "/repertoire/tree/branches/9223372036854775808", {"name": "x"}),
         ("DELETE", "/repertoire/tree/branches/999999"),
+        ("DELETE", "/repertoire/tree/branches/999999", {"name": "x", "label": "main", "moves_san": ""}),
         ("DELETE", "/repertoire/tree/branches/abc"),
         ("POST", "/analysis", {}),
         ("POST", "/analysis", {"game_id": 1, "all": True}),
         ("POST", "/analysis", {"game_id": 99999999}),
         ("POST", "/analysis", {"game_id": "x"}),
+        ("POST", "/analysis", {"game_id": 2**63}),
         ("PUT", "/lichess-engine/paused", {"paused": "maybe"}),
         ("PUT", "/lichess-engine/paused", {}),
         ("PUT", "/settings/lichess-token", {"token": "x" * 513}),
@@ -173,9 +178,24 @@ def many_at_once(db_path):
 def simultaneous_changes(db_path):
     """Two Lichess tabs changing the repertoire in the same instant."""
     line = "h4 a5 h5 a4 h6"
+    path = "/repertoire/tree/branches"
+
+    def guarded_save(n):
+        return call("POST", path, {"color": "white", "name": f"tab {n}", "moves_san": line, "expected": "new"})
+
+    with ThreadPoolExecutor(12) as pool:
+        guarded = list(pool.map(guarded_save, range(12)))
+    winners = [branch for status, branch in guarded if status == 200]
+    check(sorted(status for status, _ in guarded if isinstance(status, int)) == [200] + [409] * 11,
+          "12 competing new-line drafts produce one save and 11 conflicts")
+    with sqlite3.connect(db_path) as conn:
+        names = conn.execute("SELECT name FROM repertoire_branches WHERE color = 'white' AND moves_san = ?", (line,)).fetchall()
+    check(len(winners) == 1 and names == [(winners[0]["name"],)], "the winning name survives all the stale drafts")
+    for branch in winners:
+        call("DELETE", f"{path}/{branch['id']}")
 
     def save(n):
-        return call("POST", "/repertoire/tree/branches", {"color": "white", "name": f"tab {n}", "moves_san": line})
+        return call("POST", path, {"color": "white", "name": f"tab {n}", "moves_san": line})
 
     with ThreadPoolExecutor(12) as pool:
         saved = list(pool.map(save, range(12)))

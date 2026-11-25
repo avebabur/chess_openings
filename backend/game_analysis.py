@@ -199,10 +199,18 @@ def find_mistakes(pgn, user_color, engine, tablebase=None, seconds=None, should_
 # --- Storage -------------------------------------------------------------
 
 def store_mistakes(game_id, mistakes):
-    """Replace a game's mistakes and mark it analysed."""
+    """Replace a game's mistakes and mark it analysed. False if it was removed."""
     conn = get_db()
     try:
         with conn:
+            # Take the write lock before checking for the game: deleting its
+            # account can cascade while Stockfish is still calculating.
+            marked = conn.execute(
+                "UPDATE games SET mistakes_analyzed_at = datetime('now') WHERE id = ?",
+                (game_id,),
+            )
+            if not marked.rowcount:
+                return False
             conn.execute("DELETE FROM game_mistakes WHERE game_id = ?", (game_id,))
             for m in mistakes:
                 conn.execute(
@@ -214,10 +222,7 @@ def store_mistakes(game_id, mistakes):
                      m["played_uci"], m["best_san"], m["best_uci"], m["cp_before"],
                      m["cp_after"], m["loss"], m["kind"], m["source"]),
                 )
-            conn.execute(
-                "UPDATE games SET mistakes_analyzed_at = datetime('now') WHERE id = ?",
-                (game_id,),
-            )
+        return True
     finally:
         conn.close()
 
@@ -241,16 +246,22 @@ def games_to_check(game_ids):
     return [dict(row) for row in rows]
 
 
-def count_pending(account_id=None):
-    """How many games have not been searched for mistakes yet."""
+def game_counts(account_id=None):
+    """Read the total and unchecked counts from the same database snapshot."""
     where, params = _account_filter(account_id)
     conn = get_db()
     try:
-        return conn.execute(
-            "SELECT COUNT(*) FROM games g WHERE g.user_color IN ('white', 'black') "
-            "AND g.mistakes_analyzed_at IS NULL" + where, params).fetchone()[0]
+        total, checked = conn.execute(
+            "SELECT COUNT(*), COUNT(g.mistakes_analyzed_at) FROM games g "
+            "WHERE g.user_color IN ('white', 'black')" + where, params).fetchone()
+        return {"total_games": total, "unchecked": total - checked}
     finally:
         conn.close()
+
+
+def count_pending(account_id=None):
+    """How many games have not been searched for mistakes yet."""
+    return game_counts(account_id)["unchecked"]
 
 
 def pending_games(account_id=None, limit=4):
@@ -308,6 +319,7 @@ class GameAnalyzer:
         self._engine_factory = engine_factory
         self._lock = threading.Lock()
         self._thread = None
+        self._closing = False
         self._stop = threading.Event()
         # Set while a game is live on Lichess (the extension's lock): the run
         # waits before its next move, so Stockfish is quiet during the game.
@@ -330,26 +342,30 @@ class GameAnalyzer:
     def start(self, tablebase=None, account_id=None, count=4, queue=False, game_ids=None):
         """Search games for mistakes in the background: the newest `count`
         not yet searched, or exactly `game_ids` (one game you asked for)."""
-        # A run told to stop is ending (within a move): wait for it, or this
-        # request would be queued behind it and then thrown away with its queue.
-        if self._stop.is_set():
-            self.join(10)
-        with self._lock:
-            if self._state["running"]:
-                if queue or game_ids:
-                    self._queued.append((account_id, count, game_ids))
-                return dict(self._state)
-            if not stockfish.availability()["available"] and self._engine_factory is new_engine:
-                raise AnalysisError("Stockfish is not installed")
-            games = games_to_check(game_ids) if game_ids else pending_games(account_id, count)
-            self._stop.clear()
-            self._queued.clear()
-            self._state = self._fresh(bool(games), len(games))
-            if games:
-                self._thread = threading.Thread(
-                    target=self._run, args=(games, tablebase), name="game-analysis", daemon=True)
-                self._thread.start()
-            return dict(self._state)
+        while True:
+            with self._lock:
+                if not self._state["running"]:
+                    if not stockfish.availability()["available"] and self._engine_factory is new_engine:
+                        raise AnalysisError("Stockfish is not installed")
+                    games = games_to_check(game_ids) if game_ids else pending_games(account_id, count)
+                    self._stop.clear()
+                    self._queued.clear()
+                    self._state = self._fresh(bool(games), len(games))
+                    if games:
+                        self._thread = threading.Thread(
+                            target=self._run, args=(games, tablebase), name="game-analysis", daemon=True)
+                        self._thread.start()
+                    return dict(self._state)
+                if not self._closing and not self._stop.is_set():
+                    if queue or game_ids:
+                        self._queued.append((account_id, count, game_ids))
+                    return dict(self._state)
+                worker = self._thread
+            # The worker has stopped accepting work. Wait for it to close its
+            # engine before starting another one or joining a newer run.
+            worker.join(10)
+            if worker.is_alive():
+                raise AnalysisError("Stockfish is still stopping. Try again shortly.")
 
     def _next_queued(self):
         """The games of the next waiting request that still has any, counted
@@ -358,6 +374,7 @@ class GameAnalyzer:
         while not self._stop.is_set():
             with self._lock:
                 if not self._queued:
+                    self._closing = True
                     return []
                 account_id, count, game_ids = self._queued.pop(0)
             games = games_to_check(game_ids) if game_ids else pending_games(account_id, count)
@@ -448,16 +465,21 @@ class GameAnalyzer:
                     mistakes = []  # unreadable PGN: nothing to learn, do not retry it
                 if mistakes is None:
                     break
-                store_mistakes(game["id"], mistakes)
+                saved = store_mistakes(game["id"], mistakes)
                 with self._lock:
-                    self._state["done"] += 1
-                    self._state["mistakes"] += len(mistakes)
+                    if saved:
+                        self._state["done"] += 1
+                        self._state["mistakes"] += len(mistakes)
+                    else:
+                        self._state["total"] -= 1
                 if not todo:
                     todo = self._next_queued()
         except Exception as exc:  # never leave the UI waiting on a dead thread
             log.exception("game analysis crashed")
             error = f"Analysis failed: {exc}"
         finally:
+            with self._lock:
+                self._closing = True
             if engine is not None:
                 try:
                     engine.quit()
@@ -465,5 +487,6 @@ class GameAnalyzer:
                     pass
             with self._lock:
                 self._queued.clear()
+                self._closing = False
                 self._state.update(running=False, error=error, stopped=self._stop.is_set(),
                                    game_id=None)

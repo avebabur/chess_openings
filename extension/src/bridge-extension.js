@@ -23,6 +23,7 @@
         error.offline = !!res?.offline;
         error.autostart = res?.autostart;
         error.status = res?.status;
+        if (typeof res?.data?.detail === 'string') error.detail = res.data.detail;
         throw error;
       }
       return res.data;
@@ -34,6 +35,12 @@
     status() { return send({ type: 'ox-status' }); },
     onPaused(callback) {
       ext.runtime.onMessage.addListener(msg => { if (msg?.type === 'ox-paused') callback(msg.paused); });
+    },
+    onEngineResumed(callback) {
+      ext.runtime.onMessage.addListener(msg => { if (msg?.type === 'ox-engine-resumed') callback(); });
+    },
+    onRepertoireChanged(callback) {
+      ext.runtime.onMessage.addListener(msg => { if (msg?.type === 'ox-repertoire-changed') callback(); });
     },
     // Storage throws too once this copy is cut off.
     async loadSettings() {

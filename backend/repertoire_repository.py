@@ -2,6 +2,13 @@
 from database import get_db
 
 REPERTOIRE_LABELS = {"main", "alternative", "trap", "sideline"}
+# The API sends nested nodes. Two JSON containers per ply plus response
+# encoding overhead must fit within Python's recursion limit.
+MAX_BRANCH_PLIES = 400
+
+
+class RepertoireConflict(Exception):
+    """The line changed after the editor opened."""
 
 
 def _repertoire_label(label, default="sideline"):
@@ -27,6 +34,8 @@ def _ensure_repertoire_nodes(conn, color, moves_san):
     raw_moves = (moves_san or "").split()
     if not raw_moves:
         raise ValueError("moves_san is empty")
+    if len(raw_moves) > MAX_BRANCH_PLIES:
+        raise ValueError(f"Save a line of at most {MAX_BRANCH_PLIES // 2} full moves")
 
     board = chess.Board()
     parent_id = None
@@ -38,6 +47,8 @@ def _ensure_repertoire_nodes(conn, color, moves_san):
             move = board.parse_san(raw_san)
         except ValueError as exc:
             raise ValueError(f"Illegal move in line: {raw_san}") from exc
+        if not move:  # python-chess accepts null moves; a Lichess line cannot play them.
+            raise ValueError(f"Illegal move in line: {raw_san}")
         san = board.san(move)
         fen_before = board.fen()
         board.push(move)
@@ -87,7 +98,7 @@ def get_repertoire_branch_moves(branch_id):
         conn.close()
 
 
-def save_repertoire_branch(color, name, moves_san, label="main"):
+def save_repertoire_branch(color, name, moves_san, label="main", expected=None):
     """Upsert a branch (one exact line) and its move nodes.
 
     A line is identified by color + SAN path, so every distinct variation is its
@@ -101,9 +112,13 @@ def save_repertoire_branch(color, name, moves_san, label="main"):
         moves, terminal_node_id = _ensure_repertoire_nodes(conn, color, moves_san)
         name = (name or "").strip() or _default_repertoire_branch_name(moves)
         existing = conn.execute(
-            "SELECT id FROM repertoire_branches WHERE color = ? AND moves_san = ?",
+            "SELECT id, name, label FROM repertoire_branches WHERE color = ? AND moves_san = ?",
             (color, moves),
         ).fetchone()
+        if expected is not None:
+            current = dict(existing) if existing else "new"
+            if current != expected:
+                raise RepertoireConflict
         if existing:
             branch_id = existing["id"]
             conn.execute(
@@ -125,14 +140,24 @@ def save_repertoire_branch(color, name, moves_san, label="main"):
         conn.close()
 
 
-def update_repertoire_branch(branch_id, name=None, moves_san=None, label=None):
+def _check_branch_snapshot(branch, expected):
+    if expected is not None and (
+        not branch or any(branch[key] != value for key, value in expected.items())
+    ):
+        raise RepertoireConflict
+
+
+def update_repertoire_branch(branch_id, name=None, moves_san=None, label=None, expected_moves_san=None, expected=None):
     """Rename a line, relabel it, or replace its moves. None leaves a field as it is."""
     conn = get_db()
     try:
         _begin_change(conn)
         branch = _branch(conn, branch_id)
+        _check_branch_snapshot(branch, expected)
         if not branch:
             return None
+        if expected_moves_san is not None and branch["moves_san"] != expected_moves_san:
+            raise RepertoireConflict
         color = branch["color"]
         label = _repertoire_label(label if label is not None else branch["label"], "main")
         moves, terminal_node_id = _ensure_repertoire_nodes(
@@ -161,11 +186,12 @@ def update_repertoire_branch(branch_id, name=None, moves_san=None, label=None):
         conn.close()
 
 
-def delete_repertoire_branch(branch_id):
+def delete_repertoire_branch(branch_id, expected=None):
     conn = get_db()
     try:
         _begin_change(conn)
         branch = _branch(conn, branch_id)
+        _check_branch_snapshot(branch, expected)
         if not branch:
             return False
         conn.execute("DELETE FROM repertoire_branches WHERE id = ?", (branch_id,))
@@ -205,6 +231,8 @@ def get_repertoire_tree(color):
     color = _repertoire_color(color)
     conn = get_db()
     try:
+        # Read the moves and their branch references from the same snapshot.
+        conn.execute("BEGIN")
         nodes = [dict(row) for row in conn.execute(
             "SELECT * FROM repertoire_nodes WHERE color = ? ORDER BY ply, path_san", (color,),
         ).fetchall()]

@@ -1,10 +1,6 @@
 /* Styles that change Lichess's own layout (everything else lives in shadow
    roots). Kept small and namespaced with "ox". Declared in the manifest, so
    Chrome applies them before the page is drawn. */
-/* Your board colours (#EAE9D2 / #4B729A)
-   on every Lichess board, whatever board theme Lichess is set to. Lichess
-   paints its theme in cg-board::before, so that layer is replaced too. */
-cg-board::before, cg-board { background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 8 8%22 shape-rendering=%22crispEdges%22%3E%3Crect width=%228%22 height=%228%22 fill=%22%23EAE9D2%22/%3E%3Cpath fill=%22%234B729A%22 d=%22M1 0h1v1h-1zM3 0h1v1h-1zM5 0h1v1h-1zM7 0h1v1h-1zM0 1h1v1h-1zM2 1h1v1h-1zM4 1h1v1h-1zM6 1h1v1h-1zM1 2h1v1h-1zM3 2h1v1h-1zM5 2h1v1h-1zM7 2h1v1h-1zM0 3h1v1h-1zM2 3h1v1h-1zM4 3h1v1h-1zM6 3h1v1h-1zM1 4h1v1h-1zM3 4h1v1h-1zM5 4h1v1h-1zM7 4h1v1h-1zM0 5h1v1h-1zM2 5h1v1h-1zM4 5h1v1h-1zM6 5h1v1h-1zM1 6h1v1h-1zM3 6h1v1h-1zM5 6h1v1h-1zM7 6h1v1h-1zM0 7h1v1h-1zM2 7h1v1h-1zM4 7h1v1h-1zM6 7h1v1h-1z%22/%3E%3C/svg%3E") !important; background-size: cover !important; }
 
 /* The WikiBook is not needed; your repertoire and game take its place. */
 main.analyse:has([data-ox-host=repertoire]) :is(#wikibook-field, .analyse__wiki) { display: none !important; }
@@ -57,7 +53,9 @@ main.analyse .explorer-title:has(> .ox-tab) .player { display: none !important; 
   background: none; color: inherit; font: inherit; text-align: start; cursor: pointer;
 }
 .ox-mine-content :is(.ox-row-action, .ox-more):focus-visible { outline: 2px solid var(--c-primary); outline-offset: -1px; }
-.ox-mine-content .ox-empty { padding: 1.2em 1em; text-align: center; color: var(--c-font-dim); font-style: italic; }
+/* white-space: Lichess keeps its own "no game found" on one line (.data.empty),
+   and our longer sentences inside it ran out of the box, cut off mid-word. */
+.ox-mine-content .ox-empty { padding: 1.2em 1em; text-align: center; color: var(--c-font-dim); font-style: italic; white-space: normal; }
 /* The tables themselves (moves, bars, games, result pills) are Lichess's own
    markup inside its explorer, so Lichess's explorer styles draw them. */
 .ox-mine-content .ox-more { display: block; width: 100%; padding: .6em; text-align: center; text-transform: uppercase;

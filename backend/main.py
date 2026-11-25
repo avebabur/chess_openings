@@ -11,6 +11,7 @@ import re
 import sys
 import tempfile
 from datetime import datetime, timezone
+from hashlib import sha256
 from typing import Literal
 
 import chess
@@ -18,7 +19,7 @@ from contextlib import asynccontextmanager
 from fastapi import APIRouter, FastAPI, HTTPException, Path, Query, Request
 from fastapi.background import BackgroundTasks
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
@@ -36,12 +37,15 @@ import database as db  # noqa: E402
 import eco_openings  # noqa: E402  (offline move-sequence → opening-name recognizer)
 import stockfish  # noqa: E402  (where Stockfish is on this Mac)
 import game_analysis  # noqa: E402  (mistakes in the user's own games)
+import study_analysis  # noqa: E402  (new games, deeply analysed, into a Lichess study)
 import extension_health  # noqa: E402  (what the Lichess extension could not show)
 import idle_exit  # noqa: E402  (stops the service when the extension is gone)
 import lichess_engine_provider  # noqa: E402  (your Stockfish inside Lichess's own analysis)
 import game_import  # noqa: E402
 from sync_service import AccountSyncService  # noqa: E402
 from services import ExternalApiClients, SQLiteService  # noqa: E402
+from account_game_repository import ActiveAccountSync  # noqa: E402
+from repertoire_repository import RepertoireConflict  # noqa: E402
 
 # Route handlers that touch SQLite are plain `def`, not `async def`: FastAPI runs
 # those in its threadpool. As coroutines they ran on the event loop itself, so a
@@ -50,17 +54,35 @@ from services import ExternalApiClients, SQLiteService  # noqa: E402
 api = APIRouter(prefix="/api")
 
 
+RepertoireLabel = Literal["main", "alternative", "trap", "sideline"]
+
+
+class RepertoireBranchSnapshot(BaseModel):
+    id: int = Field(gt=0, lt=2**63)
+    name: str
+    label: RepertoireLabel
+
+
+class RepertoireBranchEditSnapshot(BaseModel):
+    name: str
+    label: RepertoireLabel
+    moves_san: str = Field(min_length=1, max_length=4000)
+
+
 class RepertoireBranchInput(BaseModel):
     color: Literal["white", "black"]
     name: str = Field(default="", max_length=120)
     moves_san: str = Field(min_length=1, max_length=4000)
-    label: Literal["main", "alternative", "trap", "sideline"] = "main"
+    label: RepertoireLabel = "main"
+    expected: RepertoireBranchSnapshot | Literal["new"] | None = None
 
 
 class RepertoireBranchPatch(BaseModel):
     name: str | None = Field(default=None, max_length=120)
     moves_san: str | None = Field(default=None, min_length=1, max_length=4000)
-    label: Literal["main", "alternative", "trap", "sideline"] | None = None
+    label: RepertoireLabel | None = None
+    expected_moves_san: str | None = Field(default=None, min_length=1, max_length=4000)
+    expected: RepertoireBranchEditSnapshot | None = None
 
 
 class AccountInput(BaseModel):
@@ -73,8 +95,17 @@ class LichessTokenInput(BaseModel):
     token: str = Field(default="", max_length=512)
 
 
+class StudyAnalysisSettings(BaseModel):
+    enabled: bool
+
+
+class PublishFailure(BaseModel):
+    status: int = Field(ge=0, le=999)
+    message: str = Field(default="", max_length=2000)
+
+
 class AnalysisStartInput(BaseModel):
-    game_id: int | None = Field(default=None, gt=0)  # the one game to check
+    game_id: int | None = Field(default=None, gt=0, lt=2**63)  # the one game to check
     all: bool = False  # or: every game not checked yet
 
 
@@ -83,9 +114,11 @@ ALLOWED_HOSTS = ["127.0.0.1", "localhost", "testserver"]
 
 # Games analysed on their own after a sync brings in new ones.
 AUTO_ANALYSE_MAX_GAMES = 10
-# start.sh turns this on: fetch new games when the app starts and every 30 min,
-# so My games on Lichess is never missing your latest games.
-AUTO_SYNC_SECONDS = 30 * 60
+# start.sh turns this on: fetch new games when the app starts and every 10 min,
+# so My games on Lichess is never missing your latest games, and a chess.com
+# game reaches the study soon after it ends (a Lichess game is fetched as soon
+# as the extension sees it end: POST /study-analysis/game-ended).
+AUTO_SYNC_SECONDS = 10 * 60
 
 
 async def _auto_sync(sync_service):
@@ -121,6 +154,12 @@ async def lifespan(target_app):
     target_app.state.external_clients = ExternalApiClients()
     target_app.state.opening_tree_cache = ot.OpeningTreeCache()
     target_app.state.game_analyzer = game_analysis.GameAnalyzer()
+    target_app.state.game_analyzer.hold(True)
+    clients = target_app.state.external_clients
+    target_app.state.study_analyzer = study_analysis.StudyAnalyzer(
+        clients.http,
+        tablebase=lambda fen: clients.tablebase(fen, _external_network_allowed()),
+        allow_network=_external_network_allowed())
     target_app.state.idle_exit = idle_exit.from_environment()
     # Starts paused (fail-closed): the extension says at once whether a game
     # is on in a Lichess tab (background.js tells it when it sees the app up).
@@ -132,6 +171,7 @@ async def lifespan(target_app):
         """Search the games a sync just brought in for mistakes. Capped, so a
         first import of a thousand games does not keep the engine busy for
         hours; the rest can be checked one by one from the game's card."""
+        target_app.state.study_analyzer.wake()
         if os.environ.get("OPENINGS_AUTO_ANALYSE", "1") != "1":
             return
         clients = target_app.state.external_clients
@@ -153,6 +193,8 @@ async def lifespan(target_app):
     idle_watch = None
     try:
         target_app.state.sync_service.start()
+        if os.environ.get("OPENINGS_STUDY_ANALYSIS", "1") == "1":
+            target_app.state.study_analyzer.start()
         target_app.state.lichess_engine.start()
         if target_app.state.idle_exit:
             target_app.state.idle_exit.touch()
@@ -167,6 +209,7 @@ async def lifespan(target_app):
             idle_watch.cancel()
         await target_app.state.lichess_engine.stop()
         target_app.state.game_analyzer.shutdown()
+        target_app.state.study_analyzer.shutdown()
         target_app.state.sync_service.shutdown()
         target_app.state.external_clients.close()
         target_app.state.database.close()
@@ -218,15 +261,17 @@ def add_account(input: AccountInput, request: Request):
     except ValueError as e:
         raise HTTPException(400, str(e))
     job = request.app.state.sync_service.enqueue(account["id"])
+    if job is None:
+        raise HTTPException(404, "Account not found")
     return {"account": db.get_account(account["id"]), "job": job}
 
 
 @api.post("/accounts/{account_id}/sync", status_code=202)
 def sync_account(request: Request, account_id: int = Path(gt=0, lt=2**63)):
-    account = db.get_account(account_id)
-    if not account:
+    job = request.app.state.sync_service.enqueue(account_id)
+    if job is None:
         raise HTTPException(404, "Account not found")
-    return request.app.state.sync_service.enqueue(account_id)
+    return job
 
 
 @api.get("/sync-jobs/{job_id}")
@@ -257,10 +302,11 @@ def cancel_sync_job(
 @api.delete("/accounts/{account_id}")
 def remove_account(request: Request, account_id: int = Path(gt=0, lt=2**63)):
     """Removes the account together with its imported games."""
-    account = db.get_account(account_id)
-    if account and (account.get("sync_job") or {}).get("status") in ("queued", "running"):
-        raise HTTPException(409, "Cancel the active sync before removing this account")
-    if not db.delete_account(account_id):
+    try:
+        deleted = db.delete_account(account_id)
+    except ActiveAccountSync as exc:
+        raise HTTPException(409, "Cancel the active sync before removing this account") from exc
+    if not deleted:
         raise HTTPException(404, "Account not found")
     request.app.state.opening_tree_cache.invalidate()
     return {"success": True}
@@ -335,8 +381,40 @@ async def lichess_engine_pause(input: EnginePauseInput, request: Request):
     Lichess tab, your Stockfish answers Lichess with nothing, and checking your
     old games for mistakes waits (Stockfish goes quiet)."""
     request.app.state.game_analyzer.hold(input.paused)
+    request.app.state.study_analyzer.hold(input.paused)
     await request.app.state.lichess_engine.set_paused(input.paused)
     return {"paused": request.app.state.lichess_engine.paused}
+
+
+@api.post("/lichess-engine/analyse")
+async def lichess_engine_analyse(request: Request):
+    """Lichess's analysis for the page on this computer, with no trip through
+    Lichess's engine broker (which allows each address only a few requests a
+    second, three per position). The extension forwards the page's request
+    ({"engineId", "work"}) and hands the page this stream: the same ndjson the
+    broker would have sent. 404: not this app's engine, so the extension sends
+    the request to the broker as before. The live-game lock holds here too."""
+    # JSON only: a website could send a plain-text POST without asking, but
+    # never a JSON one (that needs CORS, which this service does not grant).
+    if request.headers.get("content-type", "").split(";")[0].strip().lower() != "application/json":
+        raise HTTPException(415, "JSON only")
+    try:
+        body = await request.json()
+    except ValueError:
+        raise HTTPException(400, "Invalid JSON")
+    provider = request.app.state.lichess_engine
+    if not isinstance(body, dict) or not provider.can_answer(body.get("engineId")):
+        raise HTTPException(404, "Not this app's engine")
+    if not provider.stockfish_found():
+        raise HTTPException(503, "Stockfish was not found")
+    try:
+        work, board = lichess_engine_provider.sanitize_work(body.get("work"))
+    except lichess_engine_provider.InvalidWork as exc:
+        raise HTTPException(400, str(exc))
+    return StreamingResponse(
+        provider.local_analysis(work, board), media_type="application/x-ndjson",
+        # Each line as it comes: never held back to be compressed.
+        headers={"Cache-Control": "no-store", "Content-Encoding": "identity"})
 
 
 @api.get("/extension/build")
@@ -375,27 +453,32 @@ def position_games(
     color: Literal["white", "black", "both"] = "both",
     limit: int = Query(default=15, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
+    revision: str | None = Query(default=None, pattern=r"^[a-f0-9]{64}$"),
 ):
     """Your games that reached this position (any move order), newest first,
     with the ply where each got there. At the start position: all your games."""
     _validate_fen(fen)
     found = request.app.state.opening_tree_cache.games_through(
         fen, None if color == "both" else color)
+    current_revision = sha256(",".join(str(game["id"]) for game, _ in found).encode()).hexdigest()
+    if revision is not None and revision != current_revision:
+        raise HTTPException(409, "The game list changed. Reload it from the first page")
     page = found[offset:offset + limit]
     details = db.get_game_summaries([game["id"] for game, _ in page])
     games = [{**details[game["id"]], "ply": ply} for game, ply in page if game["id"] in details]
-    return {"total": len(found), "games": games}
+    if len(games) != len(page):
+        raise HTTPException(409, "The game list changed. Reload it from the first page")
+    return {"total": len(found), "games": games, "revision": current_revision}
 
 
 def _analysis_status(request):
     return {**request.app.state.game_analyzer.status(),
-            "unchecked": game_analysis.count_pending()}
+            **game_analysis.game_counts()}
 
 
 @api.get("/analysis")
 def analysis_status(request: Request):
-    """How far the background analysis has got, and how many games are still
-    unchecked."""
+    """Background analysis progress and the total and unchecked game counts."""
     return _analysis_status(request)
 
 
@@ -426,6 +509,59 @@ def analysis_stop(request: Request):
     checked are kept."""
     request.app.state.game_analyzer.stop()
     return _analysis_status(request)
+
+
+@api.get("/study-analysis")
+def study_analysis_status(request: Request):
+    """New games on their way to your Lichess study: the study, what is being
+    analysed now, and the latest games with their state."""
+    return {**study_analysis.overview(), "now": request.app.state.study_analyzer.status()}
+
+
+@api.put("/study-analysis")
+def study_analysis_settings(input: StudyAnalysisSettings, request: Request):
+    study_analysis.set_enabled(input.enabled)
+    request.app.state.study_analyzer.wake()
+    return study_analysis_status(request)
+
+
+@api.post("/study-analysis/games/{game_id}", status_code=202)
+def study_analysis_queue(request: Request, game_id: int = Path(gt=0, lt=2**63)):
+    """Send one imported game to the study (again)."""
+    if not study_analysis.queue_game(game_id):
+        raise HTTPException(404, "Game not found")
+    request.app.state.study_analyzer.wake()
+    return study_analysis_status(request)
+
+
+@api.post("/study-analysis/game-ended", status_code=202)
+def study_analysis_game_ended(request: Request):
+    """The extension saw a game end in a Lichess tab: fetch the new games now
+    rather than at the next timed sync."""
+    if not study_analysis.enabled():
+        return {"queued": 0}
+    jobs = [request.app.state.sync_service.enqueue(a["id"]) for a in db.list_accounts()]
+    return {"queued": len([job for job in jobs if job])}
+
+
+@api.get("/study-analysis/ready")
+def study_analysis_ready():
+    """Analyses for the extension to publish from a Lichess tab."""
+    return study_analysis.ready_to_publish()
+
+
+@api.post("/study-analysis/{game_id}/published")
+def study_analysis_published(game_id: int = Path(gt=0, lt=2**63)):
+    if not study_analysis.mark_published(game_id):
+        raise HTTPException(404, "No analysis waiting for that game")
+    return {"ok": True}
+
+
+@api.post("/study-analysis/{game_id}/publish-failed")
+def study_analysis_publish_failed(input: PublishFailure, game_id: int = Path(gt=0, lt=2**63)):
+    if not study_analysis.publish_failed(game_id, input.status, input.message):
+        raise HTTPException(404, "No analysis waiting for that game")
+    return {"ok": True}
 
 
 @api.get("/games/{game_id}")
@@ -464,17 +600,27 @@ def _line_name(name, moves_san):
 
 @api.post("/repertoire/tree/branches")
 def save_repertoire_branch(input: RepertoireBranchInput):
+    expected = input.expected.model_dump() if isinstance(input.expected, RepertoireBranchSnapshot) else input.expected
     try:
         return db.save_repertoire_branch(
             input.color, _line_name(input.name, input.moves_san), input.moves_san,
-            label=input.label)
+            label=input.label, expected=expected)
+    except RepertoireConflict as e:
+        raise HTTPException(409, "The repertoire line changed while it was open") from e
     except ValueError as e:
         raise HTTPException(400, str(e))
 
 
 @api.delete("/repertoire/tree/branches/{branch_id}")
-def delete_repertoire_branch(branch_id: int = Path(gt=0, lt=2**63)):
-    if not db.delete_repertoire_branch(branch_id):
+def delete_repertoire_branch(
+    branch_id: int = Path(gt=0, lt=2**63),
+    expected: RepertoireBranchEditSnapshot | None = None,
+):
+    try:
+        deleted = db.delete_repertoire_branch(branch_id, expected=expected.model_dump() if expected else None)
+    except RepertoireConflict as e:
+        raise HTTPException(409, "The repertoire line changed while it was open") from e
+    if not deleted:
         raise HTTPException(404, "Branch not found")
     return {"success": True}
 
@@ -487,7 +633,11 @@ def update_repertoire_branch(input: RepertoireBranchPatch, branch_id: int = Path
         name = _line_name(name, input.moves_san or db.get_repertoire_branch_moves(branch_id) or "")
     try:
         branch = db.update_repertoire_branch(
-            branch_id, name=name, moves_san=input.moves_san, label=input.label)
+            branch_id, name=name, moves_san=input.moves_san, label=input.label,
+            expected_moves_san=input.expected_moves_san,
+            expected=input.expected.model_dump() if input.expected else None)
+    except RepertoireConflict as e:
+        raise HTTPException(409, "The repertoire line changed while it was open") from e
     except ValueError as e:
         raise HTTPException(400, str(e))
     if not branch:

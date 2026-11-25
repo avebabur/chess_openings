@@ -13,13 +13,16 @@ cp chess_review.db backups/chess_review-before-tests-$(date +%Y%m%d-%H%M).db   #
 git status --short        # another agent may be editing this folder: read its diff, never revert it
 ```
 
-Then run what exists, once, to know the starting point:
+Then run what exists, once, to know the starting point, and read `BUGS.md` (repo root):
+the areas with the most rows are where to look hardest, and what is listed there was
+already fixed.
 
 ```bash
-(cd backend && ../venv/bin/python -m pytest -q)
-node extension/scripts/live-lock-test.mjs && node extension/scripts/sync-test.mjs && node extension/scripts/repertoire-test.mjs
-node extension/scripts/check.mjs                  # needs the app on :8001 (open Lichess in Chrome)
+./check-all.sh --full     # every check; check.mjs needs the app on :8001
 ```
+
+Every bug you find gets a failing test before its fix and a row in `BUGS.md` (it says
+how). Run `./check-all.sh --full` once at the end, not after every fix.
 
 ## Pass 1: read the code and write down suspicions
 
@@ -88,7 +91,24 @@ cat extension/health-report.json                         # what the extension sa
 - click the tab that is already open, open settings on top of it, close them in the other order;
 - act in two tabs at once; change something in one and use the other;
 - reload in the middle (a save, a sync, a game check), go Back, switch study chapters;
-- stop the app in the middle: `launchctl kill TERM gui/$(id -u)/com.openings.app`.
+- stop the app in the middle with `./stop.sh` from the repository root. Signalling
+  the launchd job alone can leave its backend process running.
+
+**Lichess's engine, for as long as a real review takes.** One position proves nothing:
+Lichess's engine service refuses an address that asks too often, and it took a quarter of a
+minute of stepping to get there ("Your Stockfish error: TypeError: Failed to fetch"). Step
+through a long game the way a person does and count the failures:
+
+```js
+window.__fails = []; const real = window.fetch;   // on top of the extension's own wrapper
+window.fetch = (...a) => real(...a).catch(e => { if (String(a[0]).includes('external-engine') && e.name !== 'AbortError') __fails.push(String(e)); throw e; });
+site.analysis.userJump('');
+for (let i = 1; i <= 90; i++) { site.analysis.jumpToMain(i % 60); site.analysis.redraw(); await new Promise(r => setTimeout(r, 400)); }
+[__fails, document.querySelectorAll('.engine-error').length, site.analysis.ceval.state]   // [], 0, and not 4 (failed)
+```
+
+Never measure that limit by sending the service requests of your own: it is Lichess's
+server, and the numbers are in `REPAIR.md`.
 
 **Use the extremes of the real data**, not `e4 e5`: the longest game
 (`sqlite3 chess_review.db "select id, length(pgn) from games order by 2 desc limit 3"`),
@@ -111,6 +131,8 @@ log above for a blink.
    move** (the ✖ under the moves). Then Rematch and abort again. The lock must hold from the
    click until "aborted", and again through the rematch. Aborted games stay listed as
    aborted on the account; they are not counted or imported.
+   Before aborting, open the round's analysis link. The forecast board looks like ordinary
+   analysis, but the lock must hold in both tabs and in Stockfish. Go back to the round to abort.
 4. During a game: `touch extension/manifest.json`, reload the analysis tab (the extension
    replaces itself). It must come back locked.
 5. Quit Chrome with a TV tab open and reopen it
@@ -125,10 +147,11 @@ log above for a blink.
 node extension/scripts/real-extension.mjs     # the real extension, headless, fresh profile
 ```
 
-Lichess's 3-, 2- and 1-column layouts (the user's window can't be resized) and the
-settings page (`chrome-extension://` pages can't be opened through Claude in Chrome).
-Screenshots: `extension/check-output/real-*.png`; look at them. It refuses to run while the
-lock is on, because a second copy of the extension would tell the app no game is on.
+This checks the desktop layouts and the settings page (`chrome-extension://` pages
+can't be opened through Claude in Chrome). Both browser scripts run desktop checks
+by default. Set `OX_CHECK_NARROW=1` only when the user asks to test narrow layouts.
+Screenshots: `extension/check-output/real-*.png`; look at them. This copy of the extension
+uses its own temporary fixture server, so it never changes the user’s live-game lock or data.
 
 ## Pass 4: attack the service
 
@@ -152,7 +175,8 @@ inputs to `bad_input()` there.
   unlocks for a few seconds between games, while the result shows.
 - **Every fix gets a check** that fails without it: a fixture page in `scripts/check.mjs`
   (see `gamePage`, `/ox-fixture/checking`), a case in `scripts/live-lock-test.mjs`, a test in
-  `backend/tests/`, or a line in `service-fuzz.py`. Then confirm the fix in the real Chrome.
+  `backend/tests/`, a case in `scripts/engine-pacing-test.mjs` or `scripts/repertoire-test.mjs`,
+  or a line in `service-fuzz.py`. Then confirm the fix in the real Chrome.
 - Fix the cause in the smallest place; keep every Lichess selector in `src/anchors.js`; the
   safety rules in `REPAIR.md` (step 4) hold for fixes too. Bump `version` in `manifest.json`.
 - Restart the app after backend changes: `launchctl kickstart -k gui/$(id -u)/com.openings.app`.

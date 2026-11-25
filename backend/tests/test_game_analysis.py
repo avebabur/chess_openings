@@ -5,6 +5,7 @@ import threading
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import chess
 import chess.engine
@@ -71,8 +72,8 @@ class DatabaseCase(unittest.TestCase):
             os.environ["CHESS_DB_PATH"] = self.old_db_path
         self.temp_dir.cleanup()
 
-    def add_game(self, pgn, user_color="white", end_time="2026-11-01T10:00:00"):
-        account = self.db.create_account("lichess", "me")
+    def add_game(self, pgn, user_color="white", end_time="2026-11-01T10:00:00", username="me"):
+        account = self.db.create_account("lichess", username)
         conn = self.db.get_db()
         with conn:
             number = conn.execute("SELECT COUNT(*) FROM games").fetchone()[0]
@@ -213,6 +214,35 @@ class StorageTest(DatabaseCase):
         self.assertEqual(len(self.ga.mistakes_for_game(first)), 1)
         self.assertFalse(analyzer.start(count=4)["running"])  # nothing left
 
+    def test_account_removed_during_analysis_does_not_abort_other_games(self):
+        removed = self.add_game(QUEEN_HANG, end_time="2026-06-01T00:00:00", username="removed")
+        kept = self.add_game(QUEEN_HANG, end_time="2026-05-01T00:00:00")
+        started = threading.Event()
+        release = threading.Event()
+
+        class SlowEngine(FakeEngine):
+            def analyse(self, board, limit):
+                started.set()
+                release.wait(5)
+                return super().analyse(board, limit)
+
+        analyzer = self.ga.GameAnalyzer(engine_factory=SlowEngine)
+        analyzer.start(count=2)
+        try:
+            self.assertTrue(started.wait(5))
+            self.assertEqual(analyzer.status()["game_id"], removed)
+            self.assertTrue(self.db.delete_account(self.db.get_game(removed)["account_id"]))
+        finally:
+            release.set()
+            analyzer.join(5)
+
+        status = analyzer.status()
+        self.assertFalse(status["running"])
+        self.assertIsNone(status["error"])
+        self.assertEqual((status["done"], status["total"], status["mistakes"]), (1, 1, 1))
+        self.assertEqual(self.ga.mistakes_for_game(removed), [])
+        self.assertEqual(len(self.ga.mistakes_for_game(kept)), 1)
+
     def test_a_request_made_during_a_run_is_served_after_it(self):
         import threading
         first = self.add_game(QUEEN_HANG, end_time="2026-06-01T00:00:00")
@@ -236,6 +266,36 @@ class StorageTest(DatabaseCase):
         self.assertEqual(self.ga.pending_games(limit=5), [])
         self.assertEqual(len(self.ga.mistakes_for_game(first)), 1)
         self.assertEqual(len(self.ga.mistakes_for_game(second)), 1)
+
+    def test_a_check_requested_while_stockfish_quits_is_not_lost(self):
+        first = self.add_game(QUEEN_HANG)
+        second = self.add_game(QUEEN_HANG)
+        quitting = threading.Event()
+        done_quitting = threading.Event()
+
+        class SlowQuitEngine(FakeEngine):
+            def quit(self):
+                quitting.set()
+                done_quitting.wait(5)
+                super().quit()
+
+        analyzer = self.ga.GameAnalyzer(engine_factory=SlowQuitEngine)
+        analyzer.start(game_ids=[first])
+        worker = analyzer._thread
+        join = worker.join
+
+        def waiting_for_worker(timeout):
+            done_quitting.set()
+            join(timeout)
+
+        with patch.object(worker, "join", side_effect=waiting_for_worker):
+            try:
+                self.assertTrue(quitting.wait(5))
+                self.assertTrue(analyzer.start(game_ids=[second])["running"])
+            finally:
+                done_quitting.set()
+        analyzer.join(5)
+        self.assertEqual(self.ga.count_pending(), 0)
 
 
 class ProgressTest(DatabaseCase):
@@ -263,7 +323,11 @@ class ProgressTest(DatabaseCase):
 
         analyzer = self.ga.GameAnalyzer(engine_factory=SlowEngine)
         stored = self.ga.store_mistakes
-        self.ga.store_mistakes = lambda game_id, mistakes: (order.append(game_id), stored(game_id, mistakes))
+        def store_in_order(game_id, mistakes):
+            order.append(game_id)
+            return stored(game_id, mistakes)
+
+        self.ga.store_mistakes = store_in_order
         try:
             analyzer.start(count=3)               # first, second, third (newest first)
             started.wait(5)
@@ -287,8 +351,9 @@ class ProgressTest(DatabaseCase):
         stored = self.ga.store_mistakes
 
         def store_then_stop(game_id, mistakes):
-            stored(game_id, mistakes)
+            saved = stored(game_id, mistakes)
             analyzer.stop()
+            return saved
         self.ga.store_mistakes = store_then_stop
         try:
             analyzer.start(count=2)

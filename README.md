@@ -17,3 +17,5 @@ See [extension/README.md](extension/README.md) for the full feature map and setu
 ## Development
 
 The backend lives in `backend/`, the extension in `extension/`. The extension browser check is `node extension/scripts/check.mjs` after `npm install --prefix extension/scripts`. It uses real Lichess pages in Chrome. `node extension/scripts/repertoire-test.mjs` tests the repertoire's transposition handling and needs nothing running. Backend tests: `./venv/bin/python -m pytest backend/tests`.
+
+`./check-all.sh` runs all the fast checks at once (about 10 seconds, nothing needs to be running). `./check-all.sh --full` adds the service fuzzer, the real extension in headless Chrome and the Lichess check. To run the fast checks before every commit, run `git config core.hooksPath .githooks` once. Bugs and the tests that catch them are listed in [`BUGS.md`](BUGS.md).

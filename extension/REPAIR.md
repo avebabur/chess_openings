@@ -72,6 +72,47 @@ Things that rely on Lichess internals rather than selectors, and fail quietly:
   engine nothing re-checks after it stops. The bridge calls `ctrl.practice.onCeval()` when
   Practice is waiting, the result has a `bestmove` and `ctrl.ceval.isComputing` is false
   (names from lila `ui/analyse/src/practice/practiceCtrl.ts`). If it hangs again, check those.
+- **Analysis answered on this computer** (`src/page-bridge.js` `localAnalyse`,
+  `src/engine-relay.js`, `analyseHere` in `src/background.js`, `POST
+  /api/lichess-engine/analyse` and `local_analysis`/`BrokerEmit` in
+  `backend/lichess_engine_provider.py`): the page's `…/api/external-engine/<id>/analyse`
+  request never leaves the computer. The bridge hands it to the relay with an `ox-engine`
+  event (the relay acks synchronously in `<html data-ox-engine-ack>`), the relay opens a
+  port `ox-engine` to the background script, which POSTs `{engineId, work}` to the app and
+  passes the ndjson back (`start`, `chunk`…, `end`); the bridge gives Lichess a `Response`
+  streaming it. The app answers exactly what Lichess's broker would have (lila-engine
+  `src/emit.rs`, read by lila `ui/lib/src/ceval/engines/externalEngine.ts`). If Lichess
+  changes that format (the engine bar shows nothing although `GET /api/lichess-engine`
+  lists `via: local` jobs with lines), compare those two files with `BrokerEmit`. Cancelling
+  closes the port, which aborts the app's request and stops Stockfish (`ended:
+  cancelled`). During a game the background script answers the empty search itself and the
+  app answers it too (both fail-closed). No ack, `unavailable` (app down, or 404: the engine
+  is not the app's) or a port that drops before `start` sends the request to the broker
+  with the pacing below, unchanged. Stepping at 0.4 s a move (Nov 2026): lines at every
+  move, first line in ~25 ms, `GET /api/lichess-engine` shows only `via: local` jobs.
+  Faster than every 0.25 s Lichess itself sends nothing until you stop (its client
+  debounces). The broker registration stays: Lichess offers the engine only because of it.
+- **"Your Stockfish error: TypeError: Failed to fetch"** (`src/page-bridge.js`, `pacedAnalyse`;
+  now only when the request goes to the broker, see above):
+  Lichess's engine service (`engine.lichess.ovh`, behind nginx) allows each address a limited
+  number of requests: measured in November 2026, about 60 at once and then two or three a
+  second. Every position costs three (the page's `…/analyse` request, and the app taking the
+  job and answering it), so stepping through a game at two positions a second ran out in a
+  quarter of a minute. Past the limit nginx answers a bare 503 without CORS headers, which
+  the page sees as a network failure; Lichess then shows that pop-up and switches the engine
+  off. The bridge wraps `window.fetch` for that one request only and keeps count
+  (`BUDGET_MAX`, `BUDGET_PER_SECOND`, shared by all tabs in `localStorage` under
+  `ox.engineBudget`): the first dozen positions go out at once, later ones every second and a
+  half, a request Lichess cancels while waiting is never sent, and a refusal is tried again
+  three times before Lichess hears of it. Before move 15 (and in studies) a request first
+  waits up to 0.3 s for Lichess's cloud evaluation, and is not sent when Lichess's own rule
+  says the cloud wins (`letCloudWin` in lila `ui/lib/src/ceval/ctrl.ts`; `canEvalGet` in
+  `ui/analyse/src/ctrl.ts` says where Lichess looks). If opening positions start costing
+  requests again ("Loading engine" soon after an opening), check those two names. If the
+  pop-up comes back, Lichess has lowered its limit: lower those two numbers. `GET /api/lichess-engine` shows the app's side: a `broker`
+  of 503 in `recent`, or the error "Lichess's engine service answered 503", is the same limit.
+  To see it: `node extension/scripts/engine-pacing-test.mjs`, and in Chrome step through a
+  long game with `site.analysis.jumpToMain(n)` every 400 ms.
 - **Left column height** (`src/features/explorerleft.js`): limits the open tab's height
   (`--ox-max`) and sets the height of Lichess's chat (`main.analyse > .mchat`) so the column
   ends at the board's bottom. A gap under the board or a squeezed chat means this stopped.
@@ -113,6 +154,10 @@ its recent commits for the old class name to see what replaced it.
   - Features only add elements. The few deliberate changes to Lichess's own layout stay in
     `src/page.css` and `src/features/explorerleft.js`; don't add more elsewhere.
   - Never stop Lichess's events, except keys typed inside our own text boxes.
+  - Never touch Lichess's requests, except one: the page's request to Lichess's engine
+    service (`src/page-bridge.js`), answered by the app on this computer or else paced.
+    Everything else passes through `window.fetch` unchanged, and so does that one whenever
+    anything about it is unexpected.
   - The live-game lock stays fail-closed: if `roundFinished` can't be found, games
     count as live. Never make features run on `roundPage`.
 - Bump `version` in `manifest.json`.

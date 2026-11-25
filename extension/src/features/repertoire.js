@@ -1,10 +1,10 @@
 // Your repertoire, in the left column, and everything you do with it, so the
 // app itself is not needed: what you prepared from the position on the board
 // (per colour, main line first), the rest of your main line, the named lines
-// passing through here with rename / main-or-sideline / delete / play-the-rest,
-// extending a line you've played past, and saving a new one. A warning says
-// where the line on the board left your repertoire. Moves play on Lichess's
-// board. Talks to the app's repertoire API.
+// passing through here with edit / main-or-sideline / delete / play-the-rest,
+// managing all saved lines, extending a line you've played past, and saving
+// a new one. A warning says where the line on the board left your repertoire.
+// Moves play on Lichess's board. Talks to the app's repertoire API.
 //
 // Everything is looked up by POSITION (src/repertoire-index.js), so a
 // position reached by another move order shows what you prepared for it.
@@ -21,8 +21,6 @@
     star: '<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><path d="m12 2 3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>',
     starOutline: '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><path d="m12 2 3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>',
     trash: '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18m-2 0v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6m3 0V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>',
-    check: '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>',
-    x: '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>',
     plus: '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14m-7-7h14"/></svg>',
     caution: '<svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/></svg>',
   };
@@ -33,9 +31,18 @@
     return span;
   };
   const cache = { index: null, at: 0, loading: null };
+  function invalidate() {
+    cache.index = null;
+    cache.loading = null;
+  }
+  OX.bridge.onRepertoireChanged?.(() => {
+    invalidate();
+    OX.emit('repertoireChanged');
+  });
   const label = color => (color === 'white' ? 'White' : 'Black');
   const LABELS = { main: 'Main', sideline: 'Side', alternative: 'Alt', trap: 'Trap' };
   const LINE_KINDS = { main: 'Main line', sideline: 'Sideline', alternative: 'Alternative', trap: 'Trap' };
+  const snapshot = branch => ({ name: branch.name || '', label: branch.label, moves_san: branch.moves_san });
   // The side at the bottom of the board: the one you are looking from.
   const boardSide = () =>
     (document.querySelector('main.analyse .cg-wrap')?.classList.contains('orientation-black') ? 'black' : 'white');
@@ -43,9 +50,15 @@
   OX.loadRepertoire = async () => {
     if (cache.index && Date.now() - cache.at < 60_000) return cache.index;
     if (!cache.loading) {
-      cache.loading = Promise.all(COLORS.map(color => OX.bridge.api('GET', `/repertoire/tree?color=${color}`)))
-        .then(trees => { cache.index = R.buildIndex(trees); cache.at = Date.now(); return cache.index; })
-        .finally(() => { cache.loading = null; });
+      const request = Promise.all(COLORS.map(color => OX.bridge.api('GET', `/repertoire/tree?color=${color}`)))
+        .then(trees => {
+          if (cache.loading !== request) return OX.loadRepertoire();
+          cache.index = R.buildIndex(trees);
+          cache.at = Date.now();
+          return cache.index;
+        })
+        .finally(() => { if (cache.loading === request) cache.loading = null; });
+      cache.loading = request;
     }
     return cache.loading;
   };
@@ -66,11 +79,10 @@
       let movePath = null;
       let token = 0;
       let alive = true;
-      let showAllLines = false;
+      let managing = false;
       let lineFilter = '';
-      let editing = null;   // branch id being renamed
-      let focusEdit = false; // put the cursor in the rename box on the next draw
-      let deleting = null;  // branch id waiting for "Delete?" confirmation
+      let editor = null;
+      let deleting = null;  // branch as it was when confirmation opened
       let form = null;      // the Save form, while open
       let notice = null;    // { text, until }
       let side = boardSide();
@@ -111,9 +123,11 @@
           await work();
           if (done) say(done);
         } catch (error) {
-          say(error.offline ? OX.offlineText() : "That didn't work.");
+          say(error.offline ? OX.offlineText() : error.status === 409
+            ? 'This line changed in another tab. Review the current line and try again.'
+            : error.status === 400 && error.detail || "That didn't work.");
         }
-        cache.index = null;
+        invalidate();
         try { if (alive) await refresh(); } finally { busy = false; }
       }
 
@@ -121,14 +135,14 @@
       // board doesn't start there (a set-up position: its moves lead elsewhere
       // from the normal start), or while Lichess's move list and its FEN box
       // disagree for a moment (drawn again shortly).
-      function boardPath() {
+      function boardPath(key = position.key) {
         const line = OX.movesOnBoard();
         if (!line) return null;
         const id = line.join(' ');
         if (pathCache.id !== id) pathCache = { id, path: R.replay(line) };
         const path = pathCache.path;
         if (!path) return null;
-        if (path.keys[path.keys.length - 1] !== position.key) {
+        if (path.keys[path.keys.length - 1] !== key) {
           if (pathRetries++ < 5) setTimeout(() => { if (alive) render(); }, 200);
           return null;
         }
@@ -180,99 +194,262 @@
             }, 'Play it')) : null);
       }
 
-      function lineRow({ branch, at }, apart, path) {
-        const rest = branch.ucis.slice(at);
-        if (editing === branch.id) {
-          const input = OX.el('input', { type: 'text', value: branch.name || '', maxlength: 120, 'aria-label': 'Name of the line' });
-          const save = () => {
-            const name = input.value.trim();
-            editing = null;
-            act(() => OX.bridge.api('PATCH', `/repertoire/tree/branches/${branch.id}`, { name }), 'Renamed.');
+      function lineRow({ branch, at, difference, here }) {
+        const rest = here ? branch.ucis.slice(at) : [];
+        if (deleting?.id === branch.id) {
+          const expected = snapshot(deleting);
+          const cancel = () => {
+            deleting = null;
+            render();
+            body.querySelector(`[data-delete-line="${branch.id}"]`)?.focus();
+            refresh();
           };
-          input.addEventListener('keydown', event => {
-            if (event.key === 'Enter') save();
-            if (event.key === 'Escape') { editing = null; render(); }
-          });
-          if (focusEdit) {
-            focusEdit = false;
-            setTimeout(() => { input.scrollIntoView({ block: 'nearest' }); input.focus(); input.select(); }, 0);
-          }
-          return OX.el('div', { class: 'linerow editing' }, OX.el('span', { class: `dot ${branch.color}` }), input,
-            icon('check', 'Save the name', save, 'good'),
-            icon('x', 'Cancel', () => { editing = null; render(); }));
-        }
-        if (deleting === branch.id) {
+          const target = deleting.name ? `“${deleting.name}”` : 'this line';
           return OX.el('div', { class: 'linerow confirm' },
-            OX.el('span', { class: 'grow ellipsis', text: `Delete “${nameOf(branch)}”?` }),
-            OX.el('button', { class: 'btn danger', text: 'Delete', onclick: () => { deleting = null; act(() => OX.bridge.api('DELETE', `/repertoire/tree/branches/${branch.id}`), 'Line deleted.'); } }),
-            OX.el('button', { class: 'btn', text: 'Cancel', onclick: () => { deleting = null; render(); } }));
+            OX.el('div', {},
+              OX.el('div', { text: `Delete ${target} from your ${label(deleting.color)} repertoire?` }),
+              OX.el('div', { class: 'dim small', text: OX.numberMoves(START, deleting.sans) })),
+            OX.el('div', { class: 'btns' },
+              OX.el('button', { class: 'btn danger', text: 'Delete', onclick: () => {
+                if (busy) return;
+                deleting = null;
+                body.querySelector('.line-search, .saved-lines-heading')?.focus({ preventScroll: true });
+                act(() => OX.bridge.api('DELETE', `/repertoire/tree/branches/${branch.id}`, expected), 'Line deleted.');
+              } }),
+              OX.el('button', { class: 'btn cancel-delete', text: 'Cancel', onclick: cancel })));
         }
         const main = branch.label === 'main';
-        const transposed = !!path && R.otherOrder(branch, at, path);
-        // Under the name: what tells this line from others of the same name,
-        // and whether it gets here by other moves than the board did.
-        const detail = [apart, transposed ? 'other move order' : ''].filter(Boolean).join(' · ');
-        return OX.el('div', {
-          class: 'linerow',
-          title: OX.numberMoves(START, branch.sans) + (transposed ? '\n(reaches this position by another move order)' : ''),
-        },
-          OX.el('span', { class: `dot ${branch.color}`, title: label(branch.color) }),
-          OX.el('span', { class: 'linename' },
-            OX.el('span', { class: 'nm', text: nameOf(branch) }),
-            detail ? OX.el('span', { class: 'apart dim', text: detail }) : null),
-          OX.el('span', { class: `pill ${branch.label}`, text: LABELS[branch.label] || branch.label }),
-          OX.el('span', { class: 'actions' },
-            rest.length ? icon('play', `Play the rest of this line on the board (${rest.length} move${rest.length === 1 ? '' : 's'})`, () => OX.lichess.playUciList(rest)) : null,
-            icon('pencil', 'Rename', () => { editing = branch.id; focusEdit = true; deleting = null; render(); }),
-            icon(main ? 'star' : 'starOutline', main ? 'Make it a sideline' : 'Make it a main line',
-              () => act(() => OX.bridge.api('PATCH', `/repertoire/tree/branches/${branch.id}`, { label: main ? 'sideline' : 'main' }),
-                main ? 'Now a sideline.' : 'Now a main line.'), main ? 'on' : ''),
-            icon('trash', 'Delete this line', () => { deleting = branch.id; editing = null; render(); }, 'danger')));
+        const transposed = difference >= 0;
+        const ends = at === branch.sans.length;
+        const detail = [transposed ? 'Other move order' : '', ends && here ? 'Ends here' : '', branch.name]
+          .filter(Boolean).join(' · ');
+        const fullMoves = R.numberFrom(0, branch.sans);
+        // For long lines, show the moves around the position being compared.
+        // For another move order, show where it first differs from the board.
+        const moves = R.excerpt(branch.sans, transposed ? Math.min(difference, branch.sans.length) : at ?? 0);
+        const edit = icon('pencil', 'Edit this line', () => openEditor(branch), 'line-button');
+        edit.setAttribute('data-edit-line', branch.id);
+        edit.append('Edit');
+        const remove = icon('trash', 'Delete this line', () => {
+          deleting = branch;
+          render();
+          body.querySelector('.cancel-delete')?.focus();
+        }, 'danger line-button');
+        remove.setAttribute('data-delete-line', branch.id);
+        remove.append('Delete');
+        return OX.el('div', { class: 'linerow saved-line' },
+          OX.el('div', { class: 'line-identity' },
+            OX.el('span', { class: `dot ${branch.color}`, title: label(branch.color), role: 'img', 'aria-label': label(branch.color) }),
+            OX.el('span', { class: 'line-moves', title: fullMoves, text: moves }),
+            edit),
+          OX.el('div', { class: 'line-meta' },
+            OX.el('span', { class: `pill ${branch.label}`, text: LABELS[branch.label] || branch.label }),
+            OX.el('span', { class: 'grow dim ellipsis small', title: detail, text: detail }),
+            OX.el('span', { class: 'actions' },
+              rest.length ? icon('play', `Play the rest of this line on the board (${rest.length} move${rest.length === 1 ? '' : 's'})`, () => OX.lichess.playUciList(rest)) : null,
+              icon(main ? 'star' : 'starOutline', main ? 'Make it a sideline' : 'Make it a main line',
+                () => act(() => OX.bridge.api('PATCH', `/repertoire/tree/branches/${branch.id}`, { label: main ? 'sideline' : 'main', expected: snapshot(branch) }),
+                  main ? 'Now a sideline.' : 'Now a main line.'), main ? 'on' : '')),
+            remove));
       }
 
       function linesSection(path) {
-        const list = [...(index.through.get(position.key) || [])]
-          .sort((a, b) => Number(b.branch.label === 'main') - Number(a.branch.label === 'main') || (a.branch.name || '').localeCompare(b.branch.name || ''));
+        const matchesOnBoard = index.through.get(position.key);
+        let ply = path?.sans.length;
+        let matches = matchesOnBoard;
+        // If the board has gone off book, show the last prepared position in
+        // the played line. The starting position would match every opening.
+        if (!matches && !managing && path) {
+          for (ply--; ply > 0; ply--) {
+            matches = index.through.get(path.keys[ply]);
+            if (matches) break;
+          }
+        }
+        const prefix = path?.sans.slice(0, ply);
+        const matching = (matches || []).map(({ branch, at }) => {
+          // The index stores the first visit to a position. Prefer the actual
+          // move sequence on the board if the position occurs again later.
+          const difference = prefix?.findIndex((san, i) => san !== branch.sans[i]);
+          if (difference === -1) at = ply;
+          const ends = at === branch.sans.length;
+          const rank = (difference >= 0 ? 2 : 0) + (ends ? 0 : 1);
+          return { branch, at, difference, here: !!matchesOnBoard, rank };
+        });
+        const list = [...matching];
+        if (managing) {
+          const ids = new Set(matching.map(({ branch }) => branch.id));
+          for (const branch of index.branches) if (!ids.has(branch.id)) list.push({ branch, rank: 4 });
+        }
+        list.sort((a, b) => a.rank - b.rank || Number(b.branch.color === side) - Number(a.branch.color === side)
+          || Number(b.branch.label === 'main') - Number(a.branch.label === 'main') || a.branch.sans.length - b.branch.sans.length);
         if (!list.length) return null;
-        // Closed until asked for: a position near the start has dozens of lines.
-        const apart = showAllLines ? R.tellApart(list.map(item => item.branch)) : new Map();
-        const rows = showAllLines ? list.map(item => {
+        const rows = list.map(item => {
           const { branch } = item;
           return {
-            node: lineRow(item, apart.get(branch.id) || '', path),
+            node: lineRow(item),
             // What the filter looks through: the line itself, not what its row
-            // happens to show (a row being renamed shows only a text box).
-            text: `${nameOf(branch)} ${LABELS[branch.label] || branch.label} ${label(branch.color)} ${OX.numberMoves(START, branch.sans)} ${branch.sans.join(' ')}`.toLowerCase(),
-            // The row you are renaming or deleting stays, whatever the filter says.
-            keep: editing === branch.id || deleting === branch.id,
+            // happens to show.
+            terms: [branch.name, LINE_KINDS[branch.label], label(branch.color), R.numberFrom(0, branch.sans), branch.sans.join(' ')]
+              .filter(Boolean).map(text => text.toLowerCase()),
+            keep: deleting?.id === branch.id,
           };
-        }) : [];
-        const matches = OX.el('span', { class: 'dim line-matches' });
+        });
+        const countLabel = OX.el('span', { class: 'dim line-matches' });
         const applyFilter = () => {
           const wanted = lineFilter.trim().toLowerCase();
           let count = 0;
           for (const row of rows) {
-            row.node.hidden = !(row.keep || row.text.includes(wanted));
+            row.node.hidden = !(row.keep || row.terms.some(text => text.includes(wanted)));
             if (!row.node.hidden) count++;
           }
-          matches.textContent = `${count} of ${list.length}`;
+          countLabel.textContent = `${count} of ${list.length}`;
         };
-        const search = showAllLines ? OX.el('input', {
-          class: 'line-search', type: 'search', placeholder: 'Find an opening or move…',
+        const search = managing ? OX.el('input', {
+          class: 'line-search', type: 'search', placeholder: 'Search moves or opening names',
           'aria-label': 'Find a repertoire line', value: lineFilter,
           oninput: event => { lineFilter = event.target.value; applyFilter(); },
         }) : null;
-        if (showAllLines) applyFilter();
+        if (managing) applyFilter();
+        const heading = !managing && (matchesOnBoard ? 'Saved lines at this position' : `Saved lines before ${R.numberFrom(ply, [path.sans[ply]])}`);
         return OX.el('div', { class: 'section' },
-          OX.el('div', { class: 'section-head', style: 'margin-bottom: 0' },
-            OX.el('span', { class: 'section-title', text: 'Lines through here' }),
-            OX.el('span', { class: 'dim', text: String(list.length) })),
-          showAllLines ? OX.el('div', { class: 'line-search-row' }, search, matches) : null,
-          rows.length ? OX.el('div', { class: 'lines list' }, rows.map(row => row.node)) : null,
+          managing ? OX.el('div', { class: 'line-search-row' }, search, countLabel)
+            : OX.el('div', { class: 'section-title saved-lines-heading', role: 'heading', 'aria-level': 3, tabindex: -1, text: heading }),
+          OX.el('div', { class: 'lines list' }, rows.map(row => row.node)));
+      }
+
+      function manageLines() {
+        if (!managing && (!index.branches.length || form)) return null;
+        return OX.el('div', { class: 'section manage-lines' },
           OX.el('button', {
-            class: 'link small', style: 'margin-top: 6px', onclick: () => { showAllLines = !showAllLines; if (!showAllLines) { lineFilter = ''; editing = deleting = null; } render(); },
-            text: showAllLines ? 'Hide lines' : `Browse ${list.length} line${list.length === 1 ? '' : 's'}`,
+            class: 'link manage-toggle', text: managing ? 'Back to board position' : 'Manage saved lines',
+            onclick: () => {
+              managing = !managing;
+              lineFilter = '';
+              deleting = null;
+              render();
+              (body.querySelector(managing ? '.line-search' : '.manage-toggle')
+                || body.querySelector(managing ? '.manage-toggle' : '.ox-open-save'))?.focus();
+            },
           }));
+      }
+
+      function statusMessage() {
+        return notice && Date.now() < notice.until ? OX.el('div', { class: 'ok', role: 'status', text: notice.text }) : null;
+      }
+
+      function openEditor(branch) {
+        if (busy) return;
+        const expected = snapshot(branch);
+        const listTop = body.querySelector('.lines')?.scrollTop || 0;
+        const boxTop = root.scrollTop;
+        let moves = branch.sans;
+        let pending = false;
+        let stale = false;
+        const heading = OX.el('div', { class: 'section-title', role: 'heading', 'aria-level': 3, tabindex: -1,
+          text: `Edit ${label(branch.color)} line` });
+        const name = OX.el('input', { type: 'text', value: expected.name, maxlength: 120, placeholder: 'Opening name' });
+        const kind = OX.el('select', {},
+          Object.entries(LINE_KINDS).map(([value, text]) => OX.el('option', { value, text })));
+        kind.value = expected.label;
+        const status = OX.el('div', { class: 'small', role: 'status' });
+        const submit = OX.el('button', { class: 'btn primary', type: 'submit', text: 'Save changes' });
+        const proposed = OX.el('div', { class: 'edit-preview', hidden: true });
+        const proposedMoves = OX.el('div', { class: 'moves' });
+        proposed.append(OX.el('div', { class: 'small', text: 'New moves' }), proposedMoves);
+
+        const changes = () => {
+          const patch = {};
+          if (moves.join(' ') !== branch.sans.join(' ')) patch.moves_san = moves.join(' ');
+          if (name.value.trim() !== expected.name) patch.name = name.value.trim();
+          if (kind.value !== expected.label) patch.label = kind.value;
+          return patch;
+        };
+        const restoreList = () => {
+          const list = body.querySelector('.lines');
+          if (list) list.scrollTop = listTop;
+          root.scrollTop = boxTop;
+          const button = body.querySelector(`[data-edit-line="${branch.id}"]`);
+          const target = button && !button.closest('[hidden]') ? button : body.querySelector('.manage-toggle');
+          target?.focus({ preventScroll: true });
+        };
+        const cancel = OX.el('button', { class: 'btn', type: 'button', text: 'Cancel', onclick: async () => {
+          editor = null;
+          if (!stale) { render(); restoreList(); }
+          await refresh();
+          if (stale && alive) restoreList();
+        } });
+        const useBoard = OX.el('button', { class: 'btn', type: 'button', text: 'Use board moves', onclick: () => {
+          const current = OX.readPosition();
+          const path = current && boardPath(current.key);
+          if (!path?.sans.length) {
+            status.textContent = 'Play a line from the starting position first.';
+            return;
+          }
+          moves = path.sans;
+          proposed.hidden = !changes().moves_san;
+          proposedMoves.textContent = R.numberFrom(0, moves);
+          status.textContent = proposed.hidden ? 'The board already matches the saved moves.' : '';
+          update(path);
+        } });
+        const playSaved = OX.el('button', { class: 'btn', type: 'button', text: 'Play saved line', onclick: () => {
+          if (OX.movesOnBoard() === null || !OX.lichess.toStart() || !OX.lichess.playUciList(branch.ucis)) {
+            status.textContent = 'Could not play the saved line on this board.';
+          }
+        } });
+        const update = (path = boardPath()) => {
+          useBoard.disabled = pending || stale || !path?.sans.length;
+          playSaved.disabled = pending || stale || !path;
+          submit.disabled = pending || stale || !Object.keys(changes()).length;
+          name.disabled = kind.disabled = cancel.disabled = pending;
+        };
+        const save = async event => {
+          event.preventDefault();
+          if (submit.disabled) return;
+          const patch = changes();
+          pending = true;
+          status.textContent = 'Saving…';
+          update();
+          try {
+            await OX.bridge.api('PATCH', `/repertoire/tree/branches/${branch.id}`, { ...patch, expected });
+          } catch (error) {
+            if (!alive) return;
+            pending = false;
+            stale = error.status === 409 || error.status === 404;
+            if (stale) invalidate();
+            status.textContent = stale ? 'This line changed while you were editing. Cancel and reopen it to see the latest version.'
+              : error.offline ? OX.offlineText() : error.detail || 'Could not save the changes.';
+            update();
+            return;
+          }
+          invalidate();
+          if (!alive) return;
+          say('Line updated.');
+          editor = null;
+          await refresh();
+          if (alive) restoreList();
+        };
+        const draft = OX.el('form', { class: 'saveform line-editor', onsubmit: save, oninput: () => update() },
+          heading,
+          OX.el('div', { class: 'edit-preview' },
+            OX.el('div', { class: 'small', text: 'Saved moves' }),
+            OX.el('div', { class: 'moves', text: R.numberFrom(0, branch.sans) })),
+          OX.el('div', { class: 'btns' }, playSaved, useBoard),
+          OX.el('div', { class: 'dim small', text: 'Play your new move order on the board, then choose Use board moves.' }),
+          proposed,
+          OX.el('label', {}, 'Name', name),
+          OX.el('label', {}, 'Line type', kind),
+          OX.el('div', { class: 'btns' }, submit, cancel), status);
+        draft.addEventListener('keydown', event => {
+          if (event.key !== 'Escape' || event.target === kind || pending) return;
+          event.stopPropagation();
+          cancel.click();
+        });
+        deleting = null;
+        editor = { update };
+        body.replaceChildren(draft);
+        root.scrollTop = 0;
+        update();
+        heading.focus();
       }
 
       function footer(path) {
@@ -293,18 +470,23 @@
               title: transposed
                 ? `Add the moves from here on to ${whose} “${name}”. It reaches this position by another move order and keeps its own moves.`
                 : `Make ${whose} “${name}” continue to this move`,
-              onclick: () => act(() => OX.bridge.api('PATCH', `/repertoire/tree/branches/${branch.id}`, { moves_san: moves.join(' ') }), `Extended “${name}”.`),
+              onclick: () => act(() => OX.bridge.api('PATCH', `/repertoire/tree/branches/${branch.id}`, {
+                moves_san: moves.join(' '), expected_moves_san: branch.sans.join(' '),
+              }), `Extended “${name}”.`),
             }, OX.el('span', { class: `dot ${branch.color}` }), `Extend “${name.length > 22 ? `${name.slice(0, 21)}…` : name}”`));
           }
-          buttons.unshift(OX.el('button', { class: 'btn primary', onclick: () => openForm(line, path) }, svgEl('plus'), 'Save this line'));
+          buttons.unshift(OX.el('button', { class: 'btn primary ox-open-save', onclick: () => openForm(line, path) }, svgEl('plus'), 'Save this line'));
         }
-        const message = notice && Date.now() < notice.until ? OX.el('div', { class: 'ok', text: notice.text }) : null;
+        const message = statusMessage();
         if (!message && !buttons.length) return null;
         return OX.el('div', { class: 'footer' }, message, buttons.length ? OX.el('div', { class: 'btns' }, buttons) : null);
       }
 
       async function openForm(line, path) {
         let color = boardSide();
+        let baseline = index;
+        const moves = line.join(' ');
+        const savedLine = () => baseline.branches.find(b => b.color === color && b.sans.join(' ') === moves);
         const name = OX.el('input', { type: 'text', placeholder: "Name (empty: the opening's name)", maxlength: 120, 'aria-label': 'Name of the line' });
         const kind = OX.el('select', { 'aria-label': 'Kind of line' },
           Object.entries(LINE_KINDS).map(([value, text]) => OX.el('option', { value, text })));
@@ -321,11 +503,10 @@
         name.addEventListener('input', () => { named = true; });
         kind.addEventListener('change', () => { kindChosen = true; });
         const drawKnown = () => {
-          const moves = line.join(' ');
-          const same = index.branches.find(b => b.color === color && b.sans.join(' ') === moves);
+          const same = savedLine();
           if (!named) name.value = same ? same.name || '' : suggested;
           if (!kindChosen) kind.value = same?.label || 'main';
-          const others = path ? (index.through.get(path.keys[path.keys.length - 1]) || [])
+          const others = path ? (baseline.through.get(path.keys[path.keys.length - 1]) || [])
             .filter(({ branch, at }) => branch.color === color && branch !== same && R.otherOrder(branch, at, path)) : [];
           if (same) known.textContent = `Already saved as “${nameOf(same)}”. Saving again changes its name and kind.`;
           else if (others.length) {
@@ -333,32 +514,57 @@
           } else known.textContent = '';
           known.hidden = !known.textContent;
         };
+        const sideButtons = COLORS.map(c => OX.el('button', {
+          type: 'button', onclick: () => { color = c; drawSides(); },
+        }, OX.el('span', { class: `dot ${c}` }), `As ${label(c)}`));
+        sides.append(...sideButtons);
         const drawSides = () => {
-          sides.replaceChildren(...COLORS.map(c => OX.el('button', {
-            class: c === color ? 'active' : '', onclick: () => { color = c; drawSides(); },
-          }, OX.el('span', { class: `dot ${c}` }), `As ${label(c)}`)));
+          sideButtons.forEach((button, i) => {
+            const active = COLORS[i] === color;
+            button.classList.toggle('active', active);
+            button.setAttribute('aria-pressed', String(active));
+          });
           drawKnown();
         };
         drawSides();
-        const status = OX.el('span', { class: 'dim' });
+        const status = OX.el('span', { class: 'dim', role: 'status' });
         const submit = OX.el('button', { class: 'btn primary', text: 'Save' });
         const save = async () => {
           if (submit.disabled || form !== draft) return;
           submit.disabled = true;
           const savedColor = color;
+          const same = savedLine();
+          const expected = same ? { id: same.id, name: same.name || '', label: same.label } : 'new';
           status.textContent = 'Saving…';
           try {
-            await OX.bridge.api('POST', '/repertoire/tree/branches', { color: savedColor, name: name.value.trim(), moves_san: line.join(' '), label: kind.value });
+            await OX.bridge.api('POST', '/repertoire/tree/branches', { color: savedColor, name: name.value.trim(), moves_san: moves, label: kind.value, expected });
           } catch (error) {
-            status.textContent = error.offline ? OX.offlineText() : "Couldn't save it.";
+            if (error.status === 409) {
+              invalidate();
+              const updated = await refresh();
+              if (updated && form === draft) {
+                baseline = updated;
+                drawKnown();
+              }
+              status.textContent = updated
+                ? 'This line changed in another tab. Review it before saving again.'
+                : 'This line changed. Try again to load its latest details.';
+            } else status.textContent = error.offline ? OX.offlineText()
+              : error.status === 400 && error.detail || "Couldn't save it.";
             submit.disabled = false;
             return;
           }
-          cache.index = null;
+          invalidate();
           if (!alive) return;
           if (form === draft) form = null;
           say(`Saved to your ${label(savedColor)} repertoire.`);
           await refresh();
+        };
+        const close = () => {
+          form = null;
+          render();
+          refresh();
+          body.querySelector('.ox-open-save')?.focus();
         };
         submit.addEventListener('click', save);
         name.addEventListener('keydown', event => { if (event.key === 'Enter') save(); });
@@ -368,13 +574,16 @@
           sides, known, name, kind,
           OX.el('div', { class: 'btns' },
             submit,
-            OX.el('button', { class: 'btn', onclick: () => { form = null; render(); }, text: 'Cancel' }),
+            OX.el('button', { class: 'btn', onclick: close, text: 'Cancel' }),
             status));
+        draft.addEventListener('keydown', event => {
+          if (event.key !== 'Escape' || event.target === kind) return;
+          event.stopPropagation();
+          close();
+        });
         form = draft;
-        // The list of lines would push the form out of sight below it.
-        showAllLines = false;
         lineFilter = '';
-        editing = deleting = null;
+        deleting = null;
         render();
         form.scrollIntoView({ block: 'nearest' });
         name.focus();
@@ -393,6 +602,7 @@
 
       function render() {
         if (!index || !position) return;
+        if (editor) { editor.update(); return; }
         const entry = index.positions.get(position.key);
         const path = boardPath();
         const left = path ? R.leftAt(index, path, side) : null;
@@ -412,10 +622,29 @@
         // lines and the box itself keep their scroll positions.
         const listTop = body.querySelector('.lines')?.scrollTop || 0;
         const boxTop = root.scrollTop;
-        body.replaceChildren(...leftBanner(left), ...sections, ...(status ? [status] : []), ...[linesSection(path), footer(path)].filter(Boolean));
+        const active = root.getRootNode().activeElement;
+        const deleteLine = active?.getAttribute('data-delete-line');
+        const editLine = active?.getAttribute('data-edit-line');
+        const focusSelector = deleteLine ? `[data-delete-line="${deleteLine}"]`
+          : editLine ? `[data-edit-line="${editLine}"]`
+          : ['.ox-open-save', '.manage-toggle', '.line-search', '.cancel-delete', '.saved-lines-heading']
+            .find(selector => active?.matches(selector));
+        const cursor = focusSelector && active.matches('input')
+          ? [active.selectionStart, active.selectionEnd, active.selectionDirection] : null;
+        const lines = form ? null : linesSection(path);
+        const boardSections = [...leftBanner(left), ...sections, status];
+        const startingPosition = position.key === OX.positionKey(START);
+        const content = managing ? [manageLines(), lines || OX.el('div', { class: 'section dim', text: 'No saved lines.' }), statusMessage()]
+          : [manageLines(), ...(startingPosition ? [...boardSections, lines] : [lines, ...boardSections]), footer(path)];
+        body.replaceChildren(...content.filter(Boolean));
         const list = body.querySelector('.lines');
         if (list) list.scrollTop = listTop;
         root.scrollTop = boxTop;
+        const replacement = focusSelector && (body.querySelector(focusSelector) || (managing && body.querySelector('.manage-toggle')));
+        if (replacement) {
+          replacement.focus({ preventScroll: true });
+          if (cursor && replacement.matches('input')) replacement.setSelectionRange(...cursor);
+        }
       }
 
       async function refresh() {
@@ -424,20 +653,30 @@
           const loaded = await OX.loadRepertoire();
           if (mine !== token) return;
           index = loaded;
-          render();
+          if (!form) render();
+          return loaded;
         } catch (error) {
-          if (mine === token) body.replaceChildren(OX.el('div', { class: 'offline', text: error.offline ? OX.offlineText() : "Couldn't load your repertoire." }));
+          if (mine === token && !form && !editor) body.replaceChildren(OX.el('div', { class: 'offline', text: error.offline ? OX.offlineText() : "Couldn't load your repertoire." }));
         }
       }
+
+      const stopListening = OX.on('repertoireChanged', () => {
+        if (!form && !editor && !deleting) refresh();
+      });
 
       return {
         async update(next) {
           const nextPath = OX.$(OX.anchors.activeMove.selector)?.getAttribute('p') || '';
           if (position && (next.fen !== position.fen || nextPath !== movePath)) {
-            editing = deleting = null;
-            showAllLines = false;
-            lineFilter = '';
-            form = null;
+            if (!managing && !editor) {
+              deleting = null;
+              form = null;
+              root.scrollTop = 0;
+            }
+            if (!managing || !lineFilter) {
+              const list = body.querySelector('.lines');
+              if (list) list.scrollTop = 0;
+            }
             pathRetries = 0;
           }
           position = next;
@@ -449,7 +688,7 @@
           const now = boardSide();
           if (now !== side) { side = now; if (!form) render(); }
         },
-        destroy() { alive = false; token++; },
+        destroy() { alive = false; token++; stopListening(); },
       };
     },
   });

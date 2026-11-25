@@ -37,6 +37,7 @@ function setTabPlaying(tabId, playing) {
         // Resume the engine before tabs start asking it for new analysis.
         await tellEngine(false);
         await broadcastPaused(false);
+        gameEnded();
       }
     }
     await refreshBadge();
@@ -49,13 +50,34 @@ function setTabPlaying(tabId, playing) {
 // Your Stockfish takes no work from Lichess while a game is on, so no Lichess
 // tab can use it then (backend/lichess_engine_provider.py). Said on every
 // change and again with every keepalive, so an app (re)started mid-game hears it.
-function tellEngine(paused) {
-  return fetch(`${BACKEND}/api/lichess-engine/paused`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ paused }),
-    signal: AbortSignal.timeout(2000),
-  }).catch(() => {});
+let engineRetry = null;
+let engineResumePending = false;
+async function tellEngine(paused) {
+  if (engineRetry !== null) clearTimeout(engineRetry);
+  engineRetry = null;
+  try {
+    const response = await fetch(`${BACKEND}/api/lichess-engine/paused`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ paused }),
+      signal: AbortSignal.timeout(2000),
+    });
+    if (response.ok) {
+      const recovered = !paused && engineResumePending;
+      engineResumePending = false;
+      if (recovered) await broadcast({ type: 'ox-engine-resumed' }).catch(() => {});
+      return;
+    }
+  } catch { /* The app can be restarting or busy. */ }
+  engineResumePending = !paused;
+  if (paused || appUp) {
+    engineRetry = setTimeout(() => {
+      engineRetry = null;
+      // Match the current tabs when the retry runs, in the same queue as
+      // navigation updates. Never replay an earlier unlock after a pause.
+      return syncEngineLock().catch(() => {});
+    }, 1000);
+  }
 }
 async function syncEngineLock() {
   await seedLock();
@@ -86,6 +108,7 @@ function looksLikeGame(url) {
   try {
     const { host, pathname } = new URL(url);
     if (host !== 'lichess.org') return false;
+    if (globalThis.OX.isGameForecastPath(pathname)) return true;
     // Lichess TV, and a player's own TV page (/@/name/tv).
     if (/^\/tv(?:\/|$)/.test(pathname) || /^\/@\/[^/]+\/tv\/?$/.test(pathname)) return true;
     const id = /^\/(?:game\/)?([A-Za-z0-9]{8})(?:[A-Za-z0-9]{4})?(?:\/(?:white|black))?\/?$/.exec(pathname)?.[1];
@@ -95,8 +118,11 @@ function looksLikeGame(url) {
 }
 async function tabIsLive(tab) {
   if (tab.discarded) return false; // unloaded by Chrome: nothing is shown in it
-  const gameAddress = looksLikeGame(tab.pendingUrl || tab.url);
+  const url = tab.pendingUrl || tab.url;
+  const gameAddress = looksLikeGame(url);
   if (gameAddress && tab.status === 'loading') return true;
+  // Forecasts use main.analyse even while their game is in progress.
+  if (gameAddress && globalThis.OX.isGameForecastPath(new URL(url).pathname)) return true;
   try {
     const [{ result }] = await ext.scripting.executeScript({
       target: { tabId: tab.id },
@@ -122,11 +148,12 @@ function seedLock() {
   return seeding;
 }
 
-async function broadcastPaused(paused) {
+async function broadcast(message, exceptTab) {
   const tabs = await ext.tabs.query(LICHESS_TABS);
-  await Promise.all(tabs.map(tab =>
-    ext.tabs.sendMessage(tab.id, { type: 'ox-paused', paused }).catch(() => {})));
+  await Promise.all(tabs.filter(tab => tab.id !== exceptTab).map(tab =>
+    ext.tabs.sendMessage(tab.id, message).catch(() => {})));
 }
+const broadcastPaused = paused => broadcast({ type: 'ox-paused', paused });
 
 ext.tabs.onRemoved.addListener(tabId => {
   loadingTabs.delete(tabId);
@@ -152,7 +179,9 @@ async function pruneLock() {
   for (const tabId of await playingTabs()) {
     let tab = null;
     try { tab = await ext.tabs.get(tabId); } catch { /* no such tab any more */ }
-    if (!tab || tab.discarded || !tab.url?.startsWith('https://lichess.org/')) await setTabPlaying(tabId, false);
+    if (!tab || tab.discarded || (tab.status === 'complete' && !tab.url?.startsWith('https://lichess.org/'))) {
+      await setTabPlaying(tabId, false);
+    }
   }
 }
 const loadingTabs = new Map();
@@ -160,9 +189,12 @@ ext.tabs.onUpdated.addListener(async (tabId, change, tab) => {
   if (change.status === 'loading') {
     const url = change.url || tab.pendingUrl || tab.url;
     const lichess = url?.startsWith('https://lichess.org/');
-    if (lichess) loadingTabs.set(tabId, {});
-    else loadingTabs.delete(tabId);
-    if (!lichess || looksLikeGame(url)) await setTabPlaying(tabId, lichess);
+    // A pending navigation can leave the old game visible until the new
+    // document arrives, even when the destination is on a different site.
+    if (lichess || tab.url?.startsWith('https://lichess.org/') || loadingTabs.has(tabId)) {
+      loadingTabs.set(tabId, {});
+    }
+    if (lichess && looksLikeGame(url)) await setTabPlaying(tabId, true);
   }
   if (change.status === 'complete') {
     const load = loadingTabs.get(tabId);
@@ -173,6 +205,71 @@ ext.tabs.onUpdated.addListener(async (tabId, change, tab) => {
     await setTabPlaying(tabId, playing);
   }
 });
+
+// --- your games into a Lichess study (backend/study_analysis.py) -------------
+// When the last game in progress ends, the app fetches your new games at once
+// (not at its next timed sync), so the game just played is in the study and
+// being analysed before you go looking for it. A few seconds' wait lets
+// Lichess finish the game on its side first.
+const GAME_END_SYNC_DELAY_MS = 5000;
+function gameEnded() {
+  setTimeout(() => { client.api('POST', '/study-analysis/game-ended').catch(() => {}); },
+    GAME_END_SYNC_DELAY_MS);
+}
+
+// An analysis the app has finished is published to its chapter from a Lichess
+// tab: the same request as Lichess's own Publish button after "Analyse on
+// your device", which needs your Lichess login (a token cannot make it).
+// Never while a game is in progress, one at a time, and only from a tab
+// signed in as the study's owner; otherwise it waits for the next try.
+let publishing = null;
+function publishReady() {
+  publishing = publishing || (async () => {
+    await seedLock();
+    if ((await playingTabs()).size > 0) return;
+    const answer = await client.api('GET', '/study-analysis/ready');
+    const items = answer?.ok && Array.isArray(answer.data) ? answer.data : [];
+    for (const item of items) {
+      if ((await playingTabs()).size > 0) return;
+      const tab = (await ext.tabs.query(LICHESS_TABS))
+        .find(candidate => !candidate.discarded && candidate.status === 'complete');
+      if (!tab) return;
+      let outcome;
+      try {
+        [{ result: outcome }] = await ext.scripting.executeScript({
+          target: { tabId: tab.id }, world: 'MAIN', func: publishInPage,
+          args: [item.document, item.user_id],
+        });
+      } catch { return; } // the tab went away or is not scriptable: next time
+      if (!outcome || outcome.wait) return;
+      if (outcome.status >= 200 && outcome.status < 300) {
+        await client.api('POST', `/study-analysis/${item.game_id}/published`);
+      } else {
+        await client.api('POST', `/study-analysis/${item.game_id}/publish-failed`,
+          { status: outcome.status, message: String(outcome.message || '').slice(0, 2000) });
+      }
+    }
+  })().catch(() => {}).finally(() => { publishing = null; });
+  return publishing;
+}
+
+// Runs inside the Lichess page (its address and its login), not in this
+// worker: Chrome copies the function there, so it uses nothing from here.
+async function publishInPage(analysis, owner) {
+  const me = document.body?.dataset?.user;
+  if (!me || me.toLowerCase() !== String(owner || '').toLowerCase()) return { wait: true };
+  try {
+    const response = await fetch('/analysis/publish', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(analysis),
+    });
+    return { status: response.status,
+      message: response.ok ? '' : `${response.status} ${(await response.text()).slice(0, 300)}` };
+  } catch (error) {
+    return { status: 0, message: String(error) };
+  }
+}
 
 // --- toolbar badge ---------------------------------------------------------
 async function refreshBadge() {
@@ -294,6 +391,7 @@ async function keepAlive() {
     .then(res => {
       if (!res.ok) return noteApp(false);
       appUp = true;
+      publishReady();
       return syncEngineLock();
     })
     .catch(() => { noteApp(false); startApp(); });
@@ -335,15 +433,103 @@ ext.runtime.onInstalled.addListener(async () => {
   await refreshBadge();
   const scripts = ext.runtime.getManifest().content_scripts;
   const main = scripts.find(c => c.world === 'MAIN');
+  const relay = scripts.find(c => c.js.includes('src/engine-relay.js'));
   const isolated = scripts.find(c => c.js.includes('src/content.js'));
   const css = scripts.flatMap(c => c.css || []);
   for (const tab of await ext.tabs.query(LICHESS_TABS)) {
     try {
       if (css.length) await ext.scripting.insertCSS({ target: { tabId: tab.id }, files: css });
+      if (relay) await ext.scripting.executeScript({ target: { tabId: tab.id }, files: ['src/engine-relay.js'] });
       if (main) await ext.scripting.executeScript({ target: { tabId: tab.id }, world: 'MAIN', files: main.js });
       await ext.scripting.executeScript({ target: { tabId: tab.id }, files: isolated.js });
     } catch { /* tab still loading or not scriptable: it gets the new copy when it loads */ }
   }
+});
+
+// --- Lichess's analysis, answered on this computer ---------------------------
+// The page's analysis requests come here (page-bridge.js, then engine-relay.js,
+// over a port) and go to the app, not round the world through Lichess's engine
+// service, whose per-address limit stepping through a game kept running into.
+// The app's lines go back as they come; closing the port (Lichess cancelled:
+// you moved on) aborts the request, and the app stops Stockfish. "unavailable"
+// (the app is down, or the engine is not the app's) sends the page to
+// Lichess's engine service as before.
+const LOCAL_ANALYSE = `${BACKEND}/api/lichess-engine/analyse`;
+const LOCAL_ANSWER_MS = 4000; // the app answers at once; the lines take their time
+// What Lichess's engine service sends for the empty search answered during a
+// game (backend/lichess_engine_provider.py BrokerEmit, "bestmove (none)").
+const EMPTY_RESULT = '{"time":0,"depth":0,"nodes":0,"pvs":[],"bestmove":"(none)"}\n';
+
+async function analyseHere(port, ask) {
+  const controller = new AbortController();
+  let open = true;
+  port.onDisconnect.addListener(() => { open = false; controller.abort(); });
+  const post = message => {
+    if (!open) return;
+    try { port.postMessage(message); } catch { open = false; controller.abort(); }
+  };
+  // Fail-closed, as the app is: during a game the answer is empty, and the
+  // app is not even asked.
+  await seedLock();
+  if ((await playingTabs()).size > 0) {
+    post({ kind: 'start' });
+    post({ kind: 'chunk', text: EMPTY_RESULT });
+    post({ kind: 'end' });
+    return;
+  }
+  let response;
+  const timer = setTimeout(() => controller.abort(), LOCAL_ANSWER_MS);
+  try {
+    response = await fetch(LOCAL_ANALYSE, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ engineId: ask?.engineId, work: ask?.work }),
+      signal: controller.signal,
+    });
+  } catch {
+    if (open) noteApp(false);
+    post({ kind: 'unavailable' });
+    return;
+  } finally {
+    clearTimeout(timer);
+  }
+  if (!response.ok) {
+    response.body?.cancel().catch(() => {});
+    post({ kind: 'unavailable' });
+    return;
+  }
+  noteApp(true);
+  keepAlive();
+  post({ kind: 'start' });
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const text = decoder.decode(value, { stream: true });
+      if (text) post({ kind: 'chunk', text });
+      if (!open) return;
+    }
+    post({ kind: 'end' });
+  } catch {
+    post({ kind: 'error' }); // the app stopped mid-search
+  } finally {
+    if (!open) reader.cancel().catch(() => {});
+  }
+}
+
+ext.runtime.onConnect.addListener(port => {
+  if (port.name !== 'ox-engine') return;
+  const url = port.sender?.url || port.sender?.tab?.url || '';
+  if (!port.sender?.tab || !url.startsWith('https://lichess.org/')) { port.disconnect(); return; }
+  const first = ask => {
+    port.onMessage.removeListener(first);
+    analyseHere(port, ask).catch(() => {
+      try { port.postMessage({ kind: 'error' }); } catch { /* gone */ }
+    });
+  };
+  port.onMessage.addListener(first);
 });
 
 // --- messages from content scripts -----------------------------------------
@@ -357,6 +543,10 @@ ext.runtime.onMessage.addListener((message, sender, sendResponse) => {
       case 'ox-api':
         try {
           const answer = await client.api(message.method, message.path, message.body);
+          if (answer.ok && ['POST', 'PATCH', 'DELETE'].includes(message.method)
+            && /^\/repertoire\/tree\/branches(?:\/\d+)?$/.test(message.path)) {
+            broadcast({ type: 'ox-repertoire-changed' }, tabId).catch(() => {});
+          }
           noteApp(true);
           keepAlive();
           return answer;
@@ -384,6 +574,9 @@ ext.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
         if (tabId == null || (!message.playing && loadingTabs.has(tabId))) {
           return { paused: (await playingTabs()).size > 0 };
+        }
+        if (!message.playing && globalThis.OX.isGameForecastPath(new URL(sender.tab.url || sender.url || BACKEND).pathname)) {
+          return { paused: await setTabPlaying(tabId, true) };
         }
         return { paused: await setTabPlaying(tabId, message.playing) };
       case 'ox-health':

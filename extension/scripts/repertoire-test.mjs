@@ -176,4 +176,16 @@ test('lines that share a name are told apart by their moves', () => {
   assert.equal(R.numberFrom(5, ['Bb4', 'e3']), '3… Bb4 4. e3');
 });
 
+test("a line's row shows the moves around the board's position, a short line whole", () => {
+  const short = 'a3 a6 b3 b6 h3'.split(' ');
+  assert.equal(R.excerpt(short, 5), '1. a3 a6 2. b3 b6 3. h3'); // was "… 1… a6 2. b3 b6 3. h3"
+  assert.equal(R.excerpt(short, 0), '1. a3 a6 2. b3 b6 3. h3');
+  const long = 'd4 g6 c4 Bg7 Nc3 c6 Bf4 Qb6 Nf3 Qxb2 Bd2 Nf6 c5 O-O a3 d6 Na4'.split(' ');
+  assert.equal(R.excerpt(long, 0), '1. d4 g6 2. c4 Bg7 3. Nc3 c6 4. Bf4 Qb6 5. Nf3 Qxb2 …');
+  assert.equal(R.excerpt(long, 7), '… 2… Bg7 3. Nc3 c6 4. Bf4 Qb6 5. Nf3 Qxb2 6. Bd2 Nf6 7. c5 …');
+  // At its end: the last ten moves, not four of them behind dots.
+  assert.equal(R.excerpt(long, 17), '… 4… Qb6 5. Nf3 Qxb2 6. Bd2 Nf6 7. c5 O-O 8. a3 d6 9. Na4');
+  assert.equal(R.excerpt([], 0), '');
+});
+
 console.log(process.exitCode ? '\nSomething failed.' : `\nAll ${passed} repertoire checks passed.`);
