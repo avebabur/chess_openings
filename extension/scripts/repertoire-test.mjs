@@ -179,4 +179,44 @@ test("a line's row shows the moves around the board's position, a short line who
   assert.equal(R.excerpt([], 0), '');
 });
 
+// Real repertoire (Nov 2026): three Vienna Gambit lines, all named "Vienna
+// Game: Vienna Gambit", share their first ten moves, so their rows read the
+// same "1. e4 e5 2. Nc3 Nf6 3. f4 Nc6 4. fxe5 Nxe5 5. d4 Nc6 …" and you
+// could not tell which one Edit or Delete was for.
+test('rows of lines that start alike show where each one goes its own way', () => {
+  const lines = [
+    'e4 e5 Nc3 Nf6 f4 Nc6 fxe5 Nxe5 d4 Nc6 e5 Ng8 Nf3 Bb4 d5 Nb8 Qd4',
+    'e4 e5 Nc3 Nf6 f4 Nc6 fxe5 Nxe5 d4 Nc6 e5 Ng8 Nf3 d6 Bc4 dxe5 O-O exd4 Ng5 Be6',
+    'e4 e5 Nc3 Nf6 f4 Nc6 fxe5 Nxe5 d4 Nc6 e5 Ng8 Nf3 d6 Bc4 dxe5 O-O exd4 Ng5 dxc3',
+    'e4 e5 Nc3 Nf6 f4 d6 Nf3 exf4 d4',
+  ].map(line => line.split(' '));
+  const texts = R.excerpts(lines.map(sans => ({ sans, around: 2 })));
+  assert.equal(new Set(texts).size, 4, texts.join('\n'));
+  assert.ok(texts[0].includes('Bb4'), texts[0]);
+  assert.ok(texts[1].includes('Be6') && texts[2].includes('dxc3'), `${texts[1]}\n${texts[2]}`);
+  // A row unlike the others keeps the moves around the board's position.
+  assert.equal(texts[3], R.excerpt(lines[3], 2));
+});
+
+// Real Chrome (Nov 2026): "caro kann" found 0 of 137 lines, all of them named
+// "Caro-Kann Defense…"; the app itself accepts "Caro Kann Defense" as a name.
+test('searching lines ignores hyphens, apostrophes, accents and case', () => {
+  const found = (query, text) => R.searchText(text).includes(R.searchText(query));
+  assert.ok(found('caro kann', 'Caro-Kann Defense: Advance Variation'));
+  assert.ok(found('kings indian', "King's Indian Defense"));
+  assert.ok(found('reti', 'Réti Opening'));
+  assert.ok(found('NC3', '1. d4 Nf6 2. c4 e6 3. Nc3 Bb4'));
+  assert.ok(found('1. e4 c6', '1. e4 c6 2. d4 d5'));
+  assert.ok(found('3...Bb4', '3… Bb4'));
+  assert.ok(!found('caro kann', 'Sicilian Defense'));
+});
+
+test('a long name is shortened without cutting a character in half', () => {
+  assert.equal(R.shorten('Vienna', 22), 'Vienna');
+  const name = `${'x'.repeat(20)}🐴🐴🐴`; // 🐴 is two UTF-16 units
+  const short = R.shorten(name, 22);
+  assert.equal(short, `${'x'.repeat(20)}🐴…`);
+  assert.ok(!/[\ud800-\udbff](?![\udc00-\udfff])/.test(short), 'a lone surrogate');
+});
+
 console.log(process.exitCode ? '\nSomething failed.' : `\nAll ${passed} repertoire checks passed.`);

@@ -122,13 +122,8 @@
     try {
       const path = decodeURIComponent(location.pathname);
       // As a number, like the app's own ids.
-      const savedInTab = JSON.parse(sessionStorage.getItem(`${KEY}:${path}`) || 'null');
-      // Older tabs stored just the id.
-      if (typeof savedInTab === 'number' && savedInTab > 0) return { id: savedInTab };
-      if (savedInTab?.id > 0) return savedInTab;
-      // Older builds shared a single record across every Lichess tab.
-      const saved = JSON.parse(localStorage.getItem(KEY) || 'null');
-      return saved && path === decodeURIComponent(saved.path) ? saved : null;
+      const saved = JSON.parse(sessionStorage.getItem(`${KEY}:${path}`) || 'null');
+      return saved?.id > 0 ? saved : null;
     } catch { return null; }
   }
 

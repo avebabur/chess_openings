@@ -159,5 +159,42 @@
     return `${from ? '… ' : ''}${numberFrom(from, sans.slice(from, to))}${to < sans.length ? ' …' : ''}`;
   }
 
-  OX.rep = { START, replay, buildIndex, sorted, mainLine, leftAt, extensions, otherOrder, numberFrom, excerpt };
+  // The excerpts for a list of rows ({ sans, around } each). Lines that share
+  // their first ten moves would all read the same, so a row whose excerpt
+  // another row also has shows the moves where its line parts from theirs.
+  function excerpts(items) {
+    const texts = items.map(({ sans, around }) => excerpt(sans, around));
+    const alike = new Map();
+    texts.forEach((text, i) => alike.set(text, [...(alike.get(text) || []), i]));
+    for (const rows of alike.values()) {
+      if (rows.length < 2) continue;
+      for (const i of rows) {
+        const own = items[i].sans;
+        let split = 0;
+        for (const j of rows) {
+          if (j === i) continue;
+          const other = items[j].sans;
+          let same = 0;
+          while (same < own.length && own[same] === other[same]) same++;
+          split = Math.max(split, same);
+        }
+        texts[i] = excerpt(own, split);
+      }
+    }
+    return texts;
+  }
+
+  // A name cut to `max` characters, never inside an emoji or other
+  // character written as two UTF-16 units.
+  function shorten(name, max) {
+    const chars = Array.from(name);
+    return chars.length > max ? `${chars.slice(0, max - 1).join('')}…` : name;
+  }
+
+  // Text as the line search compares it: "caro kann" finds "Caro-Kann",
+  // "kings indian" "King's Indian", "reti" "Réti", "3...Bb4" "3… Bb4".
+  const searchText = text => String(text).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+    .replace(/['’]/g, '').replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+
+  OX.rep = { START, replay, buildIndex, sorted, mainLine, leftAt, extensions, otherOrder, numberFrom, excerpt, excerpts, shorten, searchText };
 })();

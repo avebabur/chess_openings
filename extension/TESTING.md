@@ -32,7 +32,8 @@ since the last commit is the least tested. While reading, write a list of things
 could be wrong. Questions that have found real bugs here:
 
 - **Types across a boundary.** A value that went through `sessionStorage`, a URL, or JSON:
-  is it still a number? (`"4742" === 4742` is false: the check-progress bug.)
+  is it still a number? (`"4742" === 4742` is false: a game id read back from
+  `sessionStorage` once never matched.)
 - **Patterns that match too much.** Every regex and selector: what else on Lichess fits?
   (`/training` has the shape of a game id; `a.user-link` also matches the spectator list.)
 - **Limits on one side only.** A length or range the extension can exceed but the service
@@ -79,7 +80,6 @@ anything about focus or keyboard shortcuts; `.click()` from script is fine for l
 ```bash
 tail -20 ~/Library/Logs/openings-app.log                 # any 4xx/5xx the page swallowed?
 curl -s http://127.0.0.1:8001/api/lichess-engine         # state, and `recent`: every engine request
-curl -s http://127.0.0.1:8001/api/analysis               # the game check's progress
 cat extension/health-report.json                         # what the extension says is broken
 ```
 
@@ -89,7 +89,7 @@ cat extension/health-report.json                         # what the extension sa
 - type before the suggestion has arrived, press Enter, Escape, `f`, arrow keys in a text box;
 - click the tab that is already open, open settings on top of it, close them in the other order;
 - act in two tabs at once; change something in one and use the other;
-- reload in the middle (a save, a sync, a game check), go Back, switch study chapters;
+- reload in the middle (a save, a sync, an Annotate chapter publish), go Back, switch study chapters;
 - stop the app in the middle with `./stop.sh` from the repository root. Signalling
   the launchd job alone can leave its backend process running.
 

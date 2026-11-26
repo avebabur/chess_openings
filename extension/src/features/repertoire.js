@@ -195,7 +195,7 @@
             }, 'Play it')) : null);
       }
 
-      function lineRow({ branch, at, difference, here }) {
+      function lineRow({ branch, at, difference, here }, moves) {
         const rest = here ? branch.ucis.slice(at) : [];
         if (deleting?.id === branch.id) {
           const expected = snapshot(deleting);
@@ -225,9 +225,6 @@
         const detail = [transposed ? 'Other move order' : '', ends && here ? 'Ends here' : '', branch.name]
           .filter(Boolean).join(' · ');
         const fullMoves = R.numberFrom(0, branch.sans);
-        // For long lines, show the moves around the position being compared.
-        // For another move order, show where it first differs from the board.
-        const moves = R.excerpt(branch.sans, transposed ? Math.min(difference, branch.sans.length) : at ?? 0);
         const edit = icon('pencil', 'Edit this line', () => openEditor(branch), 'line-button');
         edit.setAttribute('data-edit-line', branch.id);
         edit.append('Edit');
@@ -284,20 +281,25 @@
         list.sort((a, b) => a.rank - b.rank || Number(b.branch.color === side) - Number(a.branch.color === side)
           || Number(b.branch.label === 'main') - Number(a.branch.label === 'main') || a.branch.sans.length - b.branch.sans.length);
         if (!list.length) return null;
-        const rows = list.map(item => {
+        // For long lines, the moves around the position being compared; for
+        // another move order, where it first differs from the board.
+        const excerpts = R.excerpts(list.map(({ branch, at, difference }) => ({
+          sans: branch.sans, around: difference >= 0 ? Math.min(difference, branch.sans.length) : at ?? 0,
+        })));
+        const rows = list.map((item, i) => {
           const { branch } = item;
           return {
-            node: lineRow(item),
+            node: lineRow(item, excerpts[i]),
             // What the filter looks through: the line itself, not what its row
             // happens to show.
             terms: [branch.name, LINE_KINDS[branch.label], label(branch.color), R.numberFrom(0, branch.sans), branch.sans.join(' ')]
-              .filter(Boolean).map(text => text.toLowerCase()),
+              .filter(Boolean).map(R.searchText),
             keep: deleting?.id === branch.id,
           };
         });
         const countLabel = OX.el('span', { class: 'dim line-matches' });
         const applyFilter = () => {
-          const wanted = lineFilter.trim().toLowerCase();
+          const wanted = R.searchText(lineFilter);
           let count = 0;
           for (const row of rows) {
             row.node.hidden = !(row.keep || row.terms.some(text => text.includes(wanted)));
@@ -475,7 +477,7 @@
               onclick: () => act(() => OX.bridge.api('PATCH', `/repertoire/tree/branches/${branch.id}`, {
                 moves_san: moves.join(' '), expected_moves_san: branch.sans.join(' '),
               }), `Extended “${name}”.`),
-            }, OX.el('span', { class: `dot ${branch.color}` }), `Extend “${name.length > 22 ? `${name.slice(0, 21)}…` : name}”`));
+            }, OX.el('span', { class: `dot ${branch.color}` }), `Extend “${R.shorten(name, 22)}”`));
           }
           buttons.unshift(OX.el('button', { class: 'btn primary ox-open-save', onclick: () => openForm(line, path) }, svgEl('plus'), 'Save this line'));
         }
