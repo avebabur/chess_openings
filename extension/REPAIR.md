@@ -25,10 +25,10 @@ Only `missing`, `hidden` and `error` need fixing.
 | feature | page | anchor(s) in `src/anchors.js` | placed |
 |---|---|---|---|
 | engine (Your Stockfish in Lichess) | analyse | `ceval` | after Lichess's engine bar; usually empty (`ok` with no size is normal) |
-| sidetabs (Left column tabs) | analyse | `side` | left column, a tab row (My game / Repertoire) above the two boxes below, shown only when one of your games is open; only the open tab's box is shown, so the other having no size is normal |
-| game (Your game) | analyse | `side` | left column; empty unless one of your games is open |
+| sidetabs (Left column tabs) | analyse | `side` | left column, a tab row shown only when there are two tabs or more; with Repertoire the only one today it stays hidden (`ok` with no size is normal) |
 | repertoire (Your repertoire) | analyse | `side` + position | left column, last |
 | explorerleft (explorer in the left column) | analyse | `side` (+ `explorerBox`, the board) | an empty space at the end of the left column; Lichess's explorer is positioned over it on wide layouts |
+| annotate (Annotate chapter) | analyse | `moveList` | after the move list, only in a study chapter you can change; empty elsewhere (`ok` with no size is normal) |
 | mine (My games tab) | analyse | `explorerTitle` (optional: `n/a` while the explorer is closed) | in the explorer's tab row, before the gear; its content goes in the explorer's `.data` |
 
 "analyse" covers the analysis board, finished games and studies. The **position** comes
@@ -39,8 +39,7 @@ position does not list its FEN anywhere on the page. Only if the controller can'
 reached is it replayed from `moveList` + `activeMove` (+ a `studyTags` FEN) with
 `vendor/chess.js`. Interactive study lessons (`OX.gamebookClass` on `main`) deliberately
 show nothing. Page detection uses `analysePage`, `roundPage` and `roundFinished`.
-`gamePlayers` (the two players named on a finished game's page) decides whether an
-unimported game is yours and gets **Sync games**. `OX.notGames` in `src/anchors.js` lists
+`OX.notGames` in `src/anchors.js` lists
 the Lichess pages whose address has the shape of a game id but are not games (`/training`,
 `/practice`…, from lila's `conf/routes`): a game's address locks every tab while it loads,
 so if opening some Lichess page makes the boxes in other tabs blink, add its name there.

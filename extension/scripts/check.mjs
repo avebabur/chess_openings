@@ -122,19 +122,10 @@ const studySetUp = `<!doctype html><body>${topnav}
 <div class="analyse__tools"><div class="ceval"></div><div class="analyse__moves areplay"><div class="tview2"></div></div></div>
 <div class="analyse__underboard"><table class="study__tags"><tbody><tr><th>Event</th><td>Rook endgames</td></tr></tbody></table></div>
 </main><script>window.site = { analysis: { node: { fen: '${SETUP_FEN}' }, tree: { root: { fen: '${SETUP_FEN}' } } } };</script></body>`;
-// A finished Lichess game's page with the two players named in the left
-// column and someone else among the spectators under the chat (Lichess lists
-// whoever is looking at the page there).
-const gamePage = (white, black, spectator) => finishedGame.replace('<div class="mselect"></div>',
-  `<div class="game__meta"><div class="game__meta__players">
-  <div class="player color-icon is white text"><a class="user-link" href="/@/${white}">${white}</a></div>
-  <div class="player color-icon is black text"><a class="user-link" href="/@/${black}">${black}</a></div></div></div>`)
-  .replace('</main>', `<div class="chat__members"><div class="chat__members__inner"><a class="user-link" href="/@/${spectator}">${spectator}</a></div></div></main>`);
 // The explorer with its settings open (the gear), as lila draws it.
 const explorerSettings = explorerPage.replace('explorer-box sub-box', 'explorer-box sub-box explorer__config')
   .replace('<div class="data">', '<div class="config">');
 const fixtures = {
-  '/ox-fixture/review': finishedGame,
   '/ox-fixture/explorer-settings': explorerSettings,
   '/ox-fixture/study-set-up': studySetUp,
   '/ox-fixture/explorer-variant': explorerPage.replace('variant-standard', 'variant-crazyhouse'),
@@ -190,12 +181,6 @@ await context.route('https://ox.invalid/**', async route => {
     'access-control-allow-methods': 'GET, POST, PUT, PATCH, DELETE',
   };
   if (request.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors });
-  if (request.url() === 'https://ox.invalid/api/games/7' && new URL(request.frame().url()).pathname === '/ox-fixture/review') {
-    return route.fulfill({ status: 200, headers: cors, json: {
-      id: 7, source: 'chesscom', pgn: '1. e4 e5', user_color: 'white', white: 'You', black: 'Them',
-      result: '1-0',
-    } });
-  }
   if (new URL(request.frame().url()).pathname === '/ox-fixture/repertoire-delete') {
     const url = new URL(request.url());
     const headers = { ...cors, 'content-type': 'application/json' };
@@ -260,15 +245,6 @@ await context.route('https://lichess.org/ox-fixture/**', route => {
   return route.fulfill({ status: 200, contentType: 'text/html', body: html });
 });
 
-// Finished-game pages need a game's address (the card looks the game up by it).
-const lichessAccount = await fetch(`${BACKEND}/api/accounts`).then(r => r.json())
-  .then(accounts => accounts.find(a => a.platform === 'lichess')?.username).catch(() => null);
-await context.route('https://lichess.org/game/oxFixt0*', route => {
-  const mine = new URL(route.request().url()).pathname.endsWith('2');
-  const body = mine ? gamePage(lichessAccount, 'Opponent', 'Onlooker') : gamePage('Someone', 'Opponent', lichessAccount);
-  return route.fulfill({ status: 200, contentType: 'text/html', body });
-});
-
 const page = await context.newPage();
 if (process.env.OX_DEBUG) {
   page.on('pageerror', e => console.log('PAGEERROR', page.url().slice(0, 60), String(e).slice(0, 300)));
@@ -306,7 +282,7 @@ console.log('\nLichess analysis board');
 await open(`https://lichess.org/analysis/pgn/${process.env.OX_CHECK_MOVES || 'e4_e5_Nf3_Nc6_Bb5'}`);
 await page.waitForTimeout(3500); // let the engine and the app's answers arrive
 const analysis = await statuses();
-expectStatuses('analysis', analysis, { engine: 'ok', repertoire: 'ok', game: 'ok', mine: 'n/a' });
+expectStatuses('analysis', analysis, { engine: 'ok', repertoire: 'ok', mine: 'n/a' });
 record('analysis', await page.evaluate(() => getComputedStyle(document.querySelector('#wikibook-field, .analyse__wiki')).display === 'none'),
   "analysis: Lichess's WikiBook is hidden");
 const shown = await hosts();
@@ -427,7 +403,7 @@ record('home', (await hosts()).length === 0, 'home: nothing of the extension is 
 await page.screenshot({ path: join(outDir, 'home.png'), clip: { x: 0, y: 0, width: 1440, height: 160 } });
 realReports.push(await lastReport());
 
-// 4. Your game, opened from My games: the game card in the left column.
+// 4. Your game, opened from My games: on the board, at the move asked for.
 console.log('\nOpening one of your games');
 const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
 const history = (await (await fetch(`${BACKEND}/api/position-games?${new URLSearchParams({ fen: START_FEN, limit: 100 })}`)).json()).games || [];
@@ -439,27 +415,11 @@ if (someGame) {
   await Promise.all([page.waitForNavigation({ waitUntil: 'domcontentloaded' }), page.evaluate(id => globalThis.OX.openMyGame(id, 6), someGame.id)]);
   await page.waitForTimeout(3000);
   await waitSettled();
-  const card = await page.evaluate(() => document.querySelector('[data-ox-host=game]')?.shadowRoot?.querySelector('.ox')?.textContent || '');
-  record('your game', card.includes(`vs ${someGame.user_color === 'white' ? someGame.black : someGame.white}`),
-    `your game: opens on Lichess's board with its card (“${card.slice(0, 70)}”)`);
+  const black = await page.evaluate(() => document.querySelector('main.analyse .cg-wrap')?.classList.contains('orientation-black'));
+  record('your game', black === (someGame.user_color === 'black'), 'your game: opens on the board from your side');
   record('your game', (await page.evaluate(() => globalThis.OX.state.position?.fen?.split(' ')[5])) === '4',
     'your game: opened at the requested move');
   await page.screenshot({ path: join(outDir, 'your-game.png') });
-
-  // The same PGN can already be open as a plain analysis board. A fragment
-  // change alone leaves its content scripts and empty game card mounted.
-  const gameAddress = new URL(page.url());
-  await page.evaluate(path => sessionStorage.removeItem(`ox.game:${decodeURIComponent(path)}`), gameAddress.pathname);
-  gameAddress.hash = '';
-  await open('https://lichess.org/analysis');
-  await open(gameAddress.href);
-  const gameCard = page.locator('[data-ox-host=game]').getByRole('button', { name: 'Practice from here' });
-  record('your game', !await gameCard.isVisible(), 'your game: plain analysis of the same PGN has no game card');
-  await page.evaluate(id => { globalThis.OX.openMyGame(id, 6); }, someGame.id);
-  await gameCard.waitFor({ timeout: 6000 }).catch(() => {});
-  const requestedPly = await page.evaluate(() => globalThis.OX.state.position?.fen?.split(' ').slice(4)[1]);
-  record('your game', await gameCard.isVisible() && requestedPly === '4',
-    'your game: opening the already displayed PGN attaches the review card at the requested ply');
 }
 
 // 5. Safety self-tests on local copies of Lichess's game page.
@@ -679,32 +639,6 @@ record('explorer', await page.evaluate(() => document.querySelector('.explorer-b
   "explorer: closing Lichess's settings keeps My games chosen");
 await page.click('.explorer-title .button-link:not(.ox-tab)');
 await page.waitForTimeout(400);
-
-await page.evaluate(() => sessionStorage.setItem('ox.game:/ox-fixture/review', '7'));
-await open('https://lichess.org/ox-fixture/review');
-const sideTabs = () => page.evaluate(() => {
-  const root = document.querySelector('[data-ox-host=sidetabs]').shadowRoot;
-  return [root.activeElement?.textContent, root.querySelector('[aria-selected=true]')?.textContent];
-});
-await page.getByRole('tab', { name: 'Repertoire' }).press('Space');
-record('your game', (await sideTabs()).every(value => value === 'Repertoire'),
-  'your game: keyboard activation keeps focus on the selected Repertoire tab');
-await page.keyboard.press('ArrowLeft');
-record('your game', (await sideTabs()).every(value => value === 'My game'),
-  'your game: Left Arrow selects and focuses the My game tab');
-
-// "Sync games" is offered on your own Lichess games only, not on a game you
-// are merely looking at (Lichess lists you among its spectators).
-if (lichessAccount) {
-  const offer = () => page.evaluate(() =>
-    /isn't in My games yet/.test(document.querySelector('[data-ox-host=game]')?.shadowRoot?.textContent || ''));
-  await open('https://lichess.org/game/oxFixt01');
-  await page.waitForTimeout(1000);
-  record('your game', !(await offer()), "someone else's game: Sync games is not offered because you are watching it");
-  await open('https://lichess.org/game/oxFixt02');
-  await page.waitForTimeout(1000);
-  record('your game', await offer(), 'your own Lichess game, not imported yet: Sync games is offered');
-}
 
 await open('https://lichess.org/ox-fixture/custom-start');
 await page.waitForTimeout(1500);

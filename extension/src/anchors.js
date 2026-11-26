@@ -48,7 +48,7 @@
     },
     side: {
       selector: 'main.analyse aside.analyse__side',
-      what: "The left column (where Lichess's WikiBook was, which the extension hides). Your game and Your repertoire go here.",
+      what: "The left column (where Lichess's WikiBook was, which the extension hides). Your repertoire goes here.",
     },
     explorerBox: {
       selector: 'main.analyse section.explorer-box',
@@ -57,10 +57,6 @@
     explorerTitle: {
       selector: 'main.analyse section.explorer-box .explorer-title',
       what: "The explorer's tab row (Masters / Lichess / Player). The My games tab is added before its gear button. Only exists while the explorer is open and has data, so its absence is normal.",
-    },
-    gamePlayers: {
-      selector: 'main.analyse .game__meta__players a.user-link[href^="/@/"]',
-      what: "On a finished game's page: the two players' names in the box at the top of the left column. Says whether the game is one of yours (Lichess lists you among the spectators of every game you look at, so other user links on the page don't).",
     },
   };
 

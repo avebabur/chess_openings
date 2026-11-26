@@ -1,28 +1,27 @@
-// One panel with tabs in the left column — My game / Repertoire —
-// instead of boxes stacked on top of each other (which made the column
-// taller than the board and squeezed Lichess's chat and notes). The tab row
-// looks like Lichess's own chat tabs. Each tab's content is still its own
-// feature (game.js, repertoire.js); this only shows one at a time. Notes are
-// Lichess's own (the Notes tab of its chat, and study comments).
+// One panel with tabs in the left column instead of boxes stacked on top of
+// each other (which made the column taller than the board and squeezed
+// Lichess's chat and notes). The tab row looks like Lichess's own chat tabs
+// and shows only when there are two tabs or more; today Repertoire is the
+// only one, so no tab row appears. Notes are Lichess's own (the Notes tab of
+// its chat, and study comments).
 (() => {
   const OX = globalThis.OX;
   const TABS = [
-    { id: 'game', label: 'My game' },
     { id: 'repertoire', label: 'Repertoire' },
   ];
   // available: the feature has something to show.
-  const info = { game: { available: false }, repertoire: { available: true } };
+  const info = { repertoire: { available: true } };
   let picked = null; // the tab chosen on this page
   const hostOf = id => document.querySelector(`[data-ox-host="${id}"]`);
   const usable = () => TABS.filter(tab => info[tab.id].available && hostOf(tab.id));
 
   OX.sidePanel = {
     set(id, patch) { Object.assign(info[id], patch); OX.emit('sidepanel'); },
-    // The tab picked on this page; else your game's when one is open.
+    // The tab picked on this page, else the first one.
     active() {
       const ids = usable().map(tab => tab.id);
       if (picked && ids.includes(picked)) return picked;
-      return ids.includes('game') ? 'game' : ids[0] || null;
+      return ids[0] || null;
     },
     activeHost() {
       const id = OX.sidePanel.active();

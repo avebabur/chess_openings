@@ -9,7 +9,7 @@
 :host { display: block; flex: 0 0 auto; }
 /* The side panel fills its column. Its contents must not size Lichess's grid:
    a long line or the saved-lines search can otherwise widen the board. */
-:host([data-ox-host=repertoire]), :host([data-ox-host=game]) { contain: inline-size; }
+:host([data-ox-host=repertoire]) { contain: inline-size; }
 .ox {
   font: inherit; font-size: 14px; line-height: 1.4;
   color: var(--c-font, #4d4d4d);

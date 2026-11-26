@@ -1,7 +1,7 @@
-// One of your games, in the left column: who, when and the result, and
-// Practice from here. Shown on the analysis board of a game opened from My
-// games, and on the page of one of your own Lichess games (there Lichess
-// already shows who and when, so only the Practice button).
+// Opening and syncing your games, for the My games tab (features/mine.js):
+// a Lichess game opens on its own Lichess page, a chess.com game on the
+// analysis board, turned to your side, with its players and result ready
+// for Lichess's "Study" button. No box of its own.
 (() => {
   const OX = globalThis.OX;
   const KEY = 'ox.game';
@@ -132,152 +132,44 @@
     } catch { return null; }
   }
 
-  const resultFor = (game) => {
-    if (game.result === '1/2-1/2') return { text: 'Draw', cls: 'dim' };
-    const won = (game.result === '1-0') === (game.user_color === 'white');
-    return won ? { text: 'Won', cls: 'ok' } : { text: 'Lost', cls: 'bad' };
-  };
-
-  OX.defineFeature({
-    id: 'game',
-    name: 'Your game',
-    pages: ['analyse'],
-    anchors: ['side'],
-    order: 2,
-    place: { anchor: 'side', where: 'append', zeroHeightOk: true, tab: true },
-
-    create(host, root) {
-      root.classList.add('card');
-      const saved = current();
-      // A Lichess game page: /abcd1234, /abcd1234/black, /game/abcd1234.
-      const onLichessGame = !saved && !!OX.lichessGameId();
-      root.style.display = 'none';
-      if (!saved && !onLichessGame) return {};
-      const body = OX.el('div', { class: 'dim', text: 'Loading your game…' });
-      root.append(body);
-      // Its tab (features/sidetabs.js) appears once there is something to show.
-      let alive = true;
-      const show = () => { root.style.display = ''; OX.sidePanel.set('game', { available: true }); };
-      let gameId = saved?.id;
-      let wanted = true; // load() is still to run (first time, or again once the app is back)
-      let importedTags = saved?.studyTags;
-
-      // Lichess writes the current move tree on submit. Add the imported
-      // game's tags to the resulting form data, before Lichess's study picker.
-      function addStudyTags(event) {
-        if (!importedTags || !event.target.matches('form[method="post"][action="/study/as"]')) return;
-        const data = event.formData;
-        const pgn = data.get('pgn');
-        if (typeof pgn !== 'string' || !pgn || data.get('gameId')) return;
-        const { tags, moves } = splitPgn(pgn);
-        const result = /^(?:1-0|0-1|1\/2-1\/2)$/.test(importedTags.Result) ? importedTags.Result : '*';
-        const headers = { ...importedTags, ...tags, Result: result };
-        const headerText = Object.entries(headers).map(([name, value]) => `[${name} "${value}"]`).join('\n');
-        const moveText = moves.replace(/(?:^|\s)(?:1-0|0-1|1\/2-1\/2|\*)$/, '').trimEnd();
-        data.set('pgn', `${headerText}\n\n${[moveText, result].filter(Boolean).join(' ')}`);
-      }
-      if (saved) document.addEventListener('formdata', addStudyTags);
-
-      async function find() {
-        if (gameId) return gameId;
-        try {
-          gameId = (await OX.bridge.api('GET', `/games/by-link?url=${encodeURIComponent(location.origin + location.pathname)}`)).id;
-        } catch (error) {
-          if (error.offline) wanted = true;
-          gameId = null; // not one of your imported games: show nothing
-        }
-        return gameId;
-      }
-
-      // A Lichess game of yours the app hasn't imported yet (just played):
-      // offer to sync, then show its card.
-      async function offerSync() {
-        let accounts;
-        try { accounts = await OX.bridge.api('GET', '/accounts'); } catch { return; }
-        if (!alive) return;
-        const names = accounts.filter(a => a.platform === 'lichess').map(a => a.username.toLowerCase());
-        // The two players only: Lichess lists you among the spectators of
-        // any game you look at, and names in the chat are links too.
-        const players = [...document.querySelectorAll(OX.anchors.gamePlayers.selector)]
-          .map(a => decodeURIComponent(a.getAttribute('href').slice(3)).split(/[/?#]/)[0].toLowerCase());
-        if (!names.some(name => players.includes(name))) return; // not one of your games
-        const button = OX.el('button', { class: 'btn primary', text: 'Sync games' });
-        const note = OX.el('div', { class: 'dim', text: "This game isn't in My games yet." });
-        button.addEventListener('click', async () => {
-          button.disabled = true;
-          try {
-            const result = await OX.syncGames(text => { note.textContent = text; });
-            note.textContent = OX.syncedText(result);
-            if (await find()) { load(); return; }
-            if (!result.failures.length) note.textContent += ', but not this game yet: Lichess can take a minute to list it.';
-          } catch (error) {
-            note.textContent = OX.syncErrorText(error);
-          }
-          button.disabled = false;
-        });
-        show();
-        body.className = '';
-        body.replaceChildren(note, OX.el('div', { class: 'btns' }, button));
-      }
-
-      async function load() {
-        wanted = false;
-        if (!(await find())) {
-          if (onLichessGame && !wanted && alive) offerSync();
-          return;
-        }
-        let game;
-        try {
-          game = await OX.bridge.api('GET', `/games/${gameId}`);
-        } catch (error) {
-          if (!alive) return;
-          if (error.offline) wanted = true;
-          show();
-          body.replaceChildren(OX.el('span', { class: 'offline', text: error.offline ? OX.offlineText() : "Couldn't load the game." }));
-          return;
-        }
-        if (!alive) return;
-        if (saved && !importedTags) importedTags = studyTags(game);
-        show();
-        if (!onLichessGame && orientedGame !== gameId && OX.lichess.showSide(game.user_color)) orientedGame = gameId;
-        const result = resultFor(game);
-        const opponent = (game.user_color === 'white' ? game.black : game.white) || 'the computer';
-        const label = `vs ${opponent}`;
-        const rating = value => (value ? ` (${value})` : '');
-        body.className = '';
-        body.replaceChildren(
-          // Lichess's own game page already says who played and when.
-          ...(onLichessGame ? [] : [
-            OX.el('div', { class: 'head' },
-              OX.el('span', { class: 'title grow ellipsis', text: `${label}${rating(game.opp_rating)}` }),
-              OX.el('b', { class: result.cls, text: result.text })),
-            OX.el('div', { class: 'dim small', text: [`You${rating(game.user_rating)} as ${game.user_color}`, game.time_class, game.date].filter(Boolean).join(' · ') }),
-            game.opening ? OX.el('div', { class: 'dim small ellipsis', title: OX.openingName(game.opening), text: OX.openingName(game.opening) }) : null,
-          ].filter(Boolean)),
-          OX.el('div', { class: 'btns', style: onLichessGame ? 'margin-top: 0' : null },
-            OX.el('button', {
-              class: 'btn', title: "Lichess's Practice with computer, on your Stockfish, from the position on the board",
-              onclick: () => {
-                if (OX.lichess.practice()) return;
-                const message = OX.el('span', { class: 'dim', role: 'status', text: 'Practice is unavailable at this position.' });
-                const controls = body.querySelector('.btns');
-                if (controls && !controls.querySelector('[role=status]')) controls.append(message);
-              },
-              text: 'Practice from here',
-            })),
-        );
-      }
-
-      return {
-        // Runs once the box is on the page, on every move, and when the app
-        // comes back after being down: only load when there is something to.
-        update() { if (wanted) load(); },
-        destroy() {
-          alive = false;
-          document.removeEventListener('formdata', addStudyTags);
-          OX.sidePanel.set('game', { available: false });
-        },
+  // A chess.com game opened from My games is shown on the analysis board (it
+  // has no Lichess page of its own). Two things are done for it, with no box
+  // on the page: the board turns to your side once, and Lichess's "Study"
+  // button (which saves the board to a study) gets the game's players and
+  // result, which the analysis board alone does not know.
+  function attachOpenedGame() {
+    const saved = current();
+    if (!saved?.id) return;
+    let importedTags = saved.studyTags || null;
+    // Lichess writes the current move tree on submit. Add the imported
+    // game's tags to the resulting form data, before Lichess's study picker.
+    const addStudyTags = event => {
+      if (!importedTags || !event.target.matches('form[method="post"][action="/study/as"]')) return;
+      const data = event.formData;
+      const pgn = data.get('pgn');
+      if (typeof pgn !== 'string' || !pgn || data.get('gameId')) return;
+      const { tags, moves } = splitPgn(pgn);
+      const result = /^(?:1-0|0-1|1\/2-1\/2)$/.test(importedTags.Result) ? importedTags.Result : '*';
+      const headers = { ...importedTags, ...tags, Result: result };
+      const headerText = Object.entries(headers).map(([name, value]) => `[${name} "${value}"]`).join('\n');
+      const moveText = moves.replace(/(?:^|\s)(?:1-0|0-1|1\/2-1\/2|\*)$/, '').trimEnd();
+      data.set('pgn', `${headerText}\n\n${[moveText, result].filter(Boolean).join(' ')}`);
+    };
+    // Put in again after an extension update: replace the older copy's listener.
+    if (globalThis.__oxStudyTags) document.removeEventListener('formdata', globalThis.__oxStudyTags);
+    globalThis.__oxStudyTags = addStudyTags;
+    document.addEventListener('formdata', addStudyTags);
+    OX.bridge.api('GET', `/games/${saved.id}`).then(game => {
+      importedTags ||= studyTags(game);
+      // Lichess's controller may still be starting: try for a few seconds.
+      let tries = 0;
+      const turn = () => {
+        if (orientedGame === saved.id) return;
+        if (OX.lichess.showSide(game.user_color)) orientedGame = saved.id;
+        else if (++tries < 10) setTimeout(turn, 500);
       };
-    },
-  });
+      turn();
+    }).catch(() => { /* the app is not running: the board stays as it is */ });
+  }
+  attachOpenedGame();
 })();
