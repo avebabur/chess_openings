@@ -1,5 +1,5 @@
-// Lichess's own analysis controller, for playing a move, jumping to a move or
-// starting Practice exactly as Lichess's buttons do. The controller lives in
+// Lichess's own analysis controller, for playing a move or jumping to a move
+// exactly as Lichess's buttons do. The controller lives in
 // the page's world; src/page-bridge.js (running there) carries out the action
 // and reports back. Every call fails quietly (returns false): the boxes still
 // show, only their buttons stop driving the board.
@@ -18,9 +18,6 @@
     playUciList: ucis => command('playUciList', ucis),
     jumpToPly: ply => command('jumpToMain', ply),
     toStart: () => command('userJump', ''),
-    // Practice with computer from the current position (runs on your
-    // Stockfish once it is Lichess's chosen engine).
-    practice: () => command('practice'),
     // Lichess's engine bar searches the position on the board again.
     restartCeval: () => command('restartCeval'),
     // The position on the board and the one the board started from, as

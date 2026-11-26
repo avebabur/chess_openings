@@ -148,18 +148,6 @@ const fixtures = {
   '/ox-fixture/explorer-variant': explorerPage.replace('variant-standard', 'variant-crazyhouse'),
   '/ox-fixture/custom-start': customStart,
   '/ox-fixture/game': finishedGame,
-  '/ox-fixture/practice': finishedGame.replace('</main></body>', `</main><script>
-    let explorerOpen = false;
-    let running = true;
-    window.site = { analysis: {
-      togglePractice(enabled) { if (enabled) this.practice = { running: () => running, resume: () => { running = true; } }; },
-      activeControlBarTool: () => explorerOpen ? 'opening-explorer' : false,
-      explorer: { enabled: enabled => { explorerOpen = enabled; } },
-      actionMenu() {},
-      redraw() { document.body.classList.toggle('practice-visible', !!this.practice && running && !explorerOpen); },
-      suspendPractice() { explorerOpen = true; running = false; this.redraw(); },
-    } };
-  </script></body>`),
   '/ox-fixture/explorer': explorerPage,
   // A position past the moves My games follows, in an explorer with nothing
   // of Lichess's own to show: lila keeps that state's text on one line.
@@ -535,6 +523,26 @@ await page.getByRole('button', { name: 'More games' }).press('Enter');
 await page.getByText('Your game list changed. Showing the newest games again.').waitFor();
 record('pagination', await rows.count() === 15 && await rows.first().getAttribute('data-id') === '2',
   'pagination: an import between pages refreshes the first page without appending duplicates');
+// Lichess's Space shortcut (play the best move) listens on the document, and
+// My games sits in Lichess's own page, not in a shadow root: Space on one of
+// its buttons played a move and moved the board away (real Chrome).
+await page.evaluate(() => {
+  window.__oxSpaceSeen = 0;
+  for (const type of ['keydown', 'keypress', 'keyup']) {
+    document.addEventListener(type, event => { if (event.key === ' ') window.__oxSpaceSeen++; });
+  }
+});
+const sideBefore = await page.locator('.ox-side').textContent();
+await page.locator('.ox-side').focus();
+await page.keyboard.press(' ');
+await page.waitForFunction(before => document.querySelector('.ox-side')?.textContent !== before, sideBefore, { timeout: 3000 }).catch(() => {});
+const sideSwitched = await page.locator('.ox-side').textContent() !== sideBefore;
+// The tab itself is a button in Lichess's tab row too (Space on it switches sides, like a click).
+await page.locator('.ox-tab').focus();
+await page.keyboard.press(' ');
+await page.waitForTimeout(300);
+record('explorer keyboard', await page.evaluate(() => window.__oxSpaceSeen) === 0 && sideSwitched,
+  "explorer: Space on a My games button works it and never reaches Lichess's shortcuts (Space plays the best move)");
 
 await open('https://lichess.org/ox-fixture/repertoire-delete');
 const repertoire = page.locator('[data-ox-host=repertoire]');
@@ -632,14 +640,6 @@ await lineEditor.getByText('was deleted', { exact: false }).waitFor({ timeout: 5
 record('repertoire edit', /deleted in another tab/.test(await lineEditor.textContent()),
   'repertoire: saving a line deleted in another tab says it was deleted');
 await lineEditor.getByRole('button', { name: 'Cancel' }).click();
-
-await open('https://lichess.org/ox-fixture/practice');
-record('practice', await page.evaluate(() => globalThis.OX.lichess.practice()
-  && document.body.classList.contains('practice-visible')), 'practice: starting Practice redraws Lichess controls');
-record('practice', await page.evaluate(() => {
-  window.site.analysis.suspendPractice();
-  return globalThis.OX.lichess.practice() && document.body.classList.contains('practice-visible');
-}), 'practice: starting from a different move resumes Practice and closes the explorer');
 
 // A long "nothing here" sentence wraps inside the explorer instead of
 // running out of it ("…of each game; this p").

@@ -7,7 +7,7 @@
 // answer in <html data-ox-value>; "publishAnalysis" answers later with an
 // "ox-lichess-reply" event). Only these actions are allowed.
 (() => {
-  const ALLOWED = new Set(['playUci', 'playUciList', 'jumpToMain', 'userJump', 'practice', 'flip', 'restartCeval', 'position',
+  const ALLOWED = new Set(['playUci', 'playUciList', 'jumpToMain', 'userJump', 'flip', 'restartCeval', 'position',
     'annotationData', 'publishAnalysis']);
   const isNum = value => typeof value === 'number' && Number.isFinite(value);
 
@@ -60,16 +60,7 @@
       const { name, args } = JSON.parse(event.detail);
       const ctrl = window.site && window.site.analysis;
       if (ctrl && ALLOWED.has(name)) {
-        if (name === 'practice') {
-          if (!ctrl.practice) ctrl.togglePractice(true);
-          if (ctrl.practice && ctrl.activeControlBarTool?.()) {
-            ctrl.explorer.enabled(false);
-            ctrl.actionMenu(false);
-          }
-          if (ctrl.practice?.running?.() === false) ctrl.practice.resume();
-          ok = !!ctrl.practice;
-          ctrl.redraw?.();
-        } else if (name === 'position') {
+        if (name === 'position') {
           // The position on the board and the one the board started from, as
           // Lichess itself holds them (lila analyse/src/ctrl.ts: node, tree).
           // A study has no FEN box and does not list a chapter's starting

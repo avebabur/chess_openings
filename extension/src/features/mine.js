@@ -93,6 +93,18 @@
       // about and was cut off.
       host.replaceChildren('My games');
 
+      // The tab and its content are in Lichess's own page (not a shadow
+      // root), where Lichess's keyboard shortcuts listen on the document:
+      // Space on a focused button here also played the engine's best move.
+      // The button's own Space press still happens (stopPropagation only).
+      const keepSpace = event => {
+        if (event.key === ' ' && event.target?.closest?.('button')) event.stopPropagation();
+      };
+      for (const type of ['keydown', 'keypress', 'keyup']) {
+        host.addEventListener(type, keepSpace);
+        content.addEventListener(type, keepSpace);
+      }
+
       // The side shown follows the board (your side is at the bottom), unless
       // that side has no games here and the other has, or you switched.
       const pickSide = () => {
