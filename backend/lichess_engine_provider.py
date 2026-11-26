@@ -444,7 +444,7 @@ class UciProcess:
             await self.send(f"position fen {work['initialFen']}" + (f" moves {moves}" if moves else ""))
             command, quiet = search_command(work, practice_seconds)
             if interrupted():
-                record["ended"] = "paused: answered with nothing"
+                record["ended"] = "stopped: answered with nothing"
                 yield EMPTY_SEARCH
                 return
             self.searching = True
@@ -503,7 +503,7 @@ class UciProcess:
                         last_rest = rest
                         record["lines"] += 1
                         yield f"info {rest}\n".encode()
-            record.update(ended="paused: answered with nothing", seconds=round(time.monotonic() - began, 2))
+            record.update(ended="stopped: answered with nothing", seconds=round(time.monotonic() - began, 2))
             yield EMPTY_SEARCH
         finally:
             started.set()
@@ -536,7 +536,7 @@ class LichessEngineProvider:
     """Background task: keeps the engine registered and answers Lichess."""
 
     def __init__(self, token_getter=None, secret_store=None, stockfish_path=None,
-                 transport=None, poll_pause=5.0, on_activity=None, paused=False):
+                 transport=None, poll_pause=5.0, on_activity=None):
         # Called for every job Lichess sends: the engine being used counts as
         # the service being used (idle_exit.py), whatever the extension says.
         self._on_activity = on_activity
@@ -557,13 +557,6 @@ class LichessEngineProvider:
         # One Stockfish serves both paths: a job (from the broker or the page)
         # takes it only after the search before it has stopped and ended.
         self._claim_lock = asyncio.Lock()
-        # A game is in progress in a Lichess tab (the extension says so): every
-        # request is answered with nothing and the search in progress stops, so
-        # your Stockfish can't help in any Lichess tab during a game. The app
-        # starts paused (main.py): until the extension has said whether a game
-        # is on, one may be.
-        self.paused = bool(paused)
-        self._pause_generation = 0
         self.recent = collections.deque(maxlen=40)  # what Lichess asked, newest last
 
     def status(self):
@@ -576,19 +569,8 @@ class LichessEngineProvider:
             "practice_seconds": PRACTICE_SECONDS,
             "jobs": self.jobs,
             "local_jobs": self.local_jobs,
-            "paused": self.paused,
             "recent": list(self.recent),
         }
-
-    async def set_paused(self, paused):
-        if paused and not self.paused:
-            self._pause_generation += 1
-        self.paused = bool(paused)
-        if self.paused and self._engine and self._engine.searching:
-            try:
-                await self._engine.stop()
-            except EOFError:
-                pass
 
     def start(self):
         if os.environ.get("OPENINGS_LICHESS_ENGINE", "1") != "1":
@@ -688,26 +670,20 @@ class LichessEngineProvider:
                 continue
             self.error = ""
             job = res.json()
-            if self.paused:
-                await self._answer_nothing(http, job)
-                continue
-            generation = self._pause_generation
 
-            def interrupted(generation=generation):
-                return self.paused or generation != self._pause_generation
+            def interrupted():
+                return False  # a newer job stops this one's search (_claim_engine)
 
             async with self._claim_lock:
-                taken = await self._claim_engine(interrupted)
-                if taken:
-                    started = asyncio.Event()
-                    self._job_task = asyncio.create_task(self._handle(http, job, started, interrupted))
-                    await started.wait()
-            if not taken:
-                await self._answer_nothing(http, job)
+                await self._claim_engine(interrupted)
+                started = asyncio.Event()
+                self._job_task = asyncio.create_task(self._handle(http, job, started, interrupted))
+                await started.wait()
 
     async def _claim_engine(self, interrupted):
         """Stop the search in progress, wait for its job to end and make sure
-        Stockfish runs. False if a game started meanwhile. Under _claim_lock."""
+        Stockfish runs. False if the request was given up meanwhile (the page
+        moved on). Under _claim_lock."""
         if self._engine and self._engine.alive():
             try:
                 await self._engine.stop()
@@ -734,24 +710,17 @@ class LichessEngineProvider:
         """Answer the Lichess page on this computer directly: the results
         Lichess's broker would have streamed it (BrokerEmit), as ndjson lines.
         ``work`` and ``board`` come from sanitize_work. The same rules as a
-        broker job: during a game it answers with nothing, a newer request
-        (from either path) stops this search, and closing the stream (Lichess
-        cancelled: you moved on) stops Stockfish."""
+        broker job: a newer request (from either path) stops this search, and
+        closing the stream (Lichess cancelled: you moved on) stops Stockfish."""
         emit = BrokerEmit(board)
         record = {"at": time.strftime("%H:%M:%S"), "via": "local",
                   "ask": {k: work[k] for k in ("movetime", "depth", "nodes", "multiPv", "threads", "hash") if k in work},
                   "moves": len(work.get("moves") or [])}
         self.recent.append(record)
-        if self.paused:
-            record["ended"] = "paused: answered with nothing"
-            for chunk in emit.feed(EMPTY_SEARCH):
-                yield chunk
-            return
-        generation = self._pause_generation
         gone = []  # set once the page stopped listening
 
         def interrupted():
-            return bool(gone) or self.paused or generation != self._pause_generation
+            return bool(gone)
 
         out = asyncio.Queue()
         task = None
@@ -763,7 +732,7 @@ class LichessEngineProvider:
                         self._handle_local(work, emit, out, started, interrupted, record, gone))
                     await started.wait()
             if task is None:
-                record["ended"] = "paused: answered with nothing"
+                record["ended"] = "cancelled"
                 for chunk in emit.feed(EMPTY_SEARCH):
                     yield chunk
                 return
@@ -810,24 +779,6 @@ class LichessEngineProvider:
                 out.put_nowait(chunk)
             out.put_nowait(None)
             started.set()
-
-    async def _answer_nothing(self, http, job):
-        """During a game: answer Lichess with no analysis at all, just the
-        end of a search that found nothing ("bestmove (none)", the shortest
-        answer Lichess's broker accepts; an empty one is refused with 400).
-        Lichess's engine bar then simply stays empty. A request left
-        unanswered timed out (503) into "Error loading engine" instead, which
-        stayed after the game until you moved. The extension asks Lichess to
-        search again when the game ends."""
-        record = {"at": time.strftime("%H:%M:%S"), "moves": len(job.get("work", {}).get("moves") or []),
-                  "ended": "paused: answered with nothing"}
-        self.recent.append(record)
-        try:
-            res = await http.post(f"{BROKER}/api/external-engine/work/{job['id']}",
-                                  content=EMPTY_SEARCH, timeout=10)
-            record["broker"] = res.status_code
-        except httpx.HTTPError as exc:
-            record["broker"] = f"error: {exc.__class__.__name__}"
 
     async def _handle(self, http, job, started, interrupted):
         self.jobs += 1

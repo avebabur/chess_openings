@@ -1,7 +1,7 @@
 # Repairing the extension after a Lichess change
 
 Instructions for an agent. Goal: every feature in the table below shows on its page
-again, without breaking Lichess's page and without weakening the live-game lock.
+again, without breaking Lichess's page and without showing anything on a game page.
 
 ## 1. See what is broken
 
@@ -17,7 +17,7 @@ stopped matching**. `check.mjs` writes screenshots to `extension/check-output/`.
 
 Statuses: `ok` showing · `missing` its anchor is gone · `hidden` it was added but has no
 size (Lichess's CSS now hides it, or its container moved) · `error` it threw (see the
-browser console, prefix `[openings]`) · `paused` live-game lock · `n/a` not for this page.
+browser console, prefix `[openings]`) · `n/a` not for this page (or a game in progress).
 Only `missing`, `hidden` and `error` need fixing.
 
 ## 2. What should be visible, and where
@@ -37,11 +37,11 @@ chapter starts, through `src/page-bridge.js`), because a chapter that starts fro
 position does not list its FEN anywhere on the page. Only if the controller can't be
 reached is it replayed from `moveList` + `activeMove` (+ a `studyTags` FEN) with
 `vendor/chess.js`. Interactive study lessons (`OX.gamebookClass` on `main`) deliberately
-show nothing. Page detection uses `analysePage`, `roundPage` and `roundFinished`.
+show nothing. Page detection uses `analysePage` and `roundPage`.
 `OX.notGames` in `src/anchors.js` lists
 the Lichess pages whose address has the shape of a game id but are not games (`/training`,
-`/practice`…, from lila's `conf/routes`): a game's address locks every tab while it loads,
-so if opening some Lichess page makes the boxes in other tabs blink, add its name there.
+`/practice`…, from lila's `conf/routes`), so they are not taken for a game's page when the
+health report decides whether the analysis features were expected there.
 
 Not reported as broken, because Lichess itself leaves the engine bar out there: `engine`
 in studies (the author can switch computer analysis off), with `?evals=0`, and in Lichess's
@@ -52,14 +52,13 @@ Things that rely on Lichess internals rather than selectors, and fail quietly:
 - **Lichess's controller** (`src/lichess.js`): `window.site.analysis` with `playUci`,
   `playUciList`, `jumpToMain`, `togglePractice` (lila `ui/analyse/src/ctrl.ts`). If clicking
   a move or Jump stops moving the board, check those names.
-- **Lichess's engine bar stays empty after a live game ends** (`src/page-bridge.js`,
-  `restartCeval`): during a game your Stockfish answers Lichess with `bestmove (none)`, and
-  when the lock lifts (or the app reconnects) the extension calls Lichess's
-  `ctrl.startCevalIfEnabled()` (lila `ui/analyse/src/ctrl.ts`). It first drops that empty
+- **Lichess's engine bar stays on an error after the app was down** (`src/page-bridge.js`,
+  `restartCeval`): when the app answers again the extension calls Lichess's
+  `ctrl.startCevalIfEnabled()` (lila `ui/analyse/src/ctrl.ts`). It first drops any empty
   answer from `ctrl.node.ceval`, and in Practice calls `ctrl.practice.onJump()` so the
   computer takes its turn again (lila `ui/analyse/src/practice/practiceCtrl.ts`, its
   `played` flag). If the bar no longer restarts by itself, or Practice stays on
-  "Computer thinking…" after a game, check those names. Lichess runs its engine in one
+  "Computer thinking…" after the app came back, check those names. Lichess runs its engine in one
   tab at a time (lila `ui/lib/src/ceval/ctrl.ts`, `ceval.fen` / `wasUnloadedByAnotherWindow`):
   a tab that starts a search switches the engine off in the others. So only the tab you
   are in searches again; another tab does only when its position has no answer at all,
@@ -156,8 +155,8 @@ its recent commits for the old class name to see what replaced it.
     service (`src/page-bridge.js`), answered by the app on this computer or else paced.
     Everything else passes through `window.fetch` unchanged, and so does that one whenever
     anything about it is unexpected.
-  - The live-game lock stays fail-closed: if `roundFinished` can't be found, games
-    count as live. Never make features run on `roundPage`.
+  - Never make features run on `roundPage` (a game page) or on a forecast board
+    (`OX.isGameForecastPath`).
 - Bump `version` in `manifest.json`.
 
 ## 5. Verify

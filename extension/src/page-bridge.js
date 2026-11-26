@@ -54,13 +54,12 @@
       message: response.ok ? '' : (await response.text()).slice(0, 300) }))
       .catch(error => reply({ status: 0, message: String(error) }));
   }
-  const paused = () => document.documentElement.hasAttribute('data-ox-paused');
   function handle(event) {
     let ok = false;
     try {
       const { name, args } = JSON.parse(event.detail);
       const ctrl = window.site && window.site.analysis;
-      if (ctrl && ALLOWED.has(name) && (!paused() || name === 'position')) {
+      if (ctrl && ALLOWED.has(name)) {
         if (name === 'practice') {
           if (!ctrl.practice) ctrl.togglePractice(true);
           if (ctrl.practice && ctrl.activeControlBarTool?.()) {
@@ -108,8 +107,8 @@
     }
     document.documentElement.setAttribute('data-ox-result', ok ? '1' : '0');
   }
-  // After a live game (your Stockfish answered with nothing) or after the app
-  // came back: search the position on the board again, as Lichess does on
+  // After the app came back (Lichess's engine bar was left with an error):
+  // search the position on the board again, as Lichess does on
   // every move (lila analyse/src/ctrl.ts startCevalIfEnabled; it does nothing
   // while the engine is off).
   //
@@ -134,14 +133,14 @@
     const unanswered = !ended && (!node.ceval || failed);
     restartWaiting = document.hidden && unanswered;
     if (ended || document.hidden || !(unanswered || document.hasFocus())) return;
-    // Practice took the empty answer as the computer's turn and won't move
+    // Practice took an empty answer as the computer's turn and won't move
     // again on this position (lila practice/practiceCtrl.ts `played`): start
     // its turn again, as stepping to a position does.
     if (ctrl.practice && typeof ctrl.practice.onJump === 'function') ctrl.practice.onJump();
     if (typeof ctrl.startCevalIfEnabled === 'function') ctrl.startCevalIfEnabled();
   }
   function restartWhenSeen() {
-    if (document.hidden || !restartWaiting || paused()) return;
+    if (document.hidden || !restartWaiting) return;
     try {
       const ctrl = window.site && window.site.analysis;
       if (ctrl) restartCeval(ctrl);
@@ -372,13 +371,12 @@
   let nudgedPath = null;
   let nudges = 0;
   function nudgePractice() {
-    if (paused()) return;
     try {
       const ctrl = window.site && window.site.analysis;
       const practice = ctrl && ctrl.practice;
       if (!practice || !practice.running() || practice.isMyTurn()) return;
-      // A result with lines only: the empty answer given during a live game
-      // has none, and Practice would try to play its first line's move.
+      // A result with lines only: an empty answer (a search stopped before it
+      // began) has none, and Practice would try to play its first line's move.
       const result = ctrl.node.ceval;
       if (!result || !result.bestmove || !(result.pvs && result.pvs.length) || ctrl.ceval.isComputing) return;
       if (nudgedPath !== ctrl.path) { nudgedPath = ctrl.path; nudges = 0; }

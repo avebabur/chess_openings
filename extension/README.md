@@ -36,23 +36,14 @@ links lead out of Lichess.
    on your Lichess account, and the extension picks it in Lichess's engine menu for you.
    To undo: Lichess → analysis → engine settings → delete the engine, and remove the token.
 
-## Fair play: it switches itself off during games
+## Nothing shows while you play
 
-- While **any** Lichess tab shows a game in progress (yours or one you're watching, Lichess
-  TV included), every feature in every Lichess tab is removed, and your Stockfish answers
-  Lichess with no new analysis or best move. Lichess can still display its cached evaluations.
-  Stockfish is quiet. The toolbar icon
-  shows **live**. Everything comes back when the game's result appears, and Lichess's
-  engine bar searches the position on the board again by itself.
-- This fails safe: a game page counts as live until its result box shows; a game tab that
-  goes straight into the next game (rematch) stays locked in between; after an extension
-  update or a Chrome restart every open Lichess tab is checked before anything is shown;
-  the app starts with your Stockfish paused and serves Lichess only once the extension
-  has said no game is on (a second or two after it starts).
+- The features only run on analysis pages: the analysis board, finished games and studies.
+  A game page (one you play or watch, Lichess TV included) never shows anything of the
+  extension, and neither does the analysis board of a game still in progress (its forecast
+  board). Other tabs are left as they are.
 - If the app stops unexpectedly while Lichess is open, the extension starts it again within
   half a minute, and the boxes and Lichess's engine bar recover by themselves.
-- What it can't see: a game in another browser or Chrome profile, or a correspondence game
-  whose page isn't open.
 
 ## Install in Chrome (once)
 
@@ -86,13 +77,13 @@ node extension/scripts/check.mjs
 
 Install the browser-check dependency with `npm install --prefix extension/scripts`. The extension and local service do not need Node.
 
-It opens real Lichess pages, runs the extension in them, tests the live-game switch, and
+It opens real Lichess pages, runs the extension in them, checks that game pages stay clean, and
 prints what's showing. To fix, hand an agent `extension/REPAIR.md`.
 
 ## Files
 
 - `src/anchors.js`: every Lichess selector the extension uses. Repairs happen here.
-- `src/core.js`: page detection, the live-game lock, placing features, health reports.
+- `src/core.js`: page detection, placing features, health reports.
 - `src/page.css`: the few styles applied to Lichess's own page (hidden WikiBook, explorer in the left column).
 - `src/styles.js`: the styles of the added boxes (inside their shadow roots).
 - `settings.html`: the page the toolbar icon opens (accounts, engine token, backup).
@@ -100,7 +91,7 @@ prints what's showing. To fix, hand an agent `extension/REPAIR.md`.
 - `src/repertoire-index.js`: the repertoire looked up by position (transpositions); tested by `scripts/repertoire-test.mjs`.
 - `src/features/*.js`: one file per feature.
 - `vendor/chess.js`: chess.js 1.4.0 (BSD-2), to replay a study's moves into a position.
-- `src/background.js`: talks to the app on 127.0.0.1:8001, keeps the lock across tabs, starts the app, tells it every half minute that Lichess is still open, stops it when the last Lichess tab closes, replaces itself after a code change.
+- `src/background.js`: talks to the app on 127.0.0.1:8001, starts the app, tells it every half minute that Lichess is still open, stops it when the last Lichess tab closes, replaces itself after a code change.
 - `src/engine-select.js`: before Lichess starts, picks your Stockfish in Lichess's engine choice.
 - `native/`: the start/stop helper Chrome runs, and `install.sh` that sets it up.
 - `src/page-bridge.js`: runs in Lichess's page world (the only place that reaches Lichess's analysis controller) and carries out play-a-move, jump and Practice for the other scripts, and tells them the position in studies. It also paces the page's requests to Lichess's engine service, which refuses an address that asks too often; tested by `scripts/engine-pacing-test.mjs`.

@@ -145,7 +145,7 @@ class RegistrationTests(unittest.TestCase):
         self.assertEqual(provider.engine_id, "eei_old")
 
 
-class PauseTests(unittest.TestCase):
+class ServeTests(unittest.TestCase):
     def _run(self, provider, seconds):
         async def run_for():
             async with httpx.AsyncClient(transport=provider._transport) as http:
@@ -154,48 +154,6 @@ class PauseTests(unittest.TestCase):
                 except asyncio.TimeoutError:
                     pass
         asyncio.run(run_for())
-
-    def test_during_a_game_every_request_is_answered_with_nothing(self):
-        answers = []
-
-        def handler(request):
-            if request.url.path == "/api/external-engine/work":
-                return httpx.Response(200, json={"id": "job1", "work": {"moves": ["e2e4"], "movetime": 1000}})
-            answers.append((request.url.path, request.content))
-            return httpx.Response(200)
-
-        provider = lep.LichessEngineProvider(
-            token_getter=lambda: "tok", secret_store=lambda value=None: "s",
-            stockfish_path=sys.executable, transport=httpx.MockTransport(handler),
-            poll_pause=0.01, paused=True)
-        provider._token_in_use = "tok"
-        self.assertTrue(provider.status()["paused"])  # fail-closed until told
-        self._run(provider, 0.3)
-        # Answered (so Lichess's engine bar shows no error), but with nothing,
-        # and Stockfish was never started.
-        self.assertTrue(answers)
-        self.assertEqual(set(answers), {("/api/external-engine/work/job1", b"bestmove (none)\n")})
-        self.assertIsNone(provider._engine)
-        self.assertEqual(provider.jobs, 0)
-        self.assertEqual(provider.status()["recent"][-1]["ended"], "paused: answered with nothing")
-
-    def test_work_is_taken_again_once_the_game_ends(self):
-        polls = []
-
-        def handler(request):
-            polls.append(request.url.path)
-            return httpx.Response(204)
-
-        provider = lep.LichessEngineProvider(
-            token_getter=lambda: "tok", secret_store=lambda value=None: "s",
-            stockfish_path=sys.executable, transport=httpx.MockTransport(handler),
-            poll_pause=0.01, paused=True)
-        provider._token_in_use = "tok"
-        asyncio.run(provider.set_paused(False))
-        self.assertFalse(provider.status()["paused"])
-        self._run(provider, 0.3)
-        self.assertIn("/api/external-engine/work", polls)
-
 
     def test_a_refusal_is_forgotten_once_the_service_answers_again(self):
         answers = iter([503, 204])
@@ -206,7 +164,7 @@ class PauseTests(unittest.TestCase):
         provider = lep.LichessEngineProvider(
             token_getter=lambda: "tok", secret_store=lambda value=None: "s",
             stockfish_path=sys.executable, transport=httpx.MockTransport(handler),
-            poll_pause=0.01, paused=False)
+            poll_pause=0.01)
         provider._token_in_use = "tok"
         self._run(provider, 0.3)
         # It said "Lichess's engine service answered 503" for as long as no
@@ -374,7 +332,7 @@ class AnalyseTests(unittest.TestCase):
         lines = self._lines(_job(nodes=600000))
         self.assertEqual(lines, ["info depth 3 score cp 30 nodes 600000 pv e2e4", "bestmove e2e4"])
 
-    def test_search_paused_before_go_sends_no_analysis(self):
+    def test_search_stopped_before_go_sends_no_analysis(self):
         async def go():
             engine = await lep.UciProcess.create(str(self.engine_path))
             try:
@@ -388,14 +346,14 @@ class AnalyseTests(unittest.TestCase):
 
         asyncio.run(go())
 
-    def test_pausing_active_search_discards_remaining_lines_and_move(self):
+    def test_stopping_an_active_search_discards_remaining_lines_and_move(self):
         async def go():
             engine = await lep.UciProcess.create(str(self.engine_path))
-            paused = False
+            stopped = False
             try:
-                lines = engine.analyse(_job(), asyncio.Event(), interrupted=lambda: paused)
+                lines = engine.analyse(_job(), asyncio.Event(), interrupted=lambda: stopped)
                 self.assertTrue((await anext(lines)).startswith(b"info"))
-                paused = True
+                stopped = True
                 await engine.stop()
                 self.assertEqual([line async for line in lines], [lep.EMPTY_SEARCH])
                 self.assertFalse(engine.searching)
@@ -420,8 +378,8 @@ class LocalAnalysisTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def _provider(self, paused=False):
-        provider = lep.LichessEngineProvider(token_getter=lambda: None, stockfish_path=str(self.engine_path), paused=paused)
+    def _provider(self):
+        provider = lep.LichessEngineProvider(token_getter=lambda: None, stockfish_path=str(self.engine_path))
         provider.engine_id = "eei_mine"
         return provider
 
@@ -443,32 +401,6 @@ class LocalAnalysisTests(unittest.TestCase):
         status = provider.status()
         self.assertEqual((status["jobs"], status["local_jobs"]), (1, 1))
         self.assertEqual(status["recent"][-1]["via"], "local")
-
-    def test_during_a_game_it_answers_with_nothing_and_never_starts_stockfish(self):
-        async def go():
-            provider = self._provider(paused=True)
-            out = [json.loads(c) async for c in provider.local_analysis(*self._work(movetime=100))]
-            return out, provider
-        out, provider = asyncio.run(go())
-        self.assertEqual(out, [{"time": 0, "depth": 0, "nodes": 0, "pvs": [], "bestmove": "(none)"}])
-        self.assertIsNone(provider._engine)
-        self.assertEqual(provider.jobs, 0)
-
-    def test_a_game_starting_mid_search_stops_it(self):
-        async def go():
-            provider = self._provider()
-            try:
-                stream = provider.local_analysis(*self._work(movetime=86400000))  # infinite
-                first = json.loads(await anext(stream))
-                await provider.set_paused(True)
-                rest = [json.loads(c) async for c in stream]
-                return first, rest, provider._engine.searching
-            finally:
-                await provider.stop()
-        first, rest, searching = asyncio.run(go())
-        self.assertTrue(first["pvs"])
-        self.assertEqual(rest[-1]["bestmove"], "(none)")
-        self.assertFalse(searching)
 
     def test_a_new_request_stops_the_search_in_progress(self):
         async def go():

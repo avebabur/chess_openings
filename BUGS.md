@@ -25,7 +25,7 @@ Severity:
 - `med`: a feature does not work.
 - `low`: wording, looks, or small inconvenience.
 
-Area is one of: `lock` (live-game lock), `engine`, `repertoire`, `my-games`, `sync`,
+Area is one of: `lock` (the live-game lock, removed in 0.19.0: game pages simply show nothing), `engine`, `repertoire`, `my-games`, `sync`,
 `settings`, `service`, `layout`.
 
 ## Log

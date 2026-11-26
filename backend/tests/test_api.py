@@ -310,14 +310,7 @@ class ApiContractTests(unittest.TestCase):
                 "initialFen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", "moves": [], "movetime": 500}
         ask = lambda **body: self.client.post("/api/lichess-engine/analyse", json={"engineId": "eei_mine", "work": work, **body})
 
-        # The app starts paused (fail-closed): nothing until the lock says no game is on.
-        paused = ask()
-        self.assertEqual(paused.status_code, 200)
-        self.assertEqual([json.loads(l) for l in paused.text.splitlines()],
-                         [{"time": 0, "depth": 0, "nodes": 0, "pvs": [], "bestmove": "(none)"}])
-        self.assertIsNone(provider._engine)
-
-        self.client.put("/api/lichess-engine/paused", json={"paused": False})
+        # Answered at once: the app no longer waits to hear whether a game is on.
         res = ask()
         self.assertEqual(res.status_code, 200)
         self.assertTrue(res.headers["content-type"].startswith("application/x-ndjson"))

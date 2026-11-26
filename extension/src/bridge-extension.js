@@ -31,11 +31,7 @@
 
     report(report) { send({ type: 'ox-health', report }).catch(() => {}); },
     openSettings() { return send({ type: 'ox-open-settings' }); },
-    setPlaying(playing) { return send({ type: 'ox-playing', playing }).catch(() => null); },
     status() { return send({ type: 'ox-status' }); },
-    onPaused(callback) {
-      ext.runtime.onMessage.addListener(msg => { if (msg?.type === 'ox-paused') callback(msg.paused); });
-    },
     onEngineResumed(callback) {
       ext.runtime.onMessage.addListener(msg => { if (msg?.type === 'ox-engine-resumed') callback(); });
     },

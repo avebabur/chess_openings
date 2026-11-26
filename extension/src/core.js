@@ -3,8 +3,9 @@
 // that cannot find its place.
 //
 // Safety rules every feature relies on:
-//  * A game in progress (in any tab) pauses everything. Fail-closed: a game
-//    page counts as live until its result box shows.
+//  * Nothing is shown while you play: features run on analysis pages only
+//    (never on a game page), and not on the analysis board of a game still
+//    in progress (its forecast board).
 //  * Features only ADD elements next to Lichess's and never block its
 //    events. The few changes to Lichess's own layout (hiding the WikiBook and
 //    the explorer's Player tab, the board colours, where the explorer and the
@@ -44,7 +45,7 @@
     }
   };
 
-  OX.state = { paused: true, pauseRevision: 0, position: null, offline: false, autostart: null };
+  OX.state = { position: null, offline: false, autostart: null };
   // mineOpen: the explorer's My games tab is the chosen one.
   OX.defaultSettings = { mineOpen: false };
 
@@ -94,8 +95,8 @@
     return 'other';
   };
 
-  OX.liveGameOnPage = () =>
-    OX.isGameForecastPath(location.pathname) || (OX.pageKind() === 'round' && !OX.$(A.roundFinished.selector));
+  // The analysis board of a game that is still being played (a forecast).
+  OX.gameInProgressHere = () => OX.isGameForecastPath(location.pathname);
 
   OX.isStudy = () => /^\/study\/[A-Za-z0-9]{8}/.test(location.pathname);
 
@@ -266,32 +267,7 @@
   let pageStart = Date.now();
   let lastKind = null;
   let lastReport = '';
-  let lastPlaying = null;
-  let playingSentAt = 0;
   let lastPositionKey = null;
-  let wasPaused = false;
-  const PLAYING_AGAIN_MS = 5000;
-
-  // Tells the background script whether this page shows a game in progress.
-  // Sent on every change, again every few seconds while a game is live (so a
-  // lock the background lost comes back by itself), and again whenever the
-  // answer didn't arrive.
-  function reportPlaying(playing) {
-    const due = playing !== lastPlaying || (playing && Date.now() - playingSentAt > PLAYING_AGAIN_MS);
-    if (!due) return;
-    lastPlaying = playing;
-    playingSentAt = Date.now();
-    const revision = OX.state.pauseRevision;
-    OX.bridge.setPlaying(playing).then(res => {
-      if (typeof res?.paused === 'boolean') {
-        if (revision === OX.state.pauseRevision && playing === lastPlaying) OX.state.paused = res.paused;
-      }
-      else setTimeout(() => { lastPlaying = null; }, 1000); // not heard: say it again shortly
-    });
-  }
-  // A page brought back by the browser's Back button keeps its scripts but the
-  // background script has forgotten it: report again.
-  addEventListener('pageshow', event => { if (event.persisted) lastPlaying = null; });
 
   function teardown(id) {
     const entry = run.get(id);
@@ -369,19 +345,9 @@
     if (OX.bridge.alive && !OX.bridge.alive()) return retire();
     const kind = OX.pageKind();
     if (kind !== lastKind) { lastKind = kind; pageStart = Date.now(); }
-    const playing = OX.liveGameOnPage();
-    reportPlaying(playing);
-    const paused = OX.state.paused || playing;
-    if (kind === 'analyse') document.documentElement.toggleAttribute('data-ox-paused', paused);
-    // A game elsewhere just ended: during it your Stockfish answered this
-    // page's engine bar with nothing, so ask Lichess to search again (once
-    // the engine has surely heard; the background tells it first).
-    if (wasPaused && !paused && kind === 'analyse') {
-      setTimeout(() => { if (!OX.retired && !OX.state.paused) OX.lichess.restartCeval(); }, 500);
-    }
-    wasPaused = paused;
+    const playing = OX.gameInProgressHere();
     const inGrace = Date.now() - pageStart < GRACE_MS;
-    const position = kind === 'analyse' && !paused && OX.standardVariant() ? OX.readPosition() : null;
+    const position = kind === 'analyse' && !playing && OX.standardVariant() ? OX.readPosition() : null;
     OX.state.position = position;
     // A repetition or transposition can keep the same position but change
     // which line to save, what to extend, and where it left the repertoire.
@@ -392,7 +358,7 @@
     for (const feature of features) {
       const entry = run.get(feature.id) || {};
       if (!feature.pages.includes(kind)) { teardown(feature.id); setStatus(feature.id, 'n/a'); continue; }
-      if (paused && feature.pauses !== false) { teardown(feature.id); setStatus(feature.id, 'paused'); continue; }
+      if (playing) { teardown(feature.id); setStatus(feature.id, 'n/a', 'game in progress'); continue; }
       if (entry.failed) continue; // stays out until the page reloads
       if (kind === 'analyse' && !OX.standardVariant()) { teardown(feature.id); setStatus(feature.id, 'n/a', 'variant'); continue; }
       if (kind === 'analyse' && OX.interactiveLesson()) {
@@ -439,7 +405,7 @@
     }
 
     // A redraw or reinjection can leave copies of hosts the current runner
-    // does not own. Remove those too, so pause and reload leave one clear state.
+    // does not own. Remove those too, so a reload leaves one clear state.
     for (const host of document.querySelectorAll('[data-ox-host]')) {
       if (run.get(host.dataset.oxHost)?.host !== host) host.remove();
     }

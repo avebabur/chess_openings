@@ -46,7 +46,6 @@ skip() { printf '  skip  %-22s       %s\n' "$1" "$2"; skipped+=("$1"); }
 
 echo "Fast checks"
 run backend-pytest      bash -c 'cd backend && ../venv/bin/python -m pytest -q --tb=short -p no:cacheprovider'
-run live-lock-test      node extension/scripts/live-lock-test.mjs
 run sync-test           node extension/scripts/sync-test.mjs
 run repertoire-test     node extension/scripts/repertoire-test.mjs
 run engine-pacing-test  node extension/scripts/engine-pacing-test.mjs

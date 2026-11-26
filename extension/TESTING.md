@@ -60,7 +60,6 @@ tab, then read `__log`. A box that vanishes for 0.1 s shows here and in no scree
 window.__log = []; let last = ''; window.__t0 = Date.now();
 setInterval(() => {
   const s = JSON.stringify({
-    paused: document.documentElement.hasAttribute('data-ox-paused'),
     hosts: [...document.querySelectorAll('[data-ox-host]')].map(h => h.dataset.oxHost).join(','),
     myGames: !!document.querySelector('.ox-tab'),
     engine: (document.querySelector('.ceval')?.innerText || '').replace(/\s+/g, ' ').slice(0, 60),
@@ -79,7 +78,7 @@ anything about focus or keyboard shortcuts; `.click()` from script is fine for l
 
 ```bash
 tail -20 ~/Library/Logs/openings-app.log                 # any 4xx/5xx the page swallowed?
-curl -s http://127.0.0.1:8001/api/lichess-engine         # state, paused, and `recent`: every engine request
+curl -s http://127.0.0.1:8001/api/lichess-engine         # state, and `recent`: every engine request
 curl -s http://127.0.0.1:8001/api/analysis               # the game check's progress
 cat extension/health-report.json                         # what the extension says is broken
 ```
@@ -121,25 +120,14 @@ someone else's finished game, a study (switch chapters, open the explorer), `/pr
 and plain pages in a second tab (`/training`, `/practice`, `/streamer`) while watching the
 log above for a blink.
 
-**The live-game lock, every time** (it is the part that must never fail):
+**Game pages stay clean** (there is no cross-tab lock: other tabs keep working):
 
-1. Analysis tab with the log above. Second tab: `lichess.org/tv/classical` (slow games; a
-   bullet game ending looks like an unlock). The log must show `paused` within a second and
-   hold; `/api/lichess-engine` must say `paused: true` and answer "with nothing".
-2. Leave TV for a plain Lichess page, come back, close the tab: locked exactly while TV shows.
-3. A real game: Play → *Play against computer*, level 1, unlimited. **Abort before the first
-   move** (the ✖ under the moves). Then Rematch and abort again. The lock must hold from the
-   click until "aborted", and again through the rematch. Aborted games stay listed as
-   aborted on the account; they are not counted or imported.
-   Before aborting, open the round's analysis link. The forecast board looks like ordinary
-   analysis, but the lock must hold in both tabs and in Stockfish. Go back to the round to abort.
-4. During a game: `touch extension/manifest.json`, reload the analysis tab (the extension
-   replaces itself). It must come back locked.
-5. Quit Chrome with a TV tab open and reopen it
-   (`osascript -e 'tell application "Google Chrome" to quit'`, `open -a "Google Chrome"`).
-   `/api/lichess-engine` must still say `paused: true`. Afterwards your tab group is gone:
-   make a new one, and close the restored test tabs
-   (`osascript -e 'tell application "Google Chrome" to close (every tab of every window whose URL contains "lichess.org/tv")'`).
+1. `lichess.org/tv/classical` and a real game (Play → *Play against computer*, level 1,
+   unlimited; **abort before the first move** with the ✖ under the moves): no
+   `[data-ox-host]` on the page at any moment, and an analysis tab next to it keeps its boxes.
+2. Before aborting, open the round's analysis link: a forecast board (correspondence) must
+   show nothing of the extension either; for a game against the computer Lichess sends you
+   back to the game page.
 
 ## Pass 3: what the user's Chrome can't show
 
@@ -154,7 +142,7 @@ Chrome a Cloudflare "verify you are human" page: both browser scripts then print
 check on local copies. The layouts are then only checked in pass 2. Both browser scripts run desktop checks
 by default. Set `OX_CHECK_NARROW=1` only when the user asks to test narrow layouts.
 Screenshots: `extension/check-output/real-*.png`; look at them. This copy of the extension
-uses its own temporary fixture server, so it never changes the user’s live-game lock or data.
+uses its own temporary fixture server, so it never changes the user’s data.
 
 ## Pass 4: attack the service
 
@@ -170,14 +158,13 @@ inputs to `bad_input()` there.
 ## When something looks wrong
 
 - **Find the cause before calling it a bug or dismissing it.** Repeat it under conditions
-  that remove the innocent explanation (the "lock released during TV" was a bullet game
-  ending: on `/tv/classical` it never happened). When it depends on Lichess, read Lichess's
+  that remove the innocent explanation (a script move like `playUci('c2c4')` for the wrong
+  side makes an impossible position that the app and Lichess both refuse with 400). When it depends on Lichess, read Lichess's
   source (`https://raw.githubusercontent.com/lichess-org/lila/master/…`) instead of guessing.
 - **Not a bug of ours:** Lichess runs its engine in one tab at a time; the size of a
-  study's chapter list and chat is the user's own dragging, stored by Lichess; Lichess TV
-  unlocks for a few seconds between games, while the result shows.
+  study's chapter list and chat is the user's own dragging, stored by Lichess.
 - **Every fix gets a check** that fails without it: a fixture page in `scripts/check.mjs`
-  (see `gamePage`, `/ox-fixture/checking`), a case in `scripts/live-lock-test.mjs`, a test in
+  (see `studyAnnotate`, `/ox-fixture/explorer`), a test in
   `backend/tests/`, a case in `scripts/engine-pacing-test.mjs` or `scripts/repertoire-test.mjs`,
   or a line in `service-fuzz.py`. Then confirm the fix in the real Chrome.
 - Fix the cause in the smallest place; keep every Lichess selector in `src/anchors.js`; the

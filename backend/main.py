@@ -111,11 +111,8 @@ async def lifespan(target_app):
     target_app.state.external_clients = ExternalApiClients()
     target_app.state.opening_tree_cache = ot.OpeningTreeCache()
     target_app.state.idle_exit = idle_exit.from_environment()
-    # Starts paused (fail-closed): the extension says at once whether a game
-    # is on in a Lichess tab (background.js tells it when it sees the app up).
     target_app.state.lichess_engine = lichess_engine_provider.LichessEngineProvider(
-        on_activity=target_app.state.idle_exit.touch if target_app.state.idle_exit else None,
-        paused=True)
+        on_activity=target_app.state.idle_exit.touch if target_app.state.idle_exit else None)
 
     target_app.state.sync_service = AccountSyncService(
         invalidate_cache=target_app.state.opening_tree_cache.invalidate,
@@ -290,18 +287,6 @@ def lichess_engine_status(request: Request):
     return request.app.state.lichess_engine.status()
 
 
-class EnginePauseInput(BaseModel):
-    paused: bool
-
-
-@api.put("/lichess-engine/paused")
-async def lichess_engine_pause(input: EnginePauseInput, request: Request):
-    """The extension's live-game lock: while a game is in progress in any
-    Lichess tab, your Stockfish answers Lichess with nothing."""
-    await request.app.state.lichess_engine.set_paused(input.paused)
-    return {"paused": request.app.state.lichess_engine.paused}
-
-
 @api.post("/lichess-engine/analyse")
 async def lichess_engine_analyse(request: Request):
     """Lichess's analysis for the page on this computer, with no trip through
@@ -309,7 +294,7 @@ async def lichess_engine_analyse(request: Request):
     second, three per position). The extension forwards the page's request
     ({"engineId", "work"}) and hands the page this stream: the same ndjson the
     broker would have sent. 404: not this app's engine, so the extension sends
-    the request to the broker as before. The live-game lock holds here too."""
+    the request to the broker as before."""
     # JSON only: a website could send a plain-text POST without asking, but
     # never a JSON one (that needs CORS, which this service does not grant).
     if request.headers.get("content-type", "").split(";")[0].strip().lower() != "application/json":

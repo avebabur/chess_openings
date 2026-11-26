@@ -20,11 +20,7 @@
     },
     roundPage: {
       selector: 'main.round',
-      what: 'A game in progress, played or watched. Everything pauses on it.',
-    },
-    roundFinished: {
-      selector: 'main.round .result-wrap',
-      what: 'The result box on a game page once the game has ended. While it is missing the game counts as live (safe default).',
+      what: 'A game page (in progress or finished). The extension shows nothing on it.',
     },
     fenInput: {
       selector: 'main.analyse .copyables input.copyable, main.analyse .analyse__underboard__fen input',
@@ -62,8 +58,6 @@
 
   // Lichess pages whose address has the shape of a game's (8 letters and
   // digits) but are not games: every such top-level page in lila's conf/routes.
-  // Without this list, opening Puzzles or Practice counted as a game for the
-  // moment the page took to load, and every other tab blinked.
   OX.notGames = ['analysis', 'bookmark', 'features', 'insights', 'markdown', 'password', 'practice', 'streamer', 'timeline', 'training'];
 
   // Lichess serves the forecast board for an active game here, and redirects

@@ -37,11 +37,9 @@ const harnessBridge = `
 (() => {
   const OX = (globalThis.OX = globalThis.OX || {});
   const client = globalThis.OX_createBackendClient('https://ox.invalid/api');
-  let onPaused = null;
   let onRepertoireChanged = null;
   const H = (globalThis.__oxHarness = {
-    reports: [], playing: [], paused: false,
-    setPaused(paused) { H.paused = paused; onPaused && onPaused(paused); },
+    reports: [],
     repertoireChanged() { onRepertoireChanged?.(); },
   });
   OX.bridge = {
@@ -55,9 +53,7 @@ const harnessBridge = `
     },
     report(report) { H.reports.push(report); },
     async openSettings() { return { ok: true }; },
-    async setPlaying(playing) { H.playing.push(playing); return { paused: H.paused || playing }; },
-    async status() { return { paused: H.paused }; },
-    onPaused(callback) { onPaused = callback; },
+    async status() { return {}; },
     onRepertoireChanged(callback) { onRepertoireChanged = callback; },
     // Kept between pages, like the real extension's storage.
     async loadSettings() { try { return JSON.parse(localStorage.getItem('ox.check.settings') || '{}'); } catch { return {}; } },
@@ -174,7 +170,6 @@ const fixtures = {
     '<div class="ceval"></div><div class="analyse__moves"><move p="aa" class="active"><san>e4</san></move></div>'),
   '/ox-fixture/pagination': explorerPage,
   '/ox-fixture/live': `<!doctype html><body>${topnav}<main class="round"><div class="rclock rclock-bottom running"></div></main></body>`,
-  '/ox-fixture/finished': `<!doctype html><body>${topnav}<main class="round"><div class="rmoves"><div class="result-wrap">1-0</div></div></main></body>`,
 };
 
 const results = [];
@@ -463,23 +458,14 @@ console.log('\nSafety self-tests');
 await context.route('https://lichess.org/game/oxFixt03/black/analysis', route =>
   route.fulfill({ status: 200, contentType: 'text/html', body: explorerPage }));
 await open('https://lichess.org/game/oxFixt03/black/analysis');
-expectStatuses('game forecast', await statuses(), { engine: 'paused', repertoire: 'paused' });
-record('game forecast', (await hosts()).length === 0 &&
-  (await page.evaluate(() => globalThis.__oxHarness.playing.at(-1))) === true,
-  'game forecast: an analysis-looking forecast locks every Lichess tab and shows no extension controls');
+expectStatuses('game forecast', await statuses(), { engine: 'n/a', repertoire: 'n/a' });
+record('game forecast', (await hosts()).length === 0,
+  'game forecast: the analysis board of a game in progress shows nothing of the extension');
 
 await open('https://lichess.org/ox-fixture/live');
 const live = await statuses();
 expectStatuses('live game', live, { engine: 'n/a', repertoire: 'n/a' });
-record('live game', (await page.evaluate(() => globalThis.__oxHarness.playing.at(-1))) === true,
-  'live game: the game page locks every Lichess tab');
 record('live game', (await hosts()).length === 0, 'live game: nothing of the extension is on the page');
-
-// While the game stays on screen the page keeps saying so (a lock the
-// background script lost must come back by itself).
-await page.waitForTimeout(6000);
-record('live game', (await page.evaluate(() => globalThis.__oxHarness.playing.filter(Boolean).length)) >= 2,
-  'live game: the lock is reported again while the game is on');
 
 await open('https://lichess.org/ox-fixture/game');
 const game = await statuses();
@@ -654,9 +640,6 @@ record('practice', await page.evaluate(() => {
   window.site.analysis.suspendPractice();
   return globalThis.OX.lichess.practice() && document.body.classList.contains('practice-visible');
 }), 'practice: starting from a different move resumes Practice and closes the explorer');
-await page.evaluate(() => globalThis.__oxHarness.setPaused(true));
-record('practice', await page.evaluate(() => !globalThis.OX.lichess.practice()),
-  'practice: the live lock blocks the Practice command');
 
 // A long "nothing here" sentence wraps inside the explorer instead of
 // running out of it ("…of each game; this p").
@@ -720,17 +703,10 @@ await open('https://lichess.org/study/oxFixt01');
 await open('https://lichess.org/ox-fixture/explorer');
 record('explorer', await page.evaluate(() => getComputedStyle(document.querySelector('.explorer-title .player')).display === 'none'),
   "explorer: Lichess's Player tab gives way to My games");
-await page.evaluate(() => globalThis.__oxHarness.setPaused(true));
-record('explorer', await page.evaluate(() => getComputedStyle(document.querySelector('.explorer-title .player')).display !== 'none'
-  && !document.querySelector('.ox-tab')), 'explorer: the live lock restores Lichess’s Player tab');
 await open('https://lichess.org/ox-fixture/explorer-variant');
 record('explorer', await page.evaluate(() => getComputedStyle(document.querySelector('.explorer-title .player')).display !== 'none'
   && !document.querySelector('.ox-tab')),
   "explorer: on a variant board (no My games) Lichess's Player tab stays");
-
-await open('https://lichess.org/ox-fixture/finished');
-record('finished game', (await page.evaluate(() => globalThis.__oxHarness.playing.at(-1))) === false,
-  'finished game: the lock is released once the result shows');
 
 // Behind the bot check, a local copy at the same address (so the page counts
 // as an analysis board, where a missing feature is reported).
@@ -743,18 +719,9 @@ await page.evaluate(() => {
   const host = document.querySelector('[data-ox-host=repertoire]');
   if (host) host.after(host.cloneNode(false));
 });
-await page.evaluate(() => globalThis.__oxHarness.setPaused(true)); // a game started in another tab
 await page.waitForTimeout(800);
-const paused = await statuses();
-expectStatuses('paused', paused, { engine: 'paused', repertoire: 'paused', mine: 'paused' });
-const pausedHosts = await hosts();
-record('paused', pausedHosts.length === 0,
-  `paused: the boxes are removed while a game runs elsewhere (${pausedHosts.map(host => host.id).join(', ') || 'none'})`);
-record('paused', await page.evaluate(() => document.documentElement.hasAttribute('data-ox-paused')
-  && !globalThis.OX.lichess.restartCeval()), 'paused: the page bridge refuses to restart analysis');
-await page.evaluate(() => globalThis.__oxHarness.setPaused(false));
-await page.waitForTimeout(800);
-record('paused', (await statuses()).engine === 'ok', 'paused: everything returns when the game ends');
+record('stray copy', (await hosts()).filter(host => host.id === 'repertoire').length === 1,
+  'stray copy: a box the runner does not own is removed');
 
 // An extension update puts a second copy into the same page: the first must
 // step aside completely, and the new one must take over (once, not twice).

@@ -97,8 +97,6 @@ def bad_input():
         ("DELETE", "/repertoire/tree/branches/999999"),
         ("DELETE", "/repertoire/tree/branches/999999", {"name": "x", "label": "main", "moves_san": ""}),
         ("DELETE", "/repertoire/tree/branches/abc"),
-        ("PUT", "/lichess-engine/paused", {"paused": "maybe"}),
-        ("PUT", "/lichess-engine/paused", {}),
         ("PUT", "/settings/lichess-token", {"token": "x" * 513}),
         ("POST", "/accounts", {"platform": "chesscom", "username": "a b"}),
         ("POST", "/accounts", {"platform": "myspace", "username": "a"}),

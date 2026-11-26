@@ -9,8 +9,8 @@
 // games) can't be tested here, and Cloudflare blocks headless Chrome on game
 // pages and /analysis/<fen>.
 //
-// The temporary extension talks only to the fixture server below. It must not
-// send its idea of the live-game lock to the user's app. Screenshots go to
+// The temporary extension talks only to the fixture server below, never to the
+// user's app. Screenshots go to
 // extension/check-output/real-*.png.
 // See extension/TESTING.md.
 import { createRequire } from 'node:module';
@@ -71,7 +71,6 @@ const service = createServer(async (req, res) => {
       return reply({ state: 'off' });
     case 'GET /api/health':
     case 'POST /api/keepalive':
-    case 'PUT /api/lichess-engine/paused':
       return reply({ ok: true });
     default:
       return reply({ detail: 'No fixture for this route' }, 404);
