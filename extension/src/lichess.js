@@ -70,8 +70,6 @@
         }
       });
     },
-    // Deep analysis results onto the chapter's moves (page-bridge.js setEvals).
-    setEvals: evals => command('setEvals', evals),
     // Put `color` at the bottom of the board (your side of your own game).
     showSide(color) {
       const black = document.querySelector('main.analyse .cg-wrap')?.classList.contains('orientation-black');

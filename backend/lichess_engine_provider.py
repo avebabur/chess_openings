@@ -87,9 +87,6 @@ KEEP_ALIVE_SECONDS = 300  # an idle Stockfish is closed after this
 # makes every normal-Practice search that many seconds, sent at the end.
 PRACTICE_SECONDS = float(os.environ.get("OPENINGS_PRACTICE_SECONDS", "0"))
 SECRET_SETTING = "lichess_engine_secret"
-DEEP_HASH_MB = 256  # a background search before Lichess asked for any size
-# A background search starts only once Lichess has asked nothing for this long.
-QUIET_SECONDS = 3.0
 EMPTY_SEARCH = b"bestmove (none)\n"
 
 
@@ -542,53 +539,6 @@ class UciProcess:
                 pass
             self.last_used = time.monotonic()
 
-    async def deep_search(self, initial_fen, moves, movetime_ms, progress=None):
-        """One deep-analysis search (deep_analysis.py): ``go movetime M``, no
-        depth limit (Stockfish stops by itself at its maximum depth), one line. The last full report as a dict
-        (depth, score from the side to move, nodes, pv, seconds), or None if
-        Stockfish gave none. Keeps the search memory (no ucinewgame) and the
-        hash size Lichess last asked for, so the engine bar loses nothing."""
-        await self.settle()
-        wanted = {"Threads": ENGINE_THREADS, "Hash": self.options.get("Hash", DEEP_HASH_MB),
-                  "MultiPV": 1, "UCI_Variant": "chess"}
-        changed = False
-        for name, value in wanted.items():
-            if self.options.get(name) != value:
-                await self.send(f"setoption name {name} value {value}")
-                self.options[name] = value
-                changed = True
-        if changed:
-            await self.isready()
-        await self.send(f"position fen {initial_fen}" + (f" moves {' '.join(moves)}" if moves else ""))
-        self.searching = True
-        began = time.monotonic()
-        await self.send(f"go movetime {int(movetime_ms)}")
-        best = None
-        try:
-            while True:
-                head, rest = await self.recv()
-                self.last_used = time.monotonic()
-                if head == "bestmove":
-                    self.searching = False
-                    break
-                if head != "info":
-                    continue
-                info = _parse_info(rest.split())
-                if (not info or info.get("multipv", 1) != 1 or info.get("bound") or "score" not in info
-                        or not info.get("pv") or "depth" not in info):
-                    continue
-                kind, value = info["score"]
-                best = {"depth": info["depth"], "cp": value if kind == "cp" else None,
-                        "mate": value if kind == "mate" else None, "nodes": info.get("nodes", 0),
-                        "pv": info["pv"]}
-                if progress:
-                    progress(info["depth"], time.monotonic() - began)
-        finally:
-            await self.settle()  # cancelled midway (the service stopping): stop Stockfish
-        if best is not None:
-            best["seconds"] = round(time.monotonic() - began, 2)
-        return best
-
 
 def _setting_getter(key):
     def get():
@@ -631,12 +581,6 @@ class LichessEngineProvider:
         # takes it only after the search before it has stopped and ended.
         self._claim_lock = asyncio.Lock()
         self.recent = collections.deque(maxlen=40)  # what Lichess asked, newest last
-        # Background searches (deep_analysis.py) give way to Lichess: one runs
-        # only after Lichess has been quiet for QUIET_SECONDS, and a request
-        # from Lichess stops it (_claim_engine), which marks it interrupted.
-        self._deep_task = None
-        self._deep_interrupted = False
-        self._last_live = 0.0
 
     def status(self):
         return {
@@ -744,8 +688,7 @@ class LichessEngineProvider:
                     # "Nothing to do yet" is an answer too: the service is
                     # reachable again, so an earlier refusal no longer stands.
                     self.error = ""
-                if (self._engine and self._engine.alive() and self._engine.idle_time() > KEEP_ALIVE_SECONDS
-                        and not (self._job_task and not self._job_task.done())):
+                if self._engine and self._engine.alive() and self._engine.idle_time() > KEEP_ALIVE_SECONDS:
                     await self._engine.terminate()
                 continue
             self.error = ""
@@ -755,7 +698,6 @@ class LichessEngineProvider:
                 return False  # a newer job stops this one's search (_claim_engine)
 
             async with self._claim_lock:
-                self._last_live = time.monotonic()
                 await self._claim_engine(interrupted)
                 started = asyncio.Event()
                 self._job_task = asyncio.create_task(self._handle(http, job, started, interrupted))
@@ -765,8 +707,6 @@ class LichessEngineProvider:
         """Stop the search in progress, wait for its job to end and make sure
         Stockfish runs. False if the request was given up meanwhile (the page
         moved on). Under _claim_lock."""
-        if self._job_task is not None and self._job_task is self._deep_task and not self._job_task.done():
-            self._deep_interrupted = True
         if self._engine and self._engine.alive():
             try:
                 await self._engine.stop()
@@ -781,46 +721,6 @@ class LichessEngineProvider:
         if not (self._engine and self._engine.alive()):
             self._engine = await UciProcess.create(self._stockfish_path)
         return True
-
-    def lichess_busy(self):
-        """Lichess is searching, or asked something less than QUIET_SECONDS ago."""
-        live = self._job_task is not None and self._job_task is not self._deep_task and not self._job_task.done()
-        return live or time.monotonic() - self._last_live < QUIET_SECONDS
-
-    async def deep_search(self, initial_fen, moves, movetime_ms, progress=None):
-        """A deep-analysis search on the one Stockfish (the engine bar's own
-        process, same priority), only while Lichess is
-        quiet. Its result (see UciProcess.deep_search), or None when it could
-        not start (Lichess busy, no Stockfish) or a Lichess request stopped it
-        (then it is to be searched again later)."""
-        if self.lichess_busy() or not self.stockfish_found():
-            return None
-        async with self._claim_lock:
-            if self.lichess_busy():
-                return None
-            await self._claim_engine(lambda: False)
-            self._deep_interrupted = False
-            task = asyncio.create_task(self._engine.deep_search(initial_fen, moves, movetime_ms, progress))
-            self._deep_task = self._job_task = task
-        try:
-            result = await task
-        except EOFError:
-            log.warning("Lichess engine: Stockfish exited during a background search")
-            return None
-        finally:
-            self._engine.last_used = time.monotonic()
-        return None if self._deep_interrupted else result
-
-    async def stop_deep(self):
-        """Stop the background search running (its chapter was closed, paused
-        or changed); deep_search then returns None."""
-        task = self._deep_task
-        if task is not None and not task.done() and self._job_task is task and self._engine:
-            self._deep_interrupted = True
-            try:
-                await self._engine.stop()
-            except EOFError:
-                pass
 
     def can_answer(self, engine_id):
         """Whether a page's request for `engine_id` is this app's to answer."""
@@ -849,7 +749,6 @@ class LichessEngineProvider:
         task = None
         try:
             async with self._claim_lock:
-                self._last_live = time.monotonic()
                 if await self._claim_engine(interrupted):
                     started = asyncio.Event()
                     task = self._job_task = asyncio.create_task(
@@ -903,7 +802,6 @@ class LichessEngineProvider:
                 out.put_nowait(chunk)
             out.put_nowait(None)
             started.set()
-            self._last_live = time.monotonic()
 
     async def _handle(self, http, job, started, interrupted):
         self.jobs += 1
@@ -936,4 +834,3 @@ class LichessEngineProvider:
             except (EOFError, RuntimeError):
                 pass
             started.set()
-            self._last_live = time.monotonic()

@@ -27,7 +27,7 @@ Only `missing`, `hidden` and `error` need fixing.
 | engine (Your Stockfish in Lichess) | analyse | `ceval` | after Lichess's engine bar; usually empty (`ok` with no size is normal) |
 | repertoire (Your repertoire) | analyse | `side` + position | left column, last |
 | explorerleft (explorer in the left column) | analyse | `side` (+ `explorerBox`, the board) | an empty space at the end of the left column; Lichess's explorer is positioned over it on wide layouts |
-| annotate (Deep analysis) | analyse | `moveList` | after the move list, in every study chapter with moves; empty elsewhere (`ok` with no size is normal) |
+| annotate (Annotate chapter) | analyse | `moveList` | after the move list, only in a study chapter you can change; empty elsewhere (`ok` with no size is normal) |
 | mine (My games tab) | analyse | `explorerTitle` (optional: `n/a` while the explorer is closed) | in the explorer's tab row, before the gear; its content goes in the explorer's `.data` |
 
 "analyse" covers the analysis board, finished games and studies. The **position** comes

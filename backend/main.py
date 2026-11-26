@@ -38,7 +38,6 @@ import stockfish  # noqa: E402  (where Stockfish is on this Mac)
 import extension_health  # noqa: E402  (what the Lichess extension could not show)
 import idle_exit  # noqa: E402  (stops the service when the extension is gone)
 import lichess_engine_provider  # noqa: E402  (your Stockfish inside Lichess's own analysis)
-import deep_analysis  # noqa: E402  (study chapters analysed by themselves, on the same Stockfish)
 import game_import  # noqa: E402
 from sync_service import AccountSyncService  # noqa: E402
 from services import ExternalApiClients, SQLiteService  # noqa: E402
@@ -114,7 +113,6 @@ async def lifespan(target_app):
     target_app.state.idle_exit = idle_exit.from_environment()
     target_app.state.lichess_engine = lichess_engine_provider.LichessEngineProvider(
         on_activity=target_app.state.idle_exit.touch if target_app.state.idle_exit else None)
-    target_app.state.deep_analysis = deep_analysis.DeepAnalysis(target_app.state.lichess_engine)
 
     target_app.state.sync_service = AccountSyncService(
         invalidate_cache=target_app.state.opening_tree_cache.invalidate,
@@ -124,7 +122,6 @@ async def lifespan(target_app):
     try:
         target_app.state.sync_service.start()
         target_app.state.lichess_engine.start()
-        target_app.state.deep_analysis.start()
         if target_app.state.idle_exit:
             target_app.state.idle_exit.touch()
             idle_watch = asyncio.get_running_loop().create_task(target_app.state.idle_exit.run())
@@ -132,7 +129,6 @@ async def lifespan(target_app):
     finally:
         if idle_watch:
             idle_watch.cancel()
-        await target_app.state.deep_analysis.stop()
         await target_app.state.lichess_engine.stop()
         target_app.state.sync_service.shutdown()
         target_app.state.external_clients.close()
@@ -320,27 +316,6 @@ async def lichess_engine_analyse(request: Request):
         provider.local_analysis(work, board), media_type="application/x-ndjson",
         # Each line as it comes: never held back to be compressed.
         headers={"Cache-Control": "no-store", "Content-Encoding": "identity"})
-
-
-@api.post("/deep-analysis")
-async def deep_analysis_request(request: Request):
-    """A study chapter's main line, sent every second or two while it is open:
-    {"pageId", "initialFen", "moves": [uci…], "paused"}. Analyses it in the
-    background (deep_analysis.py) and answers with what is done so far. A
-    chapter not sent for a while counts as closed."""
-    if request.headers.get("content-type", "").split(";")[0].strip().lower() != "application/json":
-        raise HTTPException(415, "JSON only")  # as /lichess-engine/analyse: no plain-text POST from a website
-    try:
-        body = await request.json()
-    except ValueError:
-        raise HTTPException(400, "Invalid JSON")
-    if not isinstance(body, dict):
-        raise HTTPException(400, "Invalid request")
-    try:
-        return await request.app.state.deep_analysis.request(
-            body.get("pageId"), body.get("initialFen"), body.get("moves"), paused=body.get("paused") is True)
-    except deep_analysis.InvalidChapter as exc:
-        raise HTTPException(400, str(exc))
 
 
 @api.get("/extension/build")

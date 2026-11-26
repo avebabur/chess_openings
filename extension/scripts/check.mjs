@@ -695,17 +695,9 @@ await open('https://lichess.org/study/oxFixt01');
     .find(b => /annotate/i.test(b.textContent))?.click());
   await page.waitForTimeout(800);
   record('annotate', /Annotated/.test(await bar()), 'annotate: publishing says it was annotated');
-  // Chapter 2 is 1.e4 e5: the cloud has every position, so the deep analysis
-  // is done at once and would publish it by itself. Paused, nothing is
-  // published, so a note shown there could only be chapter 1's.
-  await page.evaluate(() => { sessionStorage.setItem('ox.deepPaused.chapter2', '1'); window.__oxNextChapter(); });
+  await page.evaluate(() => window.__oxNextChapter());
   await page.waitForTimeout(2000);
   record('annotate', !/Annotated/.test(await bar()), 'annotate: another chapter does not repeat the last chapter’s result');
-  await page.evaluate(() => sessionStorage.removeItem('ox.deepPaused.chapter2'));
-  await page.waitForTimeout(5000);
-  const finished = await bar();
-  record('annotate', /Every position analysed/.test(finished) && /Annotated/.test(finished),
-    `deep analysis: a finished chapter is published by itself ("${finished.split('\n').slice(0, 2).join(' · ')}")`);
 }
 
 await open('https://lichess.org/ox-fixture/explorer');
