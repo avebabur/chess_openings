@@ -25,7 +25,6 @@ Only `missing`, `hidden` and `error` need fixing.
 | feature | page | anchor(s) in `src/anchors.js` | placed |
 |---|---|---|---|
 | engine (Your Stockfish in Lichess) | analyse | `ceval` | after Lichess's engine bar; usually empty (`ok` with no size is normal) |
-| sidetabs (Left column tabs) | analyse | `side` | left column, a tab row shown only when there are two tabs or more; with Repertoire the only one today it stays hidden (`ok` with no size is normal) |
 | repertoire (Your repertoire) | analyse | `side` + position | left column, last |
 | explorerleft (explorer in the left column) | analyse | `side` (+ `explorerBox`, the board) | an empty space at the end of the left column; Lichess's explorer is positioned over it on wide layouts |
 | annotate (Annotate chapter) | analyse | `moveList` | after the move list, only in a study chapter you can change; empty elsewhere (`ok` with no size is normal) |
@@ -112,7 +111,7 @@ Things that rely on Lichess internals rather than selectors, and fail quietly:
   of 503 in `recent`, or the error "Lichess's engine service answered 503", is the same limit.
   To see it: `node extension/scripts/engine-pacing-test.mjs`, and in Chrome step through a
   long game with `site.analysis.jumpToMain(n)` every 400 ms.
-- **Left column height** (`src/features/explorerleft.js`): limits the open tab's height
+- **Left column height** (`src/features/explorerleft.js`): limits the repertoire box's height
   (`--ox-max`) and sets the height of Lichess's chat (`main.analyse > .mchat`) so the column
   ends at the board's bottom. A gap under the board or a squeezed chat means this stopped.
 - **Page styles** (`src/page.css`, applied by Chrome from the manifest): the board colours,

@@ -163,16 +163,7 @@ test('a line that repeats a position does not loop or count twice', () => {
   assert.ok(R.mainLine(shuffle, key(''), 'white').length <= 10);
 });
 
-test('lines that share a name are told apart by their moves', () => {
-  const same = R.buildIndex([white, tree('black', [
-    [5, 'Caro Kann Defense', 'e4 c6 d4 d5 e5 Bf5'],
-    [6, 'Caro-Kann Defense', 'e4 c6 d4 d5 Nc3 dxe4 Nxe4 Bf5 Ng3'],
-    [7, 'French Defense', 'e4 e6'],
-  ])]);
-  const apart = R.tellApart(same.branches);
-  assert.equal(apart.get(5), '3. e5 Bf5');
-  assert.equal(apart.get(6), '3. Nc3 dxe4 4. Nxe4 Bf5 …');
-  assert.equal(apart.has(7), false);
+test('moves are numbered from any point in the game', () => {
   assert.equal(R.numberFrom(5, ['Bb4', 'e3']), '3… Bb4 4. e3');
 });
 

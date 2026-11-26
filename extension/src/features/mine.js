@@ -127,11 +127,15 @@
       let listeningTitle = null;
 
       function sync() {
-        host.classList.toggle('ox-active', open());
-        host.setAttribute('aria-pressed', String(open()));
+        // Every tick: only what changed is written.
+        const pressed = String(open());
+        if (host.getAttribute('aria-pressed') !== pressed) {
+          host.classList.toggle('ox-active', open());
+          host.setAttribute('aria-pressed', pressed);
+        }
         const box = OX.$(A.explorerBox.selector);
         if (!box) return;
-        box.classList.toggle('ox-mine', open());
+        if (box.classList.contains('ox-mine') !== open()) box.classList.toggle('ox-mine', open());
         const title = OX.$(A.explorerTitle.selector);
         if (title && title !== listeningTitle) {
           listeningTitle?.removeEventListener('click', leave, true);

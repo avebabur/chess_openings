@@ -8,7 +8,7 @@ let refreshTimer = null;
 let profileRequest = 0;
 const accountRows = new Map();
 const IDLE_POLL_MS = 5000;
-// A Lichess tab can start syncing or checking games while settings is open.
+// A Lichess tab can start a sync while settings is open.
 // The service keeps working without these polls when settings is hidden.
 function pollWhileVisible(poll, delay) {
   if (document.hidden) return null;

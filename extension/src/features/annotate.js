@@ -36,14 +36,15 @@
       let timer = null;
       let shown = '';      // what is on screen, to redraw only on a change
       let busy = false;
-      let note = null;     // { text, cls } after a publish
+      let note = null;     // { text, cls, chapterId } after a publish, shown in that chapter only
 
       const jump = ply => () => OX.lichess.jumpToPly(ply);
       const chip = (label, ply, title) => OX.el('button', { type: 'button', class: 'link', title, onclick: jump(ply), text: label });
 
       async function annotate(data) {
         busy = true;
-        note = { text: 'Publishing your analysis…', cls: 'dim' };
+        const { chapterId } = data;
+        note = { text: 'Publishing your analysis…', cls: 'dim', chapterId };
         render(true);
         let answer;
         try {
@@ -53,8 +54,8 @@
         }
         busy = false;
         note = answer.status >= 200 && answer.status < 300
-          ? { text: 'Annotated. Lichess is adding its marks to the moves.', cls: 'ok' }
-          : { text: refusal(answer), cls: 'bad' };
+          ? { text: 'Annotated. Lichess is adding its marks to the moves.', cls: 'ok', chapterId }
+          : { text: refusal(answer), cls: 'bad', chapterId };
         render(true);
       }
 
@@ -66,6 +67,8 @@
           shown = '';
           return;
         }
+        // Another chapter: what was said about the last one's publish goes.
+        if (note && note.chapterId !== data.chapterId) note = null;
         const state = OX.annotate.status(data);
         const key = JSON.stringify([state, busy, note]);
         if (!force && key === shown) return;

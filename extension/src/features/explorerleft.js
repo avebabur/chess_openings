@@ -3,8 +3,8 @@
 //
 // A left column taller than the board stretches Lichess's whole page: a gap
 // opens under the board and, on game pages, the chat (with Lichess's Notes
-// tab) is squeezed to a sliver. So the open tab of the panel (sidetabs.js)
-// gets a height limit and scrolls inside itself.
+// tab) is squeezed to a sliver. So the repertoire box gets a height limit and
+// scrolls inside itself.
 //
 // The explorer: Lichess's own element is not moved (its code updates it in
 // place and would break). A space is reserved at the end of the left column
@@ -32,15 +32,21 @@
 
     create(host) {
       host.className = 'ox-explorer-space';
+      // place() runs on every tick: write a style only when it changes (an
+      // unchanged write still counts as a change to the page).
+      const setStyle = (el, prop, value) => {
+        if (value == null) { if (el.style.getPropertyValue(prop)) el.style.removeProperty(prop); }
+        else if (el.style.getPropertyValue(prop) !== value) el.style.setProperty(prop, value);
+      };
+      // Rounded as Chrome reads a length back, so an unchanged one compares equal.
+      const px = n => `${Math.round(n * 100) / 100}px`;
       let moved = null;   // the explorer element currently shown on the left
       let limited = null; // the panel host that has a height limit
 
       function limit(panel, height) {
-        if (limited && limited !== panel) limited.style.removeProperty('--ox-max');
+        if (limited && limited !== panel) setStyle(limited, '--ox-max', null);
         limited = panel;
-        if (!panel) return;
-        if (height == null) panel.style.removeProperty('--ox-max');
-        else panel.style.setProperty('--ox-max', `${Math.round(height)}px`);
+        if (panel) setStyle(panel, '--ox-max', height == null ? null : `${Math.round(height)}px`);
       }
 
       // Lichess gives its chat a fixed height, sized for its own short left
@@ -48,27 +54,28 @@
       // page. Give it exactly the room left beside the board.
       let fitted = null;
       function fitChat(chat, height) {
-        if (fitted && fitted !== chat) { fitted.classList.remove('ox-fit'); fitted.style.removeProperty('height'); }
+        if (fitted && fitted !== chat) { fitted.classList.remove('ox-fit'); setStyle(fitted, 'height', null); }
         fitted = chat;
         if (!chat) return;
-        chat.classList.add('ox-fit');
-        chat.style.height = `${Math.round(height)}px`;
+        if (!chat.classList.contains('ox-fit')) chat.classList.add('ox-fit');
+        setStyle(chat, 'height', `${Math.round(height)}px`);
       }
 
-      function release() {
+      // The explorer goes back to Lichess's place; the space left is `space` high.
+      function release(space = '0px') {
         if (moved) {
           moved.classList.remove('ox-left');
-          for (const prop of ['top', 'left', 'width', 'height']) moved.style.removeProperty(prop);
+          for (const prop of ['top', 'left', 'width', 'height']) setStyle(moved, prop, null);
           moved = null;
         }
-        host.style.height = '0px';
+        setStyle(host, 'height', space);
       }
 
       function place() {
         const main = OX.$(A.analysePage.selector);
         const side = OX.$(A.side.selector);
         const board = OX.$('main.analyse .cg-wrap');
-        const panel = OX.sidePanel?.activeHost() || null;
+        const panel = OX.$('[data-ox-host="repertoire"]');
         if (!main || !side || !board) { limit(null); fitChat(null); return release(); }
         const sideRect = side.getBoundingClientRect();
         const boardRect = board.getBoundingClientRect();
@@ -88,32 +95,30 @@
         } else limit(null);
 
         if (!box || !tools) {
-          release();
           // A little air between the panel and Lichess's chat.
-          if (chat) host.style.height = `${GAP}px`;
+          release(chat ? `${GAP}px` : '0px');
           return fitChat(chat, chat ? Math.max(140, boardRect.bottom - chat.getBoundingClientRect().top) : 0);
         }
         fitChat(null);
         if (moved && moved !== box) release();
         moved = box;
-        box.classList.add('ox-left');
+        if (!box.classList.contains('ox-left')) box.classList.add('ox-left');
         const spaceTop = host.getBoundingClientRect().top + GAP;
         const height = Math.max(EXPLORER_MIN, bottom - spaceTop);
-        host.style.height = `${height + GAP}px`;
+        setStyle(host, 'height', px(height + GAP));
         const toolsRect = tools.getBoundingClientRect();
-        box.style.top = `${spaceTop - toolsRect.top}px`;
-        box.style.left = `${sideRect.left - toolsRect.left}px`;
-        box.style.width = `${sideRect.width}px`;
-        box.style.height = `${height}px`;
+        setStyle(box, 'top', px(spaceTop - toolsRect.top));
+        setStyle(box, 'left', px(sideRect.left - toolsRect.left));
+        setStyle(box, 'width', px(sideRect.width));
+        setStyle(box, 'height', px(height));
       }
 
-      // Follow window resizing and tab changes at once (scrolling needs
+      // Follow window resizing at once (scrolling needs
       // nothing: the explorer is part of the page).
       let frame = 0;
       let alive = true;
       const follow = () => { if (!alive) return; cancelAnimationFrame(frame); frame = requestAnimationFrame(place); };
       addEventListener('resize', follow, { passive: true });
-      const stopListening = OX.on('sidepanel', follow);
 
       return {
         update() {},
@@ -121,7 +126,6 @@
         destroy() {
           alive = false;
           cancelAnimationFrame(frame);
-          stopListening();
           removeEventListener('resize', follow);
           limit(null);
           fitChat(null);

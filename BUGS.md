@@ -36,6 +36,7 @@ you find the test or write one.
 
 | Date | Area | Sev | Bug | Found by | Test |
 |---|---|---|---|---|---|
+| 2026-11-26 | layout | low | After Annotate chapter published one chapter, its "Annotated…" (or refusal) message stayed under the move list in every other chapter you switched to; it now belongs to the chapter it was about | code review, then a fixture | `check.mjs` (study fixture) |
 | 2026-11-26 | engine | med | Annotate chapter counted results Lichess restores from its browser cache, including depth-1 lines of searches cancelled after 1 ms (stepping quickly), as "analysed": a chapter could show 88 of 88 and publish nonsense ?/?? marks. Results below depth 12 (mates excepted) now count as missing and are listed with their depth | real Chrome (study r4Fn1nW3) | `annotate-test.mjs` |
 | 2026-11-26 | service | low | Editing, starring or deleting a line another tab had deleted said "This line changed": the service answered 409 for a missing line whenever the request carried what it expected (every request from the extension does). It now answers 404 and the box says the line was deleted in another tab | real Chrome, two tabs | `test_api.py`, `check.mjs` |
 | 2026-11-26 | layout | low | `real-extension.mjs` and `check.mjs` reported the analysis board missing (or crashed) once Lichess began showing headless Chrome its Cloudflare bot check; they now say those pages were skipped and run the rest on local copies | `./check-all.sh --full` | `real-extension.mjs`, `check.mjs` |

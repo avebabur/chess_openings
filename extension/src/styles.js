@@ -1,8 +1,8 @@
 // Styles for the added boxes. They live inside each box's shadow root, so they
 // cannot leak into Lichess and Lichess's CSS cannot break them. Colours come
 // from Lichess's own theme variables, and the shapes (15px corners, the box
-// shadow, uppercase buttons, the tab row) are copied from Lichess's own side
-// boxes, chat tabs and buttons, so light, dark and transparent themes match.
+// shadow, uppercase buttons) are copied from Lichess's own side boxes and
+// buttons, so light, dark and transparent themes match.
 (() => {
   const OX = (globalThis.OX = globalThis.OX || {});
   OX.css = `
@@ -40,13 +40,6 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
   box-shadow: 0 2px 2px 0 rgba(0,0,0,.08), 0 3px 1px -2px rgba(0,0,0,.18), 0 1px 5px 0 rgba(0,0,0,.1);
   max-height: var(--ox-max, none); overflow-y: auto; scrollbar-width: thin;
 }
-/* Under the tab row (features/sidetabs.js): joined to it, like Lichess's chat. */
-:host(.ox-tabbed) .ox.card { margin-top: 0; border-radius: 0 0 15px 15px; }
-.ox.tabsbar { display: flex; margin-top: 12px; padding: 0; border: 0; background: none; }
-.tab { flex: 1 1 0; min-width: 0; padding: 5.6px 8px; text-align: center; white-space: nowrap; font-weight: 300;
-  color: var(--c-font-dim, #787878); border-radius: 15px 15px 0 0; transition: color .12s; }
-.tab:hover { color: var(--c-font-clear, inherit); }
-.tab.active { color: var(--c-font, inherit); background: var(--c-bg-box, #fff); }
 
 /* ---- Buttons, as Lichess's .button / .button-empty ---- */
 .btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 7px 12px; border-radius: 15px;

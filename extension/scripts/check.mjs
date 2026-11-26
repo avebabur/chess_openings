@@ -122,6 +122,27 @@ const studySetUp = `<!doctype html><body>${topnav}
 <div class="analyse__tools"><div class="ceval"></div><div class="analyse__moves areplay"><div class="tview2"></div></div></div>
 <div class="analyse__underboard"><table class="study__tags"><tbody><tr><th>Event</th><td>Rook endgames</td></tr></tbody></table></div>
 </main><script>window.site = { analysis: { node: { fen: '${SETUP_FEN}' }, tree: { root: { fen: '${SETUP_FEN}' } } } };</script></body>`;
+// A study chapter of yours where every move has a result, for Annotate
+// chapter. Its controller is a stand-in with the fields page-bridge.js reads;
+// window.__oxNextChapter() switches to another chapter as Lichess does.
+const START = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
+const AFTER_E4 = 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1';
+const AFTER_E5 = 'rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2';
+const studyAnnotate = `<!doctype html><body>${topnav}
+<main class="analyse variant-standard"><aside class="analyse__side"></aside>
+<div class="analyse__board main-board"><div class="cg-wrap orientation-white"></div></div>
+<div class="analyse__tools"><div class="ceval"></div><div class="analyse__moves areplay"><div class="tview2"></div></div></div>
+</main><script>
+  const node = (ply, fen, uci, san, cp, best) => ({ ply, fen, uci, san, ceval: { cp, depth: 20, nodes: 1000, pvs: [{ moves: [best] }] } });
+  const line = () => [node(0, '${START}', null, null, 20, 'e2e4'), node(1, '${AFTER_E4}', 'e2e4', 'e4', 25, 'e7e5'),
+    node(2, '${AFTER_E5}', 'e7e5', 'e5', 20, 'g1f3')];
+  window.site = { analysis: {
+    node: { fen: '${AFTER_E5}' }, tree: { root: { fen: '${START}' } }, mainline: line(),
+    study: { data: { id: 'oxFixt01', chapter: { id: 'chapter1' } }, vm: { chapterId: 'chapter1' },
+      members: { canContribute: () => true } },
+  } };
+  window.__oxNextChapter = () => { site.analysis.study.vm.chapterId = 'chapter2'; site.analysis.mainline = line(); };
+</script></body>`;
 // The explorer with its settings open (the gear), as lila draws it.
 const explorerSettings = explorerPage.replace('explorer-box sub-box', 'explorer-box sub-box explorer__config')
   .replace('<div class="data">', '<div class="config">');
@@ -676,6 +697,25 @@ await page.waitForTimeout(1000);
 record('study from a position', await page.evaluate(fen => globalThis.OX.state.position?.fen === fen
   && globalThis.OX.currentLine() === null, SETUP_FEN),
   "study from a set-up position: the position is Lichess's own, not the normal start");
+
+// Annotate chapter: what it said about one chapter's publish must not stay
+// on screen in the next chapter.
+await context.route('https://lichess.org/study/oxFixt01', route =>
+  route.fulfill({ status: 200, contentType: 'text/html', body: studyAnnotate }));
+await context.route('https://lichess.org/analysis/publish', route => route.fulfill({ status: 200, body: '' }));
+await open('https://lichess.org/study/oxFixt01');
+{
+  const bar = () => page.evaluate(() => document.querySelector('[data-ox-host=annotate]')?.shadowRoot?.querySelector('.ox')?.innerText || '');
+  const shown = await bar();
+  record('annotate', /2 of 2 moves/.test(shown), `annotate: a fully analysed chapter can be annotated ("${shown.split('\n')[0]}")`);
+  await page.evaluate(() => [...document.querySelector('[data-ox-host=annotate]').shadowRoot.querySelectorAll('button')]
+    .find(b => /annotate/i.test(b.textContent))?.click());
+  await page.waitForTimeout(800);
+  record('annotate', /Annotated/.test(await bar()), 'annotate: publishing says it was annotated');
+  await page.evaluate(() => window.__oxNextChapter());
+  await page.waitForTimeout(2000);
+  record('annotate', !/Annotated/.test(await bar()), 'annotate: another chapter does not repeat the last chapter’s result');
+}
 
 await open('https://lichess.org/ox-fixture/explorer');
 record('explorer', await page.evaluate(() => getComputedStyle(document.querySelector('.explorer-title .player')).display === 'none'),

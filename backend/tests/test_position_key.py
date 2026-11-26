@@ -11,7 +11,6 @@ import chess
 
 from position_key import (
     START_KEY,
-    key_from_fen,
     key_from_san_path,
     position_key,
 )
@@ -77,20 +76,6 @@ class PositionKeyTests(unittest.TestCase):
         pinned.push_san("c5")
         self.assertEqual(position_key(legal).split()[3], "c6")
         self.assertEqual(position_key(pinned).split()[3], "-")
-
-    def test_key_from_fen_normalizes_an_unplayable_en_passant_square(self):
-        # A FEN from outside the app can claim an en-passant square that no pawn
-        # can actually use; it must key to the same position as one without.
-        claimed = key_from_fen("8/8/8/KPp4r/8/8/8/7k w - c6 0 2")
-        plain = key_from_fen("8/8/8/KPp4r/8/8/8/7k w - - 0 2")
-        self.assertEqual(claimed, plain)
-
-    def test_key_from_fen_is_idempotent_on_a_key(self):
-        self.assertEqual(key_from_fen(START_KEY), START_KEY)
-
-    def test_key_from_fen_rejects_junk(self):
-        with self.assertRaises(ValueError):
-            key_from_fen("not a fen")
 
     def test_start_key_matches_an_empty_path(self):
         self.assertEqual(key_from_san_path(""), START_KEY)

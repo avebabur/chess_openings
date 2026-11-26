@@ -7,7 +7,6 @@ engine (the only Stockfish it runs).
 import asyncio
 import logging
 import os
-import re
 import sys
 import tempfile
 from datetime import datetime, timezone
@@ -348,19 +347,6 @@ def extension_build():
     for name in ("manifest.json", "settings.html", "settings.js", "settings.css"):
         newest = max(newest, os.path.getmtime(os.path.join(root, name)))
     return {"build": int(newest)}
-
-
-@api.get("/games/by-link")
-def game_by_link(url: str = Query(min_length=8, max_length=300)):
-    """The imported game a Lichess game page belongs to (the extension's game
-    card on one of your own Lichess games)."""
-    lichess = re.search(r"lichess\.org/(?:game/)?([A-Za-z0-9]{8})(?:[A-Za-z0-9]{4})?(?:[/?#]|$)", url)
-    if not lichess:
-        raise HTTPException(400, "Not a Lichess game address")
-    game = db.find_game_by_external_id("lichess", lichess.group(1))
-    if not game:
-        raise HTTPException(404, "That Lichess game has not been imported yet")
-    return game
 
 
 @api.get("/position-games")

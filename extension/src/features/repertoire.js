@@ -70,7 +70,7 @@
     anchors: ['side'],
     needsPosition: true,
     order: 3,
-    place: { anchor: 'side', where: 'append', tab: true },
+    place: { anchor: 'side', where: 'append' },
 
     create(host, root) {
       root.classList.add('card', 'rep');

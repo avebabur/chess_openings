@@ -44,19 +44,6 @@ def position_key(board):
     return board.epd()
 
 
-def key_from_fen(fen):
-    """The position key for a FEN string.
-
-    Goes through ``chess.Board`` rather than slicing off four fields, because a
-    FEN from outside this app can carry an en-passant square that is recorded
-    but not actually playable; parsing normalizes it away so such a FEN keys to
-    the same position as the identical board without it. Accepts a bare EPD too,
-    so calling this on an already-normalized key is a no-op.
-
-    Raises ``ValueError`` on an unparseable FEN, same as ``chess.Board``.
-    """
-    return chess.Board(fen).epd()
-
 
 def _san_tokens(sans):
     if isinstance(sans, str):

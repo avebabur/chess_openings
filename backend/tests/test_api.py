@@ -106,15 +106,6 @@ class ApiContractTests(unittest.TestCase):
         res = self.client.get("/api/health", headers={"Host": "127.0.0.1:8001"})
         self.assertEqual(res.status_code, 200)
 
-    def test_an_address_that_is_not_a_lichess_game_is_refused(self):
-        res = self.client.get("/api/games/by-link", params={"url": "https://www.chess.com/game/live/123456"})
-        self.assertEqual(res.status_code, 400)
-
-    def test_a_lichess_game_page_finds_the_imported_game(self):
-        res = self.client.get("/api/games/by-link", params={"url": "https://lichess.org/game/NxSwb2Nq#18"})
-        self.assertEqual(res.status_code, 404)
-        self.assertIn("Lichess", res.json()["detail"])
-
     def test_adding_an_account_that_does_not_exist_creates_nothing(self):
         # A typo used to become a dead "0 games · never synced" account.
         with patch.object(self.main.game_import, "account_exists", return_value=False), \

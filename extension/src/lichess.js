@@ -21,7 +21,6 @@
     // Practice with computer from the current position (runs on your
     // Stockfish once it is Lichess's chosen engine).
     practice: () => command('practice'),
-    flip: () => command('flip'),
     // Lichess's engine bar searches the position on the board again.
     restartCeval: () => command('restartCeval'),
     // The position on the board and the one the board started from, as

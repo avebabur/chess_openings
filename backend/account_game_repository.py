@@ -382,16 +382,3 @@ def get_game(game_id):
     return dict(row) if row else None
 
 
-def find_game_by_external_id(source, external_id):
-    """`{id, ...metadata}` of an imported game by its site id (Lichess: the
-    8-character game id), or None."""
-    conn = get_db()
-    try:
-        row = conn.execute(
-            "SELECT id, white, black, result, date, end_time, user_color, user_rating, "
-            "opp_rating, time_class, time_control, eco, opening, source "
-            "FROM games WHERE source = ? AND external_id = ? LIMIT 1",
-            (source, external_id)).fetchone()
-    finally:
-        conn.close()
-    return dict(row) if row else None

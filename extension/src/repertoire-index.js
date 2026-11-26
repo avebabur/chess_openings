@@ -159,32 +159,5 @@
     return `${from ? '… ' : ''}${numberFrom(from, sans.slice(from, to))}${to < sans.length ? ' …' : ''}`;
   }
 
-  const plain = name => (name || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-
-  // Many lines share a name ("Caro-Kann Defense" twice). For those: the moves
-  // where each one parts from the others of its name. Map(branch id -> text).
-  function tellApart(branches) {
-    const groups = new Map();
-    for (const branch of branches) {
-      const key = `${branch.color} ${plain(branch.name)}`;
-      if (!groups.has(key)) groups.set(key, []);
-      groups.get(key).push(branch);
-    }
-    const out = new Map();
-    for (const group of groups.values()) {
-      if (group.length < 2) continue;
-      let shared = Math.min(...group.map(b => b.sans.length));
-      for (let i = 0; i < shared; i++) {
-        if (group.some(b => b.sans[i] !== group[0].sans[i])) { shared = i; break; }
-      }
-      for (const branch of group) {
-        const from = Math.max(0, Math.min(shared, branch.sans.length - 1));
-        const shown = branch.sans.slice(from, from + 4);
-        out.set(branch.id, numberFrom(from, shown) + (from + shown.length < branch.sans.length ? ' …' : ''));
-      }
-    }
-    return out;
-  }
-
-  OX.rep = { START, replay, buildIndex, sorted, mainLine, leftAt, extensions, otherOrder, numberFrom, excerpt, tellApart, plain };
+  OX.rep = { START, replay, buildIndex, sorted, mainLine, leftAt, extensions, otherOrder, numberFrom, excerpt };
 })();

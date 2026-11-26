@@ -158,7 +158,6 @@ from account_game_repository import (  # noqa: E402,F401
     create_account,
     create_sync_job,
     delete_account,
-    find_game_by_external_id,
     get_account,
     get_game,
     get_game_summaries,

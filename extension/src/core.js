@@ -72,20 +72,6 @@
     return fields.slice(0, 4).join(' ');
   };
 
-  // "+0.20", "-1.35", "#3", "#-2" from a White-POV eval (mates are ±(1000+n)).
-  OX.formatEval = value => {
-    if (value == null || Number.isNaN(value)) return '–';
-    if (Math.abs(value) >= 1000) {
-      const n = Math.round(Math.abs(value) - 1000);
-      return value > 0 ? `#${n}` : `#-${n}`;
-    }
-    return (value > 0 ? '+' : '') + value.toFixed(2);
-  };
-
-  // Opening names imported from chess.com before the importer was fixed can
-  // end in a dangling "with" ("Modern Defense with" for "…with 1.d4").
-  OX.openingName = name => (name || '').replace(/\s+with$/i, '');
-
   // SAN moves with numbers, starting from the position in fen.
   OX.numberMoves = (fen, sans) => {
     const parts = fen.split(' ');
@@ -363,9 +349,7 @@
     const anchorShown = anchorEl && anchorEl.getClientRects().length > 0;
     const shown = entry.host.getClientRects().length > 0 &&
       (entry.host.getBoundingClientRect().height > 0 || feature.place.zeroHeightOk);
-    // A panel tab that isn't the open one (features/sidetabs.js) is fine.
-    const closedTab = feature.place.tab && entry.host.style.display === 'none';
-    if (!anchorShown || shown || closedTab) { entry.hiddenSince = null; return true; }
+    if (!anchorShown || shown) { entry.hiddenSince = null; return true; }
     entry.hiddenSince = entry.hiddenSince || Date.now();
     return Date.now() - entry.hiddenSince < HIDDEN_MS;
   }
@@ -511,7 +495,6 @@
     OX.bridge.api('GET', '/health').then(() => {
       OX.state.offline = false;
       for (const entry of run.values()) if (entry.host) entry.needsUpdate = true;
-      OX.emit('online');
     }).catch(() => {});
   }
 
