@@ -50,7 +50,7 @@ run live-lock-test      node extension/scripts/live-lock-test.mjs
 run sync-test           node extension/scripts/sync-test.mjs
 run repertoire-test     node extension/scripts/repertoire-test.mjs
 run engine-pacing-test  node extension/scripts/engine-pacing-test.mjs
-run study-publish-test  node extension/scripts/study-publish-test.mjs
+run annotate-test       node extension/scripts/annotate-test.mjs
 
 if [ "$FULL" = 1 ]; then
   echo "Full checks"

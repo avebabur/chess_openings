@@ -1,8 +1,8 @@
 """The local service behind the Lichess extension (extension/), on port 8001.
 
 It keeps your repertoire and your imported chess.com and Lichess games in
-chess_review.db, finds the mistakes in those games with Stockfish, and serves
-this Mac's Stockfish to Lichess as an external engine.
+chess_review.db, and serves this Mac's Stockfish to Lichess as an external
+engine (the only Stockfish it runs).
 """
 import asyncio
 import logging
@@ -36,8 +36,6 @@ os.environ.setdefault(
 import database as db  # noqa: E402
 import eco_openings  # noqa: E402  (offline move-sequence → opening-name recognizer)
 import stockfish  # noqa: E402  (where Stockfish is on this Mac)
-import game_analysis  # noqa: E402  (mistakes in the user's own games)
-import study_analysis  # noqa: E402  (new games, deeply analysed, into a Lichess study)
 import extension_health  # noqa: E402  (what the Lichess extension could not show)
 import idle_exit  # noqa: E402  (stops the service when the extension is gone)
 import lichess_engine_provider  # noqa: E402  (your Stockfish inside Lichess's own analysis)
@@ -46,7 +44,6 @@ from sync_service import AccountSyncService  # noqa: E402
 from services import ExternalApiClients, SQLiteService  # noqa: E402
 from account_game_repository import ActiveAccountSync  # noqa: E402
 from repertoire_repository import RepertoireConflict  # noqa: E402
-from evaluation_repository import DeepEvalStore  # noqa: E402
 
 # Route handlers that touch SQLite are plain `def`, not `async def`: FastAPI runs
 # those in its threadpool. As coroutines they ran on the event loop itself, so a
@@ -96,48 +93,8 @@ class LichessTokenInput(BaseModel):
     token: str = Field(default="", max_length=512)
 
 
-class StudyAnalysisSettings(BaseModel):
-    enabled: bool
-
-
-class PublishFailure(BaseModel):
-    status: int = Field(ge=0, le=999)
-    message: str = Field(default="", max_length=2000)
-
-
-class AnalysisStartInput(BaseModel):
-    game_id: int | None = Field(default=None, gt=0, lt=2**63)  # the one game to check
-    all: bool = False  # or: every game not checked yet
-
-
 # The names this service answers to ("testserver" is the test client's).
 ALLOWED_HOSTS = ["127.0.0.1", "localhost", "testserver"]
-
-# Games analysed on their own after a sync brings in new ones.
-AUTO_ANALYSE_MAX_GAMES = 10
-# start.sh turns this on: fetch new games when the app starts and every 10 min,
-# so My games on Lichess is never missing your latest games, and a chess.com
-# game reaches the study soon after it ends (a Lichess game is fetched as soon
-# as the extension sees it end: POST /study-analysis/game-ended).
-AUTO_SYNC_SECONDS = 10 * 60
-
-
-async def _auto_sync(sync_service):
-    while True:
-        try:
-            accounts = await run_in_threadpool(db.list_accounts)
-            now = datetime.now(timezone.utc)
-            for account in accounts:
-                last = account.get("last_synced_at")
-                if last:
-                    age = now - datetime.fromisoformat(last.replace(" ", "T")).replace(tzinfo=timezone.utc)
-                    if age.total_seconds() < AUTO_SYNC_SECONDS - 60:
-                        continue
-                await run_in_threadpool(sync_service.enqueue, account["id"])
-        except Exception as exc:  # network or DB trouble: try again next round
-            print(f"auto-sync: {exc}", file=sys.stderr)
-        await asyncio.sleep(AUTO_SYNC_SECONDS)
-
 
 def _validate_fen(fen):
     try:
@@ -154,70 +111,29 @@ async def lifespan(target_app):
     target_app.state.database.start()
     target_app.state.external_clients = ExternalApiClients()
     target_app.state.opening_tree_cache = ot.OpeningTreeCache()
-    target_app.state.game_analyzer = game_analysis.GameAnalyzer()
-    target_app.state.game_analyzer.hold(True)
     target_app.state.idle_exit = idle_exit.from_environment()
     # Starts paused (fail-closed): the extension says at once whether a game
     # is on in a Lichess tab (background.js tells it when it sees the app up).
     target_app.state.lichess_engine = lichess_engine_provider.LichessEngineProvider(
         on_activity=target_app.state.idle_exit.touch if target_app.state.idle_exit else None,
-        paused=True, saved_evals=DeepEvalStore())
-    # New games into a study: analysed on that same Stockfish (one process,
-    # one hash), only while Lichess is not using it.
-    clients = target_app.state.external_clients
-    provider, loop = target_app.state.lichess_engine, asyncio.get_running_loop()
-    target_app.state.study_analyzer = study_analysis.StudyAnalyzer(
-        clients.http,
-        tablebase=lambda fen: clients.tablebase(fen, _external_network_allowed()),
-        allow_network=_external_network_allowed(),
-        searcher_factory=lambda: study_analysis.SharedSearch(provider, loop),
-        saved_evals=DeepEvalStore())
-
-    def analyse_new_games(account_id, imported):
-        """Search the games a sync just brought in for mistakes. Capped, so a
-        first import of a thousand games does not keep the engine busy for
-        hours; the rest can be checked one by one from the game's card."""
-        target_app.state.study_analyzer.wake()
-        if os.environ.get("OPENINGS_AUTO_ANALYSE", "1") != "1":
-            return
-        clients = target_app.state.external_clients
-        allow_network = _external_network_allowed()
-        try:
-            target_app.state.game_analyzer.start(
-                tablebase=lambda fen: clients.tablebase(fen, allow_network),
-                account_id=account_id, count=min(imported, AUTO_ANALYSE_MAX_GAMES),
-                queue=True)
-        except game_analysis.AnalysisError:
-            pass  # no Stockfish: the game's card says so when asked
+        paused=True)
 
     target_app.state.sync_service = AccountSyncService(
         invalidate_cache=target_app.state.opening_tree_cache.invalidate,
         import_client=target_app.state.external_clients.import_client,
-        on_imported=analyse_new_games,
     )
-    auto_sync = None
     idle_watch = None
     try:
         target_app.state.sync_service.start()
-        if os.environ.get("OPENINGS_STUDY_ANALYSIS", "1") == "1":
-            target_app.state.study_analyzer.start()
         target_app.state.lichess_engine.start()
         if target_app.state.idle_exit:
             target_app.state.idle_exit.touch()
             idle_watch = asyncio.get_running_loop().create_task(target_app.state.idle_exit.run())
-        auto_sync = (asyncio.get_running_loop().create_task(_auto_sync(target_app.state.sync_service))
-                     if os.environ.get("OPENINGS_AUTO_SYNC") == "1" else None)
         yield
     finally:
-        if auto_sync:
-            auto_sync.cancel()
         if idle_watch:
             idle_watch.cancel()
-        # The study analysis first, with the event loop still running: its
-        # search is stopped there (the engine is the provider's).
-        await asyncio.to_thread(target_app.state.study_analyzer.shutdown)
         await target_app.state.lichess_engine.stop()
-        target_app.state.game_analyzer.shutdown()
         target_app.state.sync_service.shutdown()
         target_app.state.external_clients.close()
         target_app.state.database.close()
@@ -348,10 +264,6 @@ async def opening_tree(
     return node
 
 
-def _external_network_allowed():
-    return os.environ.get("OPENINGS_DISABLE_EXTERNAL_NETWORK") != "1"
-
-
 class ExtensionHealthInput(BaseModel):
     page_kind: Literal["analyse", "round", "other"]
     # Long on purpose: a game opened from My games has all its moves in its
@@ -386,10 +298,7 @@ class EnginePauseInput(BaseModel):
 @api.put("/lichess-engine/paused")
 async def lichess_engine_pause(input: EnginePauseInput, request: Request):
     """The extension's live-game lock: while a game is in progress in any
-    Lichess tab, your Stockfish answers Lichess with nothing, and checking your
-    old games for mistakes waits (Stockfish goes quiet)."""
-    request.app.state.game_analyzer.hold(input.paused)
-    request.app.state.study_analyzer.hold(input.paused)
+    Lichess tab, your Stockfish answers Lichess with nothing."""
     await request.app.state.lichess_engine.set_paused(input.paused)
     return {"paused": request.app.state.lichess_engine.paused}
 
@@ -479,106 +388,12 @@ def position_games(
     return {"total": len(found), "games": games, "revision": current_revision}
 
 
-def _analysis_status(request):
-    return {**request.app.state.game_analyzer.status(),
-            **game_analysis.game_counts()}
-
-
-@api.get("/analysis")
-def analysis_status(request: Request):
-    """Background analysis progress and the total and unchecked game counts."""
-    return _analysis_status(request)
-
-
-@api.post("/analysis", status_code=202)
-def analysis_start(input: AnalysisStartInput, request: Request):
-    """Search one game (`game_id`) or every unchecked game (`all`) for the
-    user's mistakes, in the background, after the games already being
-    searched. Poll GET /analysis for progress."""
-    if input.all == (input.game_id is not None):
-        raise HTTPException(422, "Give either game_id or all")
-    if input.game_id is not None and not db.get_game(input.game_id):
-        raise HTTPException(404, "Game not found")
-    clients = request.app.state.external_clients
-    allow_network = _external_network_allowed()
-    chosen = ({"count": game_analysis.CHECK_ALL_LIMIT, "queue": True} if input.all
-              else {"game_ids": [input.game_id]})
-    try:
-        request.app.state.game_analyzer.start(
-            tablebase=lambda fen: clients.tablebase(fen, allow_network), **chosen)
-    except game_analysis.AnalysisError as exc:
-        raise HTTPException(503, str(exc))
-    return _analysis_status(request)
-
-
-@api.delete("/analysis")
-def analysis_stop(request: Request):
-    """Stop checking games. The game in progress is dropped; the ones already
-    checked are kept."""
-    request.app.state.game_analyzer.stop()
-    return _analysis_status(request)
-
-
-@api.get("/study-analysis")
-def study_analysis_status(request: Request):
-    """New games on their way to your Lichess study: the study, what is being
-    analysed now, and the latest games with their state."""
-    return {**study_analysis.overview(), "now": request.app.state.study_analyzer.status()}
-
-
-@api.put("/study-analysis")
-def study_analysis_settings(input: StudyAnalysisSettings, request: Request):
-    study_analysis.set_enabled(input.enabled)
-    request.app.state.study_analyzer.wake()
-    return study_analysis_status(request)
-
-
-@api.post("/study-analysis/games/{game_id}", status_code=202)
-def study_analysis_queue(request: Request, game_id: int = Path(gt=0, lt=2**63)):
-    """Send one imported game to the study (again)."""
-    if not study_analysis.queue_game(game_id):
-        raise HTTPException(404, "Game not found")
-    request.app.state.study_analyzer.wake()
-    return study_analysis_status(request)
-
-
-@api.post("/study-analysis/game-ended", status_code=202)
-def study_analysis_game_ended(request: Request):
-    """The extension saw a game end in a Lichess tab: fetch the new games now
-    rather than at the next timed sync."""
-    if not study_analysis.enabled():
-        return {"queued": 0}
-    jobs = [request.app.state.sync_service.enqueue(a["id"]) for a in db.list_accounts()]
-    return {"queued": len([job for job in jobs if job])}
-
-
-@api.get("/study-analysis/ready")
-def study_analysis_ready():
-    """Analyses for the extension to publish from a Lichess tab."""
-    return study_analysis.ready_to_publish()
-
-
-@api.post("/study-analysis/{game_id}/published")
-def study_analysis_published(game_id: int = Path(gt=0, lt=2**63)):
-    if not study_analysis.mark_published(game_id):
-        raise HTTPException(404, "No analysis waiting for that game")
-    return {"ok": True}
-
-
-@api.post("/study-analysis/{game_id}/publish-failed")
-def study_analysis_publish_failed(input: PublishFailure, game_id: int = Path(gt=0, lt=2**63)):
-    if not study_analysis.publish_failed(game_id, input.status, input.message):
-        raise HTTPException(404, "No analysis waiting for that game")
-    return {"ok": True}
-
-
 @api.get("/games/{game_id}")
 def get_game(game_id: int = Path(gt=0, lt=2**63)):
-    """Full game including PGN and the mistakes found in it."""
+    """Full game including PGN."""
     game = db.get_game(game_id)
     if not game:
         raise HTTPException(404, "Game not found")
-    game["mistakes"] = game_analysis.mistakes_for_game(game["id"])
     return game
 
 

@@ -2,7 +2,6 @@
 import httpx
 
 import database
-import lichess_tablebase
 
 
 class SQLiteService:
@@ -28,9 +27,6 @@ class ExternalApiClients:
 
     def __init__(self):
         self.http = httpx.Client(follow_redirects=True)
-
-    def tablebase(self, fen, allow_network=True):
-        return lichess_tablebase.get_tablebase(fen, allow_network, client=self.http)
 
     @property
     def import_client(self):

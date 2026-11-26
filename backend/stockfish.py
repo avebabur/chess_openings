@@ -1,7 +1,7 @@
 """Where this Mac's Stockfish is, and whether it can be run.
 
-Used by the Lichess external-engine link (lichess_engine_provider.py) and by
-the search for mistakes in your games (game_analysis.py).
+Used by the Lichess external-engine link (lichess_engine_provider.py), the
+only place Stockfish runs.
 """
 import os
 

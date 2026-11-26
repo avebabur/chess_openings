@@ -36,6 +36,7 @@ you find the test or write one.
 
 | Date | Area | Sev | Bug | Found by | Test |
 |---|---|---|---|---|---|
+| 2026-11-26 | layout | low | The new Annotate chapter bar printed "nullnull" under its button: empty lines passed as null to replaceChildren(), which writes them as text | real Chrome before release | none: only visible in a real Lichess page |
 | 2026-11-25 | engine | med | Study analysis stopped sharp positions at depth 26-27, below the promised 32: each position had at most 120 s, and the position after 11. g4 in a real game needs about 300 s on four threads. The cap is now 600 s | real run in Chrome | none: depends on real Stockfish's speed on this Mac |
 | 2026-11-25 | service | med | "Try again" on a failed study game would have imported it into the study a second time. It now keeps its chapter and the positions already analysed; a chapter Lichess no longer has (404) is added anew | code review during the real run | `test_study_analysis.py` |
 | 2026-11-25 | service | med | Lichess refused to publish a study analysis ("nodesPerMove error.expected.int"): the cloud's node counts, billions at depth 60-75, were averaged in. Now only your engine's nodes count, capped to a 32-bit number | real publish to Lichess | `test_study_analysis.py` |

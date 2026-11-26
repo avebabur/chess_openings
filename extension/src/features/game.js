@@ -1,8 +1,7 @@
-// One of your games: who, when, the result, and the mistakes your app found
-// in it, in the left column. Shown on the analysis board of a game opened
-// from My games, and on the page of one of your own Lichess games (there
-// Lichess already shows who and when, so only the mistakes). A game not yet
-// checked gets a button to check just that one game with your Stockfish.
+// One of your games, in the left column: who, when and the result, and
+// Practice from here. Shown on the analysis board of a game opened from My
+// games, and on the page of one of your own Lichess games (there Lichess
+// already shows who and when, so only the Practice button).
 (() => {
   const OX = globalThis.OX;
   const KEY = 'ox.game';
@@ -69,8 +68,7 @@
 
   // Brings in your newest games from every account (chess.com and Lichess),
   // as the app's Sync button does. Reports partial failures as well as games
-  // imported by the accounts that did finish. The app checks new games for
-  // mistakes on its own after a sync.
+  // imported by the accounts that did finish.
   let syncing = null;
   OX.syncGames = (onProgress = () => {}) => {
     if (syncing) return syncing;
@@ -120,26 +118,10 @@
   };
   OX.syncErrorText = error => (error.offline ? OX.offlineText() : error.status ? "Couldn't sync your games." : error.message);
 
-  const moveLabel = (ply, san) => `${Math.floor(ply / 2) + 1}${ply % 2 ? '…' : '.'} ${san}`;
-  // An evaluation as Lichess writes it, from White's side: +1.3, −0.4, #3 (White
-  // mates in 3), #-3, and 1-0 / 0-1 for a position that is simply won (the
-  // tablebase's verdict, or mate on the board). The app stores evaluations
-  // from YOUR side (10000 = won, 10000 − n = mate in n), so Black's are turned round.
-  const evalText = (cp, color) => {
-    const white = color === 'black' ? -cp : cp;
-    const size = Math.abs(white);
-    if (size >= 10000) return white > 0 ? '1-0' : '0-1';
-    if (size >= 9000) return `#${white > 0 ? '' : '-'}${10000 - size}`;
-    const pawns = (size / 100).toFixed(1);
-    return `${pawns === '0.0' ? '' : white > 0 ? '+' : '−'}${pawns}`;
-  };
-  const seconds = n => (n >= 90 ? `${Math.round(n / 60)} min` : `${Math.max(5, Math.round(n / 5) * 5)} s`);
-
   function current() {
     try {
       const path = decodeURIComponent(location.pathname);
-      // As a number, like the app's own ids: the check's progress is told
-      // apart from another game's by comparing the two.
+      // As a number, like the app's own ids.
       const savedInTab = JSON.parse(sessionStorage.getItem(`${KEY}:${path}`) || 'null');
       // Older tabs stored just the id.
       if (typeof savedInTab === 'number' && savedInTab > 0) return { id: savedInTab };
@@ -177,7 +159,6 @@
       let alive = true;
       const show = () => { root.style.display = ''; OX.sidePanel.set('game', { available: true }); };
       let gameId = saved?.id;
-      let polling = null;
       let wanted = true; // load() is still to run (first time, or again once the app is back)
       let importedTags = saved?.studyTags;
 
@@ -206,54 +187,6 @@
           gameId = null; // not one of your imported games: show nothing
         }
         return gameId;
-      }
-
-      // Checks this game, saying how far it has got: "Checking… move 12 of 48,
-      // about 25 s left", or which game is being checked first.
-      async function checkThisGame(button) {
-        button.disabled = true;
-        button.textContent = 'Starting the check…';
-        try {
-          await OX.bridge.api('POST', '/analysis', { game_id: gameId });
-        } catch (error) {
-          button.textContent = error.offline ? OX.offlineText() : "Couldn't start the check.";
-          button.disabled = false;
-          return;
-        }
-        if (alive) watchCheck(button, true);
-      }
-
-      // Shows how the check of this game is going until it is done. Also
-      // picks up a check started earlier (the box is drawn again after a
-      // live game in another tab, or the page was reloaded meanwhile).
-      function watchCheck(button, requested = false) {
-        button.disabled = true;
-        clearTimeout(polling);
-        let ownSince = 0;     // when this game's turn came
-        let ownStartedAt = 0; // ...and how many moves were done then
-        const wait = async () => {
-          const status = await OX.bridge.api('GET', '/analysis').catch(() => null);
-          if (!alive) return;
-          // Not heard this time (the app busy, or restarting): ask again.
-          if (!status) { polling = setTimeout(wait, 2000); return; }
-          const own = status?.running && status.game_id === gameId;
-          // Done: nothing is running any more, or the run has moved on to another game.
-          if (!status.running || (ownSince && !own)) {
-            const failed = status.error && (requested || ownSince);
-            return load(failed ? 'Stockfish could not finish the check. You can try again.' : '');
-          }
-          if (own) {
-            const { moves_done: done, moves_total: total } = status;
-            if (!ownSince) { ownSince = Date.now(); ownStartedAt = done; }
-            const rate = (done - ownStartedAt) / ((Date.now() - ownSince) / 1000);
-            const left = done - ownStartedAt >= 3 && rate > 0 ? `, about ${seconds((total - done) / rate)} left` : '';
-            button.textContent = total ? `Checking… move ${Math.min(done + 1, total)} of ${total}${left}` : 'Checking…';
-          } else {
-            button.textContent = `Waiting: checking ${status.title || 'another game'} first…`;
-          }
-          polling = setTimeout(wait, 1000);
-        };
-        polling = setTimeout(wait, 500);
       }
 
       // A Lichess game of yours the app hasn't imported yet (just played):
@@ -287,7 +220,7 @@
         body.replaceChildren(note, OX.el('div', { class: 'btns' }, button));
       }
 
-      async function load(checkError = '') {
+      async function load() {
         wanted = false;
         if (!(await find())) {
           if (onLichessGame && !wanted && alive) offerSync();
@@ -310,23 +243,6 @@
         const result = resultFor(game);
         const opponent = (game.user_color === 'white' ? game.black : game.white) || 'the computer';
         const label = `vs ${opponent}`;
-        const mistakes = game.mistakes || [];
-        // A row jumps to the position before the mistake.
-        const list = mistakes.map(m => OX.el('button', {
-          type: 'button', class: 'mistake',
-          title: "Go to the position before this move.\nThe evaluation before → after it, from White's side, as on Lichess's bar.",
-          onclick: () => OX.lichess.jumpToPly(m.ply),
-        },
-        OX.el('span', { class: 'san', text: moveLabel(m.ply, m.played_san) }),
-        OX.el('span', { class: 'dim grow', text: `${evalText(m.cp_before, game.user_color)} → ${evalText(m.cp_after, game.user_color)}` }),
-        OX.el('span', { class: 'dim', text: `best ${m.best_san}` })));
-        const check = OX.el('button', { class: 'btn primary', text: 'Check with your Stockfish' });
-        check.addEventListener('click', () => checkThisGame(check));
-        if (!game.mistakes_analyzed_at) {
-          OX.bridge.api('GET', '/analysis').then(status => {
-            if (alive && status?.running && status.game_id === gameId && check.isConnected) watchCheck(check);
-          }).catch(() => {});
-        }
         const rating = value => (value ? ` (${value})` : '');
         body.className = '';
         body.replaceChildren(
@@ -338,16 +254,7 @@
             OX.el('div', { class: 'dim small', text: [`You${rating(game.user_rating)} as ${game.user_color}`, game.time_class, game.date].filter(Boolean).join(' · ') }),
             game.opening ? OX.el('div', { class: 'dim small ellipsis', title: OX.openingName(game.opening), text: OX.openingName(game.opening) }) : null,
           ].filter(Boolean)),
-          OX.el('div', { class: 'subhead', style: onLichessGame ? 'margin-top: 0' : null }, 'Your mistakes',
-            mistakes.length ? OX.el('span', { class: 'dim', text: String(mistakes.length) }) : null),
-          mistakes.length
-            ? OX.el('div', { class: 'list' }, list)
-            : OX.el('div', { class: 'dim row', text: game.mistakes_analyzed_at ? 'Your Stockfish found none in this game.' : 'Not checked yet.' }),
-          ...(!game.mistakes_analyzed_at && checkError
-            ? [OX.el('div', { class: 'bad row', role: 'status', text: checkError })] : []),
-          // Stays in view while a long list of mistakes scrolls.
-          OX.el('div', { class: 'btns sticky' },
-            game.mistakes_analyzed_at ? null : check,
+          OX.el('div', { class: 'btns', style: onLichessGame ? 'margin-top: 0' : null },
             OX.el('button', {
               class: 'btn', title: "Lichess's Practice with computer, on your Stockfish, from the position on the board",
               onclick: () => {
@@ -367,7 +274,6 @@
         update() { if (wanted) load(); },
         destroy() {
           alive = false;
-          clearTimeout(polling);
           document.removeEventListener('formdata', addStudyTags);
           OX.sidePanel.set('game', { available: false });
         },

@@ -101,11 +101,6 @@ def bad_input():
         ("DELETE", "/repertoire/tree/branches/999999"),
         ("DELETE", "/repertoire/tree/branches/999999", {"name": "x", "label": "main", "moves_san": ""}),
         ("DELETE", "/repertoire/tree/branches/abc"),
-        ("POST", "/analysis", {}),
-        ("POST", "/analysis", {"game_id": 1, "all": True}),
-        ("POST", "/analysis", {"game_id": 99999999}),
-        ("POST", "/analysis", {"game_id": "x"}),
-        ("POST", "/analysis", {"game_id": 2**63}),
         ("PUT", "/lichess-engine/paused", {"paused": "maybe"}),
         ("PUT", "/lichess-engine/paused", {}),
         ("PUT", "/settings/lichess-token", {"token": "x" * 513}),
@@ -245,9 +240,8 @@ def main():
             original.close()
         log_path = os.path.join(folder, "service.log")
         env = {**os.environ, "CHESS_DB_PATH": db_path, "OPENINGS_LICHESS_ENGINE": "0",
-               "OPENINGS_DISABLE_EXTERNAL_NETWORK": "1", "OPENINGS_AUTO_ANALYSE": "0",
+               "OPENINGS_DISABLE_EXTERNAL_NETWORK": "1",
                "OPENINGS_EXTENSION_HEALTH_PATH": os.path.join(folder, "health.json")}
-        env.pop("OPENINGS_AUTO_SYNC", None)
         env.pop("OPENINGS_IDLE_EXIT_SECONDS", None)
         with open(log_path, "w") as log:
             service = subprocess.Popen(

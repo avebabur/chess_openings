@@ -69,10 +69,6 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 .list { margin: 8px -16px 0; }
 .list > * { display: flex; align-items: center; gap: 10px; box-sizing: border-box; width: 100%; padding: 6px 16px; text-align: left; }
 .list > :nth-child(odd) { background: var(--c-bg-zebra, rgba(127,127,127,.08)); }
-.list > .mistake { cursor: pointer; }
-.list > .mistake:hover { background: var(--c-bg-zebra2, rgba(127,127,127,.16)); }
-.ox .list > .mistake:focus-visible { outline-offset: -2px; }
-.mistake .san { flex: 0 0 auto; min-width: 5.2em; font-weight: 700; color: var(--c-font-clear, inherit); }
 .subhead { display: flex; align-items: baseline; gap: 6px; margin-top: 12px; font-weight: 600; color: var(--c-font-clear, inherit); }
 .subhead .dim { font-weight: 400; }
 

@@ -3,10 +3,57 @@
 // lila ui/analyse/src/analyse.ts). The extension's other scripts live in an
 // isolated world: they ask for an action with an "ox-lichess" event and read
 // whether it worked from <html data-ox-result> right after (events are
-// handled synchronously; "position" also leaves its answer in
-// <html data-ox-value>). Only these actions are allowed.
+// handled synchronously; "position" and "annotationData" also leave their
+// answer in <html data-ox-value>; "publishAnalysis" answers later with an
+// "ox-lichess-reply" event). Only these actions are allowed.
 (() => {
-  const ALLOWED = new Set(['playUci', 'playUciList', 'jumpToMain', 'userJump', 'practice', 'flip', 'restartCeval', 'position']);
+  const ALLOWED = new Set(['playUci', 'playUciList', 'jumpToMain', 'userJump', 'practice', 'flip', 'restartCeval', 'position',
+    'annotationData', 'publishAnalysis']);
+  const isNum = value => typeof value === 'number' && Number.isFinite(value);
+
+  // A study chapter's main line with the result Lichess holds for each
+  // position (your engine's at the depth it reached, or the cloud's), for
+  // src/annotate-core.js. null outside a study.
+  function annotationData(ctrl) {
+    const study = ctrl.study;
+    if (!study || !Array.isArray(ctrl.mainline)) return null;
+    return {
+      studyId: study.data && study.data.id,
+      chapterId: (study.vm && study.vm.chapterId) || (study.data && study.data.chapter && study.data.chapter.id),
+      user: document.body.dataset.user || '',
+      canContribute: !!(study.members && study.members.canContribute && study.members.canContribute()),
+      nodes: ctrl.mainline.map(node => {
+        const e = node.ceval;
+        const pv = e && e.pvs && e.pvs[0];
+        return {
+          ply: node.ply, fen: node.fen, uci: node.uci || null, san: node.san || null,
+          ceval: e && pv && Array.isArray(pv.moves) && pv.moves.length ? {
+            cp: isNum(e.cp) ? e.cp : null, mate: isNum(e.mate) ? e.mate : null, depth: e.depth || 0,
+            nodes: e.nodes || 0, engineId: e.engineId || null, cloud: !!e.cloud, pv: pv.moves.slice(0, 12),
+          } : null,
+          eval: node.eval && (isNum(node.eval.cp) || isNum(node.eval.mate))
+            ? { cp: isNum(node.eval.cp) ? node.eval.cp : null, mate: isNum(node.eval.mate) ? node.eval.mate : null,
+              best: node.eval.best || null }
+            : null,
+        };
+      }),
+    };
+  }
+
+  // Lichess's own Publish (lila: POST /analysis/publish, Study.postAnalysisXhr),
+  // made from this page so it carries your Lichess login. The answer comes
+  // back as an "ox-lichess-reply" event: { status, message }.
+  function publishAnalysis(analysis) {
+    const reply = detail => document.dispatchEvent(new CustomEvent('ox-lichess-reply',
+      { detail: JSON.stringify({ name: 'publishAnalysis', ...detail }) }));
+    fetch('/analysis/publish', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(analysis),
+    }).then(async response => reply({ status: response.status,
+      message: response.ok ? '' : (await response.text()).slice(0, 300) }))
+      .catch(error => reply({ status: 0, message: String(error) }));
+  }
   const paused = () => document.documentElement.hasAttribute('data-ox-paused');
   function handle(event) {
     let ok = false;
@@ -32,6 +79,18 @@
           const start = ctrl.tree && ctrl.tree.root && ctrl.tree.root.fen;
           if (typeof fen === 'string' && typeof start === 'string') {
             document.documentElement.setAttribute('data-ox-value', JSON.stringify({ fen, start }));
+            ok = true;
+          }
+        } else if (name === 'annotationData') {
+          const data = annotationData(ctrl);
+          if (data) {
+            document.documentElement.setAttribute('data-ox-value', JSON.stringify(data));
+            ok = true;
+          }
+        } else if (name === 'publishAnalysis') {
+          const analysis = args && args[0];
+          if (ctrl.study && /^\/study\//.test(location.pathname) && analysis && typeof analysis === 'object') {
+            publishAnalysis(analysis);
             ok = true;
           }
         } else if (name === 'restartCeval') {

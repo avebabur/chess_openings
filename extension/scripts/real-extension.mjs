@@ -36,10 +36,8 @@ const healthReports = [];
 let profileReads = 0;
 let removed = 0;
 let imported = 0;
-let analysisGames = 0;
 let syncStatus = 'running';
 let cancelRequests = 0;
-let checking = false;
 const service = createServer(async (req, res) => {
   const { pathname, searchParams } = new URL(req.url, 'http://localhost');
   const reply = (value, status = 200) => {
@@ -59,8 +57,6 @@ const service = createServer(async (req, res) => {
     case 'DELETE /api/sync-jobs/sync-1':
       cancelRequests += 1;
       return reply({ id: 'sync-1', status: syncStatus, cancel_requested: true }, 202);
-    case 'GET /api/analysis':
-      return reply({ running: checking, total_games: analysisGames, unchecked: analysisGames, done: 0, total: analysisGames });
     case 'GET /api/repertoire/tree':
       return reply({ color: searchParams.get('color'), root: { children: [] }, branches: [] });
     case 'POST /api/extension/health': {
@@ -166,7 +162,7 @@ try {
   await settings.waitForTimeout(2500);
   const text = (await settings.evaluate(() => document.body.innerText)).replace(/\s+/g, ' ');
   record(/Connected to the local service/.test(text), 'it reaches the app');
-  record(/games are checked|No games|checked/.test(text), 'it says how many games are checked');
+  record(/FixtureSync/.test(text), 'it lists the game accounts');
   await settings.screenshot({ path: join(outDir, 'real-settings.png'), fullPage: true });
   if (checkNarrow) {
     await settings.setViewportSize({ width: 390, height: 800 });
@@ -196,24 +192,10 @@ try {
     record(removed === 1, 'confirming after the poll removes only the fixture account once');
   }
 
-  analysisGames = 5;
-  const analysisCount = settings.getByText(/0 of 5 games are checked/);
-  const consistent = await analysisCount.waitFor({ timeout: 7500 }).then(() => true, () => false);
-  record(consistent && await settings.locator('#check-all').isVisible(),
-    'analysis counts stay consistent while the account profile still reports no imported games');
-
-  imported = analysisGames;
+  imported = 5;
   syncStatus = 'completed';
   const account = settings.locator('#accounts li').filter({ hasText: 'FixtureSync' });
   await account.getByText('5 games', { exact: true }).waitFor();
-  const checkStateUpdated = await analysisCount.waitFor({ timeout: 4000 }).then(() => true, () => false);
-  record(checkStateUpdated && await settings.locator('#check-all').isVisible(),
-    'an import started elsewhere updates the count of unchecked games and enables Check all');
-
-  // A sync reports completion before the worker has started its Stockfish run.
-  checking = true;
-  const checkStarted = await settings.locator('#check-stop').waitFor({ timeout: 7500 }).then(() => true, () => false);
-  record(checkStarted, 'a delayed automatic check shows up even after the sync stopped polling');
 
   // A different tab can also start a new sync after the settings page was idle.
   syncStatus = 'running';

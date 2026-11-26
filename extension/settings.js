@@ -105,7 +105,6 @@ function ago(stamp) {
 }
 
 const newGames = count => (count ? `${count} new game${count === 1 ? '' : 's'}` : 'up to date, no new games');
-const gameCount = current => (current?.accounts || []).reduce((total, account) => total + (account.games || 0), 0);
 const syncing = account => ['queued', 'running'].includes(account.sync_job?.status);
 
 // What the account's last sync did, for its row.
@@ -254,24 +253,21 @@ function reportFinishedSyncs() {
 
 function renderToken() {
   const hasToken = Boolean(profile?.has_lichess_token);
-  $('token-state').textContent = hasToken ? 'Token saved locally.' : 'No token saved. Your local Stockfish needs a Lichess token with engine access, and the study of your games one with study access.';
+  $('token-state').textContent = hasToken ? 'Token saved locally.' : 'No token saved. Your local Stockfish needs a Lichess token with engine access.';
   $('remove-token').hidden = !hasToken;
 }
 
-async function load(refreshChecks = false) {
+async function load() {
   clearTimeout(refreshTimer);
   const request = ++profileRequest;
   try {
     const next = await api('GET', '/profile');
     if (request !== profileRequest) return;
-    const gamesChanged = profile === null || gameCount(next) !== gameCount(profile);
-    const syncEnded = profile?.accounts.some(syncing) && !next.accounts.some(syncing);
     profile = next;
     connection.textContent = 'Connected to the local service';
     delete connection.dataset.error;
     renderAccounts();
     renderToken();
-    if (refreshChecks || gamesChanged || syncEnded) loadChecks();
     reportFinishedSyncs();
     refreshTimer = pollWhileVisible(load, profile.accounts.some(syncing) ? 1800 : IDLE_POLL_MS);
   } catch (error) {
@@ -282,152 +278,8 @@ async function load(refreshChecks = false) {
   }
 }
 
-// ---- checking games for mistakes ------------------------------------------
-const duration = seconds => {
-  const minutes = Math.max(1, Math.round(seconds / 60));
-  return minutes < 60 ? `${minutes} min` : `${Math.floor(minutes / 60)} h ${String(minutes % 60).padStart(2, '0')} min`;
-};
-const GUESS_SECONDS_A_GAME = 20; // until this run has checked a few itself
-let checkTimer = null;
-let checkRequest = 0;
-let checkRun = null; // { since, doneThen } of the run being watched
-
-async function loadChecks() {
-  clearTimeout(checkTimer);
-  const request = ++checkRequest;
-  let status;
-  try {
-    status = await api('GET', '/analysis');
-  } catch {
-    if (request === checkRequest) checkTimer = pollWhileVisible(loadChecks, 3000);
-    return;
-  }
-  if (request !== checkRequest) return;
-  const left = status.unchecked;
-  const total = status.total_games ?? Math.max(gameCount(profile), left);
-  $('check-all').hidden = status.running || !left;
-  $('check-stop').hidden = !status.running;
-  if (status.running) {
-    if (!checkRun) checkRun = { since: Date.now(), doneThen: status.done };
-    const done = status.done - checkRun.doneThen;
-    const each = done >= 2 ? (Date.now() - checkRun.since) / 1000 / done : GUESS_SECONDS_A_GAME;
-    const move = status.moves_total ? `, move ${Math.min(status.moves_done + 1, status.moves_total)} of ${status.moves_total}` : '';
-    $('check-state').textContent = status.held
-      ? `Waiting: a game is in progress on Lichess. Checking carries on when it ends (game ${Math.min(status.done + 1, status.total)} of ${status.total}).`
-      : `Checking game ${Math.min(status.done + 1, status.total)} of ${status.total}`
-        + `${status.title ? ` (${status.title}${move})` : ''}. About ${duration((status.total - status.done) * each)} left.`;
-    checkTimer = pollWhileVisible(loadChecks, 1500);
-    return;
-  }
-  checkRun = null;
-  if (status.error) message('check-message', status.error, true);
-  $('check-state').textContent = !total ? 'No games imported yet.'
-    : left ? `${(total - left).toLocaleString()} of ${total.toLocaleString()} games are checked. ${left.toLocaleString()} left: roughly ${duration(left * GUESS_SECONDS_A_GAME)} with your Stockfish.`
-      : `All ${total.toLocaleString()} games are checked.`;
-  checkTimer = pollWhileVisible(loadChecks, IDLE_POLL_MS);
-}
-
-$('check-all').addEventListener('click', async () => {
-  $('check-all').disabled = true;
-  try {
-    await api('POST', '/analysis', { all: true });
-    message('check-message', 'Keep this page or a Lichess tab open while it runs. Games already checked are kept if it stops.');
-  } catch (error) { message('check-message', error.message, true); }
-  finally { $('check-all').disabled = false; }
-  loadChecks();
-});
-$('check-stop').addEventListener('click', async () => {
-  try {
-    await api('DELETE', '/analysis');
-    message('check-message', 'Stopped. The games checked so far are kept.');
-  } catch (error) { message('check-message', error.message, true); }
-  setTimeout(loadChecks, 1200);
-});
-
-// ---- new games into a Lichess study --------------------------------------------
-const STUDY_STATES = {
-  queued: 'Waiting to be added to the study',
-  imported: 'In the study, waiting for analysis',
-  ready: 'Analysed, being published (needs an open Lichess tab)',
-  published: 'Analysed and published',
-  skipped: 'Skipped',
-  failed: 'Failed',
-};
-let studyTimer = null;
-
-function studyRow(game) {
-  const row = document.createElement('li');
-  row.className = 'study-game';
-  const text = document.createElement('div');
-  const name = document.createElement(game.chapter_id ? 'a' : 'span');
-  name.textContent = `${game.white} vs ${game.black}`;
-  if (game.chapter_id) {
-    name.href = `https://lichess.org/study/${game.study_id}/${game.chapter_id}`;
-    name.target = '_blank';
-    name.rel = 'noopener';
-  }
-  const meta = document.createElement('span');
-  meta.className = 'account-meta';
-  const site = game.source === 'chesscom' ? 'Chess.com' : 'Lichess';
-  meta.textContent = `${site} · ${STUDY_STATES[game.state] || game.state}${game.error ? ` — ${game.error}` : ''}`;
-  if (game.error && game.state !== 'published') meta.dataset.error = 'true';
-  text.append(name, meta);
-  row.append(text);
-  if (game.state === 'failed') {
-    row.append(button('Try again', async () => {
-      try { await api('POST', `/study-analysis/games/${game.game_id}`); } catch (error) { message('study-message', error.message, true); }
-      loadStudy();
-    }, 'quiet'));
-  }
-  return row;
-}
-
-async function loadStudy() {
-  clearTimeout(studyTimer);
-  let status;
-  try {
-    status = await api('GET', '/study-analysis');
-  } catch {
-    studyTimer = pollWhileVisible(loadStudy, 3000);
-    return;
-  }
-  $('study-enabled').checked = status.enabled;
-  const now = status.now || {};
-  const study = status.study_url ? 'Your study: ' : '';
-  const state = $('study-state');
-  state.textContent = '';
-  if (status.study_url) {
-    const link = document.createElement('a');
-    link.href = status.study_url;
-    link.target = '_blank';
-    link.rel = 'noopener';
-    link.textContent = status.study_url.replace('https://', '');
-    state.append(study, link, '. ');
-  }
-  let line;
-  if (!status.enabled) line = 'Off: new games are not sent to a study.';
-  else if (now.game_id && now.held) line = `Waiting: a game is in progress on Lichess. ${now.title} carries on when it ends.`;
-  else if (now.game_id) line = `Analysing ${now.title}: position ${Math.min(now.position + 1, now.positions)} of ${now.positions}${now.depth ? `, depth ${now.depth}` : ''}.`;
-  else if (now.held) line = 'Paused while a game is in progress on Lichess.';
-  else if (now.error) line = now.error;
-  else line = status.games.length ? 'Nothing to analyse right now.' : 'Your next finished game will appear here.';
-  state.append(line);
-  $('study-games').replaceChildren(...status.games.map(studyRow));
-  studyTimer = pollWhileVisible(loadStudy, now.game_id ? 2000 : IDLE_POLL_MS);
-}
-
-$('study-enabled').addEventListener('change', async event => {
-  try {
-    await api('PUT', '/study-analysis', { enabled: event.target.checked });
-    message('study-message', event.target.checked ? 'On: games you finish from now on go to the study.' : 'Off.');
-  } catch (error) { message('study-message', error.message, true); }
-  loadStudy();
-});
-document.addEventListener('visibilitychange', () => { if (!document.hidden) loadStudy(); });
-loadStudy();
-
-$('refresh').addEventListener('click', () => load(true));
-document.addEventListener('visibilitychange', () => { if (!document.hidden) load(true); });
+$('refresh').addEventListener('click', () => load());
+document.addEventListener('visibilitychange', () => { if (!document.hidden) load(); });
 $('add-account').addEventListener('submit', async event => {
   event.preventDefault();
   const username = $('username').value.trim();

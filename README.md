@@ -1,6 +1,6 @@
 # Openings for Lichess
 
-A Chrome extension that adds your repertoire, your combined Chess.com and Lichess games with the mistakes found in them, and your local Stockfish to Lichess. The local FastAPI service stores your data in SQLite and runs only as the extension’s data and engine provider. There is no standalone web app.
+A Chrome extension that adds your repertoire, your combined Chess.com and Lichess games, and your local Stockfish (one process) to Lichess. The local FastAPI service stores your data in SQLite and runs only as the extension’s data and engine provider. There is no standalone web app.
 
 ## Use
 

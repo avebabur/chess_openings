@@ -24,28 +24,10 @@
       </form>
       <p id="account-message" role="status"></p>
     </section>
-    <section aria-labelledby="check-heading">
-      <h2 id="check-heading">Mistakes in your games</h2>
-      <p>After each sync your Stockfish checks the newest games (up to 10) for mistakes. Older games can be checked here. It runs while this page or a Lichess tab is open, and can be stopped and continued later.</p>
-      <p id="check-state" role="status"></p>
-      <div class="actions">
-        <button id="check-all" type="button" hidden>Check all unchecked games</button>
-        <button id="check-stop" type="button" class="quiet" hidden>Stop checking</button>
-      </div>
-      <p id="check-message" role="status"></p>
-    </section>
-    <section aria-labelledby="study-heading">
-      <div class="section-head"><h2 id="study-heading">New games into a Lichess study</h2>
-        <label class="switch"><input id="study-enabled" type="checkbox"> On</label></div>
-      <p>Each game you finish (Lichess, or chess.com after the next sync) becomes a chapter of a private study of yours, then your Stockfish (the same one as Lichess's engine bar, whenever you aren't using it) analyses it at depth 32 or more and the analysis is published there. Opening those positions later, the engine bar starts from that depth, as if you had pressed “Analyse on your device”. Delete the chapters you don't want to keep. Nothing runs during a game, and a Lichess tab must be open for the analysis to be published.</p>
-      <p id="study-state" role="status"></p>
-      <ul id="study-games"></ul>
-      <p id="study-message" role="status"></p>
-    </section>
     <section aria-labelledby="engine-heading">
       <h2 id="engine-heading">Lichess engine token</h2>
       <p id="token-state"></p>
-      <p><a href="https://lichess.org/account/oauth/token/create?scopes[]=engine:read&amp;scopes[]=engine:write&amp;scopes[]=study:read&amp;scopes[]=study:write&amp;description=Openings+for+Lichess" target="_blank" rel="noopener">Create a token with engine and study access</a>, then paste it below. The token stays in your local database.</p>
+      <p><a href="https://lichess.org/account/oauth/token/create?scopes[]=engine:read&amp;scopes[]=engine:write&amp;description=Openings+for+Lichess" target="_blank" rel="noopener">Create a token with engine access</a>, then paste it below. The token stays in your local database.</p>
       <form id="token-form"><label>Token <input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="lip_…"></label><button type="submit">Save token</button></form>
       <button id="remove-token" type="button" class="danger" hidden>Remove saved token</button>
       <p id="token-message" role="status"></p>

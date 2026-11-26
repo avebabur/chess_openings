@@ -37,7 +37,6 @@ function setTabPlaying(tabId, playing) {
         // Resume the engine before tabs start asking it for new analysis.
         await tellEngine(false);
         await broadcastPaused(false);
-        gameEnded();
       }
     }
     await refreshBadge();
@@ -206,71 +205,6 @@ ext.tabs.onUpdated.addListener(async (tabId, change, tab) => {
   }
 });
 
-// --- your games into a Lichess study (backend/study_analysis.py) -------------
-// When the last game in progress ends, the app fetches your new games at once
-// (not at its next timed sync), so the game just played is in the study and
-// being analysed before you go looking for it. A few seconds' wait lets
-// Lichess finish the game on its side first.
-const GAME_END_SYNC_DELAY_MS = 5000;
-function gameEnded() {
-  setTimeout(() => { client.api('POST', '/study-analysis/game-ended').catch(() => {}); },
-    GAME_END_SYNC_DELAY_MS);
-}
-
-// An analysis the app has finished is published to its chapter from a Lichess
-// tab: the same request as Lichess's own Publish button after "Analyse on
-// your device", which needs your Lichess login (a token cannot make it).
-// Never while a game is in progress, one at a time, and only from a tab
-// signed in as the study's owner; otherwise it waits for the next try.
-let publishing = null;
-function publishReady() {
-  publishing = publishing || (async () => {
-    await seedLock();
-    if ((await playingTabs()).size > 0) return;
-    const answer = await client.api('GET', '/study-analysis/ready');
-    const items = answer?.ok && Array.isArray(answer.data) ? answer.data : [];
-    for (const item of items) {
-      if ((await playingTabs()).size > 0) return;
-      const tab = (await ext.tabs.query(LICHESS_TABS))
-        .find(candidate => !candidate.discarded && candidate.status === 'complete');
-      if (!tab) return;
-      let outcome;
-      try {
-        [{ result: outcome }] = await ext.scripting.executeScript({
-          target: { tabId: tab.id }, world: 'MAIN', func: publishInPage,
-          args: [item.document, item.user_id],
-        });
-      } catch { return; } // the tab went away or is not scriptable: next time
-      if (!outcome || outcome.wait) return;
-      if (outcome.status >= 200 && outcome.status < 300) {
-        await client.api('POST', `/study-analysis/${item.game_id}/published`);
-      } else {
-        await client.api('POST', `/study-analysis/${item.game_id}/publish-failed`,
-          { status: outcome.status, message: String(outcome.message || '').slice(0, 2000) });
-      }
-    }
-  })().catch(() => {}).finally(() => { publishing = null; });
-  return publishing;
-}
-
-// Runs inside the Lichess page (its address and its login), not in this
-// worker: Chrome copies the function there, so it uses nothing from here.
-async function publishInPage(analysis, owner) {
-  const me = document.body?.dataset?.user;
-  if (!me || me.toLowerCase() !== String(owner || '').toLowerCase()) return { wait: true };
-  try {
-    const response = await fetch('/analysis/publish', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(analysis),
-    });
-    return { status: response.status,
-      message: response.ok ? '' : `${response.status} ${(await response.text()).slice(0, 300)}` };
-  } catch (error) {
-    return { status: 0, message: String(error) };
-  }
-}
-
 // --- toolbar badge ---------------------------------------------------------
 async function refreshBadge() {
   const paused = (await playingTabs()).size > 0;
@@ -391,7 +325,6 @@ async function keepAlive() {
     .then(res => {
       if (!res.ok) return noteApp(false);
       appUp = true;
-      publishReady();
       return syncEngineLock();
     })
     .catch(() => { noteApp(false); startApp(); });

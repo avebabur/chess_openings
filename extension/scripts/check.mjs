@@ -134,7 +134,6 @@ const gamePage = (white, black, spectator) => finishedGame.replace('<div class="
 const explorerSettings = explorerPage.replace('explorer-box sub-box', 'explorer-box sub-box explorer__config')
   .replace('<div class="data">', '<div class="config">');
 const fixtures = {
-  '/ox-fixture/checking': finishedGame,
   '/ox-fixture/review': finishedGame,
   '/ox-fixture/explorer-settings': explorerSettings,
   '/ox-fixture/study-set-up': studySetUp,
@@ -183,7 +182,6 @@ let deleteAttempts = 0;
 let deleteSnapshot = null;
 let editPatch = null;
 let repertoireFetches = 0;
-let checkingFailed = false;
 await context.route('https://ox.invalid/**', async route => {
   const request = route.request();
   const cors = {
@@ -195,9 +193,7 @@ await context.route('https://ox.invalid/**', async route => {
   if (request.url() === 'https://ox.invalid/api/games/7' && new URL(request.frame().url()).pathname === '/ox-fixture/review') {
     return route.fulfill({ status: 200, headers: cors, json: {
       id: 7, source: 'chesscom', pgn: '1. e4 e5', user_color: 'white', white: 'You', black: 'Them',
-      result: '1-0', mistakes_analyzed_at: '2026-01-01', mistakes: [
-        { ply: 0, played_san: 'e4', best_san: 'd4', cp_before: 20, cp_after: -100 },
-      ],
+      result: '1-0',
     } });
   }
   if (new URL(request.frame().url()).pathname === '/ox-fixture/repertoire-delete') {
@@ -221,21 +217,6 @@ await context.route('https://ox.invalid/**', async route => {
     if (url.pathname === '/api/repertoire/tree/branches/2' && request.method() === 'PATCH') {
       editPatch = request.postDataJSON();
       return route.fulfill({ status: 200, headers, json: {} });
-    }
-  }
-  if (new URL(request.frame().url()).pathname === '/ox-fixture/checking') {
-    const url = new URL(request.url());
-    const headers = { ...cors, 'content-type': 'application/json' };
-    if (url.pathname === '/api/games/7') {
-      return route.fulfill({ status: 200, headers, json: {
-        id: 7, source: 'chesscom', pgn: '1. e4 e5', user_color: 'white', white: 'You', black: 'Them',
-        result: '1-0', mistakes: [], mistakes_analyzed_at: null,
-      } });
-    }
-    if (url.pathname === '/api/analysis') {
-      const json = checkingFailed ? { running: false, error: 'Fixture engine stopped' }
-        : { running: true, game_id: 7, moves_done: 3, moves_total: 10, title: 'You vs Them' };
-      return route.fulfill({ status: 200, headers, json });
     }
   }
   if (new URL(request.frame().url()).pathname === '/ox-fixture/pagination') {
@@ -472,7 +453,7 @@ if (someGame) {
   gameAddress.hash = '';
   await open('https://lichess.org/analysis');
   await open(gameAddress.href);
-  const gameCard = page.locator('[data-ox-host=game] .subhead').filter({ hasText: 'Your mistakes' });
+  const gameCard = page.locator('[data-ox-host=game]').getByRole('button', { name: 'Practice from here' });
   record('your game', !await gameCard.isVisible(), 'your game: plain analysis of the same PGN has no game card');
   await page.evaluate(id => { globalThis.OX.openMyGame(id, 6); }, someGame.id);
   await gameCard.waitFor({ timeout: 6000 }).catch(() => {});
@@ -699,42 +680,8 @@ record('explorer', await page.evaluate(() => document.querySelector('.explorer-b
 await page.click('.explorer-title .button-link:not(.ox-tab)');
 await page.waitForTimeout(400);
 
-// A check already running for the game on the board shows its own progress.
-await open('https://lichess.org/ox-fixture/checking');
-await page.evaluate(() => sessionStorage.setItem('ox.game:/ox-fixture/checking', '7'));
-await open('https://lichess.org/ox-fixture/checking');
-await page.waitForTimeout(1500);
-{
-  const text = await page.evaluate(() =>
-    [...(document.querySelector('[data-ox-host=game]')?.shadowRoot?.querySelectorAll('button') || [])].map(b => b.textContent).join(' | '));
-  record('your game', /Checking… move 4 of 10/.test(text), `your game: a running check of this game shows how far it is (“${text.slice(0, 60)}”)`);
-}
-checkingFailed = true;
-const checkFailure = page.getByText('Stockfish could not finish the check. You can try again.');
-await checkFailure.waitFor({ timeout: 5000 });
-record('your game', await checkFailure.isVisible() && await page.getByRole('button', { name: 'Check with your Stockfish' }).isEnabled(),
-  'your game: a failed background check explains what happened and can be retried');
 await page.evaluate(() => sessionStorage.setItem('ox.game:/ox-fixture/review', '7'));
 await open('https://lichess.org/ox-fixture/review');
-await page.evaluate(() => {
-  window.reviewKeys = { jumps: [], redraws: 0, pageSpaces: 0 };
-  window.site = { analysis: {
-    jumpToMain(ply) { window.reviewKeys.jumps.push(ply); },
-    redraw() { window.reviewKeys.redraws++; },
-  } };
-  document.addEventListener('keydown', event => {
-    if (event.key !== ' ') return;
-    window.reviewKeys.pageSpaces++;
-    event.preventDefault(); // as when the page handles Space as a board shortcut
-  });
-});
-const mistake = page.getByRole('button', { name: /e4.*best d4/ });
-await mistake.press('Enter');
-await mistake.press('Space');
-record('your game', await page.evaluate(() => {
-  const { jumps, redraws, pageSpaces } = window.reviewKeys;
-  return jumps.length === 2 && jumps.every(ply => ply === 0) && redraws === 2 && pageSpaces === 0;
-}), 'your game: Enter and Space jump once each and redraw the move list');
 const sideTabs = () => page.evaluate(() => {
   const root = document.querySelector('[data-ox-host=sidetabs]').shadowRoot;
   return [root.activeElement?.textContent, root.querySelector('[aria-selected=true]')?.textContent];
@@ -848,9 +795,7 @@ await settingsContext.addInitScript(() => {
         window.settingsWrites++;
         accounts = [];
       }
-      return { ok: true, data: path === '/analysis'
-        ? { running: false, unchecked: 8 }
-        : { accounts, has_lichess_token: true } };
+      return { ok: true, data: { accounts, has_lichess_token: true } };
     },
   };
 });
@@ -863,8 +808,8 @@ const settingsPage = await settingsContext.newPage();
 await settingsPage.goto('https://settings.invalid/settings.html');
 await settingsPage.getByText('Local service is starting. Try again shortly.').waitFor();
 await settingsPage.getByText('Connected to the local service').waitFor();
-record('settings', await settingsPage.getByText('2 of 10 games are checked.', { exact: false }).isVisible(),
-  'settings: recovers from an offline service and shows progress');
+record('settings', await settingsPage.getByText('Connected to the local service').isVisible(),
+  'settings: recovers from an offline service');
 await settingsPage.getByLabel('Username').fill('bad/name');
 await settingsPage.getByRole('button', { name: 'Add and import' }).click();
 record('settings', await settingsPage.getByText('usernames can\'t contain spaces', { exact: false }).isVisible(),

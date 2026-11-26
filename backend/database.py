@@ -58,35 +58,12 @@ SCHEMA = """
         end_time TEXT,
         eco TEXT,
         opening TEXT,
-        -- When game_analysis.py last searched this game for mistakes.
-        mistakes_analyzed_at TEXT,
         created_at TEXT DEFAULT (datetime('now')),
         UNIQUE(account_id, source, external_id)
     );
     CREATE INDEX IF NOT EXISTS idx_games_tree_filter
         ON games(account_id, user_color, time_class);
     CREATE INDEX IF NOT EXISTS idx_games_end_time ON games(end_time DESC, id DESC);
-
-    -- Moves of the user's that Stockfish (or the tablebase) rates as a
-    -- mistake, found by game_analysis.py.
-    CREATE TABLE IF NOT EXISTS game_mistakes (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        game_id INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
-        ply INTEGER NOT NULL,
-        fen TEXT NOT NULL,
-        user_color TEXT NOT NULL,
-        played_san TEXT NOT NULL,
-        played_uci TEXT NOT NULL,
-        best_san TEXT NOT NULL,
-        best_uci TEXT NOT NULL,
-        cp_before INTEGER NOT NULL,
-        cp_after INTEGER NOT NULL,
-        loss REAL NOT NULL,
-        kind TEXT NOT NULL,
-        source TEXT NOT NULL,
-        created_at TEXT DEFAULT (datetime('now')),
-        UNIQUE(game_id, ply)
-    );
 
     -- The repertoire. A branch is one saved line; nodes are its moves, shared
     -- between the lines that start the same way.
@@ -119,46 +96,6 @@ SCHEMA = """
     CREATE TABLE IF NOT EXISTS settings (
         key TEXT PRIMARY KEY,
         value TEXT
-    );
-
-    -- New games on their way to a Lichess study with a deep analysis
-    -- (study_analysis.py): queued -> imported (a chapter exists) -> ready
-    -- (analysed, waiting for the extension to publish) -> published; or
-    -- skipped / failed. `scores` keeps the positions already analysed, so a
-    -- restart picks up where it stopped.
-    CREATE TABLE IF NOT EXISTS study_games (
-        game_id INTEGER PRIMARY KEY REFERENCES games(id) ON DELETE CASCADE,
-        state TEXT NOT NULL DEFAULT 'queued',
-        study_id TEXT,
-        chapter_id TEXT,
-        scores JSON,
-        document JSON,
-        error TEXT DEFAULT '',
-        attempts INTEGER NOT NULL DEFAULT 0,
-        retry_at TEXT,
-        created_at TEXT DEFAULT (datetime('now')),
-        updated_at TEXT DEFAULT (datetime('now'))
-    );
-    -- The deepest result your Stockfish has reached for a position, from the
-    -- study analysis or from Lichess's engine bar (evaluation_repository.py).
-    -- `position` is the FEN's first four fields; scores are from White's side;
-    -- `pv` is the line in UCI, space-separated, castling as e1g1.
-    CREATE TABLE IF NOT EXISTS deep_evals (
-        position TEXT PRIMARY KEY,
-        depth INTEGER NOT NULL,
-        cp INTEGER,
-        mate INTEGER,
-        pv TEXT NOT NULL DEFAULT '',
-        nodes INTEGER NOT NULL DEFAULT 0,
-        updated_at TEXT DEFAULT (datetime('now'))
-    );
-    -- Exact endgame results from the Lichess tablebase. `position` is the
-    -- FEN without its fullmove number (the halfmove clock stays: the 50-move
-    -- rule can change the result). Rows never go stale.
-    CREATE TABLE IF NOT EXISTS tablebase_cache (
-        position TEXT PRIMARY KEY,
-        payload JSON NOT NULL,
-        fetched_at TEXT DEFAULT (datetime('now'))
     );
 """
 
@@ -240,10 +177,6 @@ from account_game_repository import (  # noqa: E402,F401
     update_sync_job,
 )
 
-from evaluation_repository import (  # noqa: E402,F401
-    get_tablebase_cached,
-    put_tablebase,
-)
 
 from repertoire_repository import (  # noqa: E402,F401
     delete_repertoire_branch,

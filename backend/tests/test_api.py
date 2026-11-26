@@ -291,53 +291,6 @@ class ApiContractTests(unittest.TestCase):
         self.assertIsNone(self.client.get("/api/opening-tree", params={
             "color": "white", "fen": start}).json()["opening_name"])
 
-    def test_checking_a_game_that_does_not_exist_is_refused(self):
-        self.assertEqual(self.client.post("/api/analysis", json={"game_id": 987654}).status_code, 404)
-        self.assertEqual(self.client.post("/api/analysis", json={"game_id": 2**63}).status_code, 422)
-        self.assertEqual(self.client.post("/api/analysis", json={}).status_code, 422)
-        self.assertEqual(self.client.post("/api/analysis", json={"game_id": 1, "all": True}).status_code, 422)
-        status = self.client.get("/api/analysis").json()
-        self.assertEqual((status["running"], status["unchecked"]), (False, 0))
-
-    def test_analysis_counts_include_only_games_that_can_be_checked(self):
-        db = self.main.db
-        account_id = db.create_account("lichess", "AnalysisFixture")["id"]
-        db.save_imported_games([
-            {"account_id": account_id, "source": "lichess", "external_id": f"game-{i}",
-             "user_color": color, "pgn": "1. e4 e5"}
-            for i, color in enumerate(("white", "black", None))
-        ])
-        first = self.client.get("/api/analysis").json()
-        self.assertEqual((first["total_games"], first["unchecked"]), (2, 2))
-        game = db.find_game_by_external_id("lichess", "game-0")
-        self.main.game_analysis.store_mistakes(game["id"], [])
-        checked = self.client.get("/api/analysis").json()
-        self.assertEqual((checked["total_games"], checked["unchecked"]), (2, 1))
-
-    def test_a_game_check_waits_for_the_first_unlocked_browser_report(self):
-        analyzer = self.main.app.state.game_analyzer
-        jobs = [{"id": 1, "white": "White", "black": "Black", "pgn": "1. e4 e5", "user_color": "white"}]
-
-        def check_moves(*args, should_stop, **kwargs):
-            return None if should_stop() else []
-
-        with patch.object(analyzer, "_engine_factory", return_value=None), \
-                patch.object(self.main.game_analysis, "pending_games", return_value=jobs), \
-                patch.object(self.main.game_analysis, "find_mistakes", side_effect=check_moves), \
-                patch.object(self.main.game_analysis, "store_mistakes") as store:
-            self.assertEqual(self.client.post("/api/analysis", json={"all": True}).status_code, 202)
-            deadline = time.monotonic() + 2
-            while not (status := self.client.get("/api/analysis").json())["held"] and status["running"]:
-                if time.monotonic() >= deadline:
-                    break
-                time.sleep(0.01)
-            self.assertTrue(status["held"])
-            store.assert_not_called()
-            self.assertEqual(self.client.put("/api/lichess-engine/paused", json={"paused": False}).status_code, 200)
-            analyzer.join(2)
-            store.assert_called_once_with(1, [])
-
-
     def test_lichess_analysis_for_this_computer_streams_what_the_broker_would(self):
         import json
         import stat

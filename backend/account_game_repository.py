@@ -277,7 +277,7 @@ def recover_sync_jobs():
 
 
 def delete_account(account_id):
-    """Remove an account; its imported games and their mistakes go with it."""
+    """Remove an account; its imported games go with it."""
     conn = get_db()
     try:
         conn.execute("BEGIN IMMEDIATE")
