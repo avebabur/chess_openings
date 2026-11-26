@@ -148,7 +148,10 @@ node extension/scripts/real-extension.mjs     # the real extension, headless, fr
 ```
 
 This checks the desktop layouts and the settings page (`chrome-extension://` pages
-can't be opened through Claude in Chrome). Both browser scripts run desktop checks
+can't be opened through Claude in Chrome). Since Nov 2026 Lichess shows headless
+Chrome a Cloudflare "verify you are human" page: both browser scripts then print
+`skip` for the real Lichess pages (never get round the check) and still run every
+check on local copies. The layouts are then only checked in pass 2. Both browser scripts run desktop checks
 by default. Set `OX_CHECK_NARROW=1` only when the user asks to test narrow layouts.
 Screenshots: `extension/check-output/real-*.png`; look at them. This copy of the extension
 uses its own temporary fixture server, so it never changes the user’s live-game lock or data.

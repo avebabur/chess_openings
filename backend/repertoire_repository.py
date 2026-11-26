@@ -141,9 +141,9 @@ def save_repertoire_branch(color, name, moves_san, label="main", expected=None):
 
 
 def _check_branch_snapshot(branch, expected):
-    if expected is not None and (
-        not branch or any(branch[key] != value for key, value in expected.items())
-    ):
+    # A line that is gone is not one that changed: the caller answers 404
+    # ("deleted in another tab"), not 409.
+    if expected is not None and branch and any(branch[key] != value for key, value in expected.items()):
         raise RepertoireConflict
 
 

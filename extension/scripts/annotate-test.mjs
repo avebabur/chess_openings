@@ -147,6 +147,25 @@ test('a move without your engine\'s result keeps what an earlier publish gave it
   assert.deepEqual(A.build(data).infos[1].eval, { cp: 30 });
 });
 
+test('a search cut off at once (depth 1, as Lichess keeps it from quick stepping) is not a result', () => {
+  // Lichess saves every engine result in the browser (IndexedDB analyse-ceval)
+  // and puts it back on the moves when the chapter is opened again, also the
+  // depth-1 line of a search cancelled after a millisecond. Counted, those
+  // made the chapter "ready" and published nonsense marks.
+  const evals = hangEvals();
+  evals[1] = { cp: 8, pv: ['e7e5'], depth: 1 };
+  evals[3] = { cp: 19, pv: ['b8c6'], depth: 11 };
+  const state = A.status(chapter(QUEEN_HANG, evals));
+  assert.equal(state.ready, false);
+  assert.deepEqual(state.missing, [{ ply: 1, label: '1. e4', depth: 1 }, { ply: 3, label: '2. Qh5', depth: 11 }]);
+  assert.throws(() => A.build(chapter(QUEEN_HANG, evals)), /No result for 1\. e4/);
+  // A mate the engine has found holds at any depth; an earlier publish still counts.
+  evals[1] = { mate: 5, pv: ['e7e5'], depth: 3 };
+  evals[3] = { cp: 19, pv: ['b8c6'], depth: 2, published: { cp: 15, mate: null, best: null } };
+  assert.equal(A.status(chapter(QUEEN_HANG, evals)).ready, true);
+  assert.deepEqual(A.build(chapter(QUEEN_HANG, evals)).infos[2].eval, { cp: 15 });
+});
+
 test('build refuses a chapter with a move still missing', () => {
   const evals = hangEvals();
   evals[4] = null;

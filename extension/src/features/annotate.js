@@ -74,12 +74,14 @@
         const button = OX.el('button', {
           class: 'btn primary', disabled: !state.ready || busy,
           title: state.ready ? 'Publish your analysis to this chapter; Lichess then marks the mistakes'
-            : 'Every move needs a result first: step through the moves with the engine on',
+            : `Every move needs a result of depth ${OX.annotate.MIN_DEPTH} or more first: step through the moves with the engine on`,
           onclick: () => annotate(OX.lichess.annotationData() || data),
           text: state.annotated ? 'Annotate again' : 'Annotate chapter',
         });
         const missing = state.missing.slice(0, SHOW_MISSING)
-          .map(m => chip(m.label, m.ply, 'Go to this move: the engine analyses it'));
+          .map(m => (m.depth == null ? chip(m.label, m.ply, 'Go to this move: the engine analyses it')
+            : chip(`${m.label} (depth ${m.depth})`, m.ply,
+              `Only depth ${m.depth} so far (a search stopped at once): go to this move and let the engine reach depth ${OX.annotate.MIN_DEPTH}`)));
         const more = state.missing.length - missing.length;
         root.replaceChildren(...[
           OX.el('div', { class: 'head' },

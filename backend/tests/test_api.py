@@ -225,7 +225,11 @@ class ApiContractTests(unittest.TestCase):
         self.assertEqual([(b["name"], b["moves_san"]) for b in tree["branches"]], [("Kept", "a3 h6 a4")])
         current = {key: changed.json()[key] for key in before}
         self.assertEqual(self.client.request("DELETE", edit, json=current).status_code, 200)
-        self.assertEqual(self.client.request("DELETE", edit, json=current).status_code, 409)
+        # Gone is not "changed": the extension says "deleted in another tab"
+        # only when it hears 404, and it always sends what it expects.
+        self.assertEqual(self.client.request("DELETE", edit, json=current).status_code, 404)
+        self.assertEqual(self.client.patch(edit, json={"name": "Late", "expected": current}).status_code, 404)
+        self.assertEqual(self.client.patch(edit, json={"label": "trap", "expected": current}).status_code, 404)
 
     def test_game_pagination_rejects_a_stale_offset_even_if_the_count_matches(self):
         import chess

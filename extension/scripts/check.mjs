@@ -200,6 +200,8 @@ await context.route('https://ox.invalid/**', async route => {
       return route.fulfill({ status: first ? 200 : 404, headers, json: {} });
     }
     if (url.pathname === '/api/repertoire/tree/branches/2' && request.method() === 'PATCH') {
+      // The line was deleted in another tab meanwhile.
+      if (request.postDataJSON()?.name === 'Deleted elsewhere') return route.fulfill({ status: 404, headers, json: {} });
       editPatch = request.postDataJSON();
       return route.fulfill({ status: 200, headers, json: {} });
     }
@@ -277,6 +279,17 @@ function expectStatuses(label, actual, expected) {
 
 const realReports = [];
 
+// Since Nov 2026 Lichess (Cloudflare) answers headless Chrome with a "verify
+// you are human" page. Never get round it: the checks on real Lichess pages
+// are then skipped (check those in the real Chrome, TESTING.md pass 2) and
+// the rest run on the local copies below.
+await page.goto('https://lichess.org/analysis', { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+await page.waitForTimeout(2500);
+const realLichess = await page.evaluate(() => !!document.querySelector('main.analyse')
+  || !/security verification|verify you are human/i.test(document.body?.innerText || '')).catch(() => false);
+if (!realLichess) console.log('\n  skip  real Lichess pages: Lichess shows its bot check to headless Chrome; check them in the real Chrome');
+
+if (realLichess) {
 // 1. The analysis board with a few moves: every feature should show.
 console.log('\nLichess analysis board');
 await open(`https://lichess.org/analysis/pgn/${process.env.OX_CHECK_MOVES || 'e4_e5_Nf3_Nc6_Bb5'}`);
@@ -420,6 +433,8 @@ if (someGame) {
   record('your game', (await page.evaluate(() => globalThis.OX.state.position?.fen?.split(' ')[5])) === '4',
     'your game: opened at the requested move');
   await page.screenshot({ path: join(outDir, 'your-game.png') });
+}
+
 }
 
 // 5. Safety self-tests on local copies of Lichess's game page.
@@ -601,6 +616,16 @@ record('repertoire edit', editPatch?.moves_san === 'e4 c5 Nf3' && editPatch.expe
 record('repertoire edit', await savedLines.count() === 1 && await moveOrder(savedLines.first()).textContent() === '1. e4 c5 2. Nf3',
   'repertoire: the current position shows the updated line immediately');
 
+// Saved while another tab had deleted the line: say so, not "it changed".
+await savedLines.first().getByRole('button', { name: 'Edit this line' }).click();
+await lineEditor.getByRole('heading', { name: 'Edit White line' }).waitFor();
+await editName.fill('Deleted elsewhere');
+await saveChanges.click();
+await lineEditor.getByText('was deleted', { exact: false }).waitFor({ timeout: 5000 }).catch(() => {});
+record('repertoire edit', /deleted in another tab/.test(await lineEditor.textContent()),
+  'repertoire: saving a line deleted in another tab says it was deleted');
+await lineEditor.getByRole('button', { name: 'Cancel' }).click();
+
 await open('https://lichess.org/ox-fixture/practice');
 record('practice', await page.evaluate(() => globalThis.OX.lichess.practice()
   && document.body.classList.contains('practice-visible')), 'practice: starting Practice redraws Lichess controls');
@@ -667,6 +692,12 @@ await open('https://lichess.org/ox-fixture/finished');
 record('finished game', (await page.evaluate(() => globalThis.__oxHarness.playing.at(-1))) === false,
   'finished game: the lock is released once the result shows');
 
+// Behind the bot check, a local copy at the same address (so the page counts
+// as an analysis board, where a missing feature is reported).
+if (!realLichess) {
+  await context.route('https://lichess.org/analysis/pgn/e4_e5', route =>
+    route.fulfill({ status: 200, contentType: 'text/html', body: explorerPage }));
+}
 await open('https://lichess.org/analysis/pgn/e4_e5');
 await page.evaluate(() => {
   const host = document.querySelector('[data-ox-host=repertoire]');

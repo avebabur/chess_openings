@@ -125,6 +125,7 @@
         } catch (error) {
           say(error.offline ? OX.offlineText() : error.status === 409
             ? 'This line changed in another tab. Review the current line and try again.'
+            : error.status === 404 ? 'This line was deleted in another tab.'
             : error.status === 400 && error.detail || "That didn't work.");
         }
         invalidate();
@@ -416,7 +417,8 @@
             pending = false;
             stale = error.status === 409 || error.status === 404;
             if (stale) invalidate();
-            status.textContent = stale ? 'This line changed while you were editing. Cancel and reopen it to see the latest version.'
+            status.textContent = error.status === 404 ? 'This line was deleted in another tab. Cancel to see your lines.'
+              : stale ? 'This line changed while you were editing. Cancel and reopen it to see the latest version.'
               : error.offline ? OX.offlineText() : error.detail || 'Could not save the changes.';
             update();
             return;

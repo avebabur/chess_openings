@@ -13,6 +13,11 @@
   const OX = (globalThis.OX = globalThis.OX || {});
   const LINE_PLIES = 12;       // Lichess's longest line (Info.LineMaxPlies)
   const INT32 = 2 ** 31 - 1;   // Lichess reads nodesPerMove as a 32-bit int
+  // Lichess keeps every engine result in the browser and puts it back on the
+  // moves when the chapter is opened again, also the depth-1 line of a search
+  // cancelled a millisecond after it started (stepping on quickly). A result
+  // this shallow says nothing about the move; a mate found holds at any depth.
+  const MIN_DEPTH = 12;
 
   // lila WinPercent.winningChances: centipawns -> -1..1.
   const winningChances = cp => Math.max(-1, Math.min(1, 2 / (1 + Math.exp(-0.00368208 * cp)) - 1));
@@ -77,9 +82,12 @@
 
   // One position's score: your engine's (or the cloud's) result, else the
   // finished position's, else what an earlier publish left on the chapter.
+  const usable = e => !!e && Array.isArray(e.pv) && e.pv.length > 0 && (isNum(e.cp) || isNum(e.mate));
+  const tooShallow = e => usable(e) && !isNum(e.mate) && (e.depth || 0) < MIN_DEPTH;
+
   function scoreOf(node) {
     const e = node.ceval;
-    if (e && Array.isArray(e.pv) && e.pv.length && (isNum(e.cp) || isNum(e.mate))) {
+    if (usable(e) && !tooShallow(e)) {
       return { ...(isNum(e.mate) ? { mate: e.mate } : { cp: e.cp }), pv: e.pv, depth: e.depth || 0,
         nodes: e.cloud ? 0 : e.nodes || 0, engineId: e.engineId || null };
     }
@@ -103,7 +111,11 @@
     let shallowest = null;
     for (const node of moves) {
       const score = scoreOf(node);
-      if (!score) { missing.push({ ply: node.ply, label: moveLabel(node.ply, node.san) }); continue; }
+      if (!score) {
+        const shallow = tooShallow(node.ceval) ? { depth: node.ceval.depth || 0 } : {};
+        missing.push({ ply: node.ply, label: moveLabel(node.ply, node.san), ...shallow });
+        continue;
+      }
       if (score.depth && (!shallowest || score.depth < shallowest.depth)) {
         shallowest = { ply: node.ply, label: moveLabel(node.ply, node.san), depth: score.depth };
       }
@@ -166,5 +178,5 @@
     return doc;
   }
 
-  OX.annotate = { judgment, status, build, moveLabel, playUci };
+  OX.annotate = { judgment, status, build, moveLabel, playUci, MIN_DEPTH };
 })();

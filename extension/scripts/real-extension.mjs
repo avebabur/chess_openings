@@ -126,6 +126,9 @@ try {
     };
   });
 
+  const skipped = [];
+  const botCheck = target => target.evaluate(() => !document.querySelector('main.analyse')
+    && /security verification|verify you are human/i.test(document.body?.innerText || '')).catch(() => false);
   console.log('\nThe analysis board');
   const widths = [[1440, 1000], [1100, 900]];
   if (checkNarrow) widths.push([900, 900], [700, 900], [390, 800]);
@@ -133,6 +136,15 @@ try {
     await page.setViewportSize({ width, height });
     await page.goto('https://lichess.org/analysis/pgn/e4_e5_Nf3_Nc6', { waitUntil: 'domcontentloaded' });
     await page.waitForTimeout(9500); // past the runner's 8 s grace: a missing feature would be reported by now
+    // Since Nov 2026 Lichess (Cloudflare) answers headless Chrome with a
+    // "verify you are human" page. Never get round it: say the board was not
+    // checked here, and check it in the real Chrome (TESTING.md pass 2).
+    if (await botCheck(page)) {
+      skipped.push(`${width}px`);
+      console.log(`  skip ${width}px: Lichess shows its bot check to headless Chrome; check the board in the real Chrome`);
+      await page.screenshot({ path: join(outDir, `real-analysis-${width}.png`) });
+      continue;
+    }
     const s = await state();
     const label = `${width}px (${s.columns} column${s.columns === '1' ? '' : 's'})`;
     record(s.repertoire > 0, `${label}: the repertoire is on the page (${s.repertoire}px high)`);
@@ -141,7 +153,7 @@ try {
     if (s.beside) record(s.sideBelowBoard <= 2, `${label}: the left column ends with the board (${s.sideBelowBoard}px below)`);
     await page.screenshot({ path: join(outDir, `real-analysis-${width}.png`), fullPage: s.columns === '1' });
   }
-  if (checkNarrow) {
+  if (checkNarrow && !skipped.length) {
     // The same page narrowed and widened without a reload.
     await page.setViewportSize({ width: 1440, height: 1000 });
     await page.waitForTimeout(1500);
@@ -152,7 +164,7 @@ try {
 
   const broken = new Set(healthReports.flatMap(report => Object.values(report.features)
     .filter(feature => ['missing', 'hidden', 'error'].includes(feature.status)).map(feature => feature.name)));
-  record(healthReports.some(report => report.page_kind === 'analyse') && broken.size === 0,
+  if (skipped.length < widths.length) record(healthReports.some(report => report.page_kind === 'analyse') && broken.size === 0,
     `analysis health reports reached the fixture without errors (${[...broken].join(', ') || 'none'})`);
 
   console.log('\nThe settings page');
