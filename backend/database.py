@@ -97,6 +97,23 @@ SCHEMA = """
         key TEXT PRIMARY KEY,
         value TEXT
     );
+
+    -- Deep analysis results (deep_analysis.py), one per position (EPD, see
+    -- position_key.py). Scores from White's side, as Lichess shows them; pv in
+    -- UCI from the position, castling as king-takes-rook. seconds: the most
+    -- time Stockfish has spent on the position, also when it found less than
+    -- the cloud had.
+    CREATE TABLE IF NOT EXISTS deep_evals (
+        position_key TEXT PRIMARY KEY,
+        depth INTEGER NOT NULL,
+        cp INTEGER,
+        mate INTEGER,
+        pv TEXT NOT NULL,
+        nodes INTEGER NOT NULL DEFAULT 0,
+        seconds REAL NOT NULL DEFAULT 0,
+        source TEXT NOT NULL,
+        updated_at TEXT DEFAULT (datetime('now'))
+    );
 """
 
 

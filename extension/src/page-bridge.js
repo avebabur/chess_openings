@@ -8,7 +8,7 @@
 // "ox-lichess-reply" event). Only these actions are allowed.
 (() => {
   const ALLOWED = new Set(['playUci', 'playUciList', 'jumpToMain', 'userJump', 'flip', 'restartCeval', 'position',
-    'annotationData', 'publishAnalysis']);
+    'annotationData', 'publishAnalysis', 'setEvals']);
   const isNum = value => typeof value === 'number' && Number.isFinite(value);
 
   // A study chapter's main line with the result Lichess holds for each
@@ -38,6 +38,52 @@
         };
       }),
     };
+  }
+
+  // Deep analysis results (backend/deep_analysis.py, via features/annotate.js)
+  // put on the chapter's moves as Lichess keeps its own engine results
+  // (node.ceval, lila analyse/src/ctrl.ts onNewCeval), so the engine bar and
+  // its arrows show them on that move. Lichess then does not search the move
+  // again: a result from the engine chosen, with its search time used up and
+  // as many lines as asked, counts as finished (lila ceval/ctrl.ts
+  // isFinished), and a later result replaces it only with more nodes
+  // (preferLatestEval). A move that already holds a result with more nodes
+  // keeps it.
+  function setEvals(ctrl, evals) {
+    if (!Array.isArray(evals) || !Array.isArray(ctrl.mainline)) return false;
+    const ceval = ctrl.ceval;
+    let engineId = null;
+    try { engineId = localStorage.getItem('ox.engineId'); } catch { /* storage blocked */ }
+    const by = ceval && ceval.search && ceval.search.by;
+    const movetime = by && isNum(by.movetime) ? by.movetime : 0;
+    // Pieces, side to move and castling (Lichess may write an en passant
+    // square the service leaves out); the ply is matched as well.
+    const epd = fen => String(fen).split(' ').slice(0, 3).join(' ');
+    let changed = false;
+    let here = false;
+    for (const e of evals) {
+      if (!e || !isNum(e.ply) || !isNum(e.depth) || !isNum(e.nodes) || !Array.isArray(e.pv) || !e.pv.length) continue;
+      if (!isNum(e.cp) && !isNum(e.mate)) continue;
+      const node = ctrl.mainline.find(n => n.ply === e.ply);
+      if (!node || epd(node.fen) !== epd(e.fen)) continue;
+      if (node.ceval && (node.ceval.nodes || 0) >= e.nodes) continue;
+      const score = isNum(e.mate) ? { mate: e.mate } : { cp: e.cp };
+      node.ceval = {
+        fen: node.fen, depth: e.depth, nodes: e.nodes, millis: Math.max(isNum(e.millis) ? e.millis : 0, movetime),
+        ...score, pvs: [{ moves: e.pv.slice(), depth: e.depth, ...score }], bestmove: e.pv[0],
+        ...(engineId ? { engineId } : {}),
+      };
+      changed = true;
+      if (node === ctrl.node) here = true;
+    }
+    // Lichess is searching the move that just got its deep result: stop it,
+    // so the bar shows the result now (Lichess's own stop, lila ceval/ctrl.ts).
+    if (here && ceval && ceval.isComputing && ceval.worker && typeof ceval.worker.stop === 'function') ceval.worker.stop();
+    if (changed) {
+      if (typeof ctrl.setAutoShapes === 'function') ctrl.setAutoShapes();
+      if (typeof ctrl.redraw === 'function') ctrl.redraw();
+    }
+    return true;
   }
 
   // Lichess's own Publish (lila: POST /analysis/publish, Study.postAnalysisXhr),
@@ -83,6 +129,8 @@
             publishAnalysis(analysis);
             ok = true;
           }
+        } else if (name === 'setEvals') {
+          ok = !!ctrl.study && setEvals(ctrl, args && args[0]);
         } else if (name === 'restartCeval') {
           ok = true;
           restartCeval(ctrl);

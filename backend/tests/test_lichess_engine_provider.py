@@ -120,7 +120,7 @@ class RegistrationTests(unittest.TestCase):
                 return httpx.Response(200, json=[{"id": "other", "name": "Something else"}])
             body = json.loads(request.content)
             self.assertEqual(body["name"], lep.ENGINE_NAME)
-            self.assertEqual(body["maxThreads"], 3)
+            self.assertEqual(body["maxThreads"], lep.ENGINE_THREADS)
             return httpx.Response(200, json={"id": "eei_new", **body})
 
         provider, stored = self._provider(handler)
@@ -287,7 +287,7 @@ class AnalyseTests(unittest.TestCase):
         self.assertTrue(lines[-2].startswith("info") and "nodes 600000" in lines[-2], lines[-2])
         self.assertEqual(lines[-1], "bestmove e2e4")
 
-    def test_analysis_and_practice_use_three_threads(self):
+    def test_analysis_and_practice_use_the_engine_threads(self):
         async def go():
             engine = await lep.UciProcess.create(str(self.engine_path))
             try:
@@ -295,8 +295,8 @@ class AnalyseTests(unittest.TestCase):
                     record = {}
                     lines = [line async for line in engine.analyse(job, asyncio.Event(), record=record)]
                     self.assertEqual(lines[-1], b"bestmove e2e4\n")
-                    self.assertEqual(engine.options["Threads"], 3)
-                    self.assertEqual(record["threads"], 3)
+                    self.assertEqual(engine.options["Threads"], lep.ENGINE_THREADS)
+                    self.assertEqual(record["threads"], lep.ENGINE_THREADS)
             finally:
                 await engine.terminate()
 
@@ -479,3 +479,47 @@ class LocalAnalysisTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EngineThreadsTests(unittest.TestCase):
+    """One thread per performance core: an Apple chip's efficiency cores are
+    several times slower, and a Stockfish thread there drags the search."""
+
+    def test_one_thread_per_performance_core(self):
+        self.assertEqual(lep.engine_threads(lambda name: {"hw.perflevel0.physicalcpu": "4"}[name]), 4)
+
+    def test_without_core_levels_all_physical_cores(self):
+        def sysctl(name):
+            if name == "hw.perflevel0.physicalcpu":
+                raise OSError("no such sysctl")
+            return {"hw.physicalcpu": "6"}[name]
+        self.assertEqual(lep.engine_threads(sysctl), 6)
+
+    def test_unknown_core_count_falls_back_to_three(self):
+        def sysctl(name):
+            raise OSError("no sysctl")
+        self.assertEqual(lep.engine_threads(sysctl, cpu_count=lambda: None), 3)
+
+
+class LaunchdJobTests(unittest.TestCase):
+    """The launchd job install.sh writes. Without a ProcessType, launchd puts
+    "light resource limits" on the job (man launchd.plist) and Stockfish, its
+    child, searched 35-45% slower and unevenly (0.62-0.78M nodes/s against
+    1.15-1.22M, measured 2026-11-26 on an M2)."""
+
+    def _job(self):
+        import plistlib
+        import re
+        script = (BACKEND_DIR.parent / "extension" / "native" / "install.sh").read_text()
+        body = re.search(r'cat > "\$AGENT" <<EOF\n(.*?)\nEOF\n', script, re.S).group(1)
+        for name, value in {"$LABEL": "com.openings.app", "$ROOT": "/app", "$HOME": "/home"}.items():
+            body = body.replace(name, value)
+        return plistlib.loads(body.encode())
+
+    def test_the_job_is_interactive_so_stockfish_is_not_throttled(self):
+        self.assertEqual(self._job().get("ProcessType"), "Interactive")
+
+    def test_the_job_still_starts_the_app_on_request_only(self):
+        job = self._job()
+        self.assertEqual(job["ProgramArguments"], ["/bin/sh", "/app/start.sh"])
+        self.assertFalse(job["RunAtLoad"])

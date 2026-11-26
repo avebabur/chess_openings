@@ -178,5 +178,53 @@
     return doc;
   }
 
-  OX.annotate = { judgment, status, build, moveLabel, playUci, MIN_DEPTH };
+  // --- Deep analysis (backend/deep_analysis.py) --------------------------------
+  // The chapter's main line as POST /api/deep-analysis takes it, or null when
+  // a move has no UCI (Lichess not ready yet).
+  function chapterRequest(data, paused = false) {
+    const nodes = data?.nodes || [];
+    if (!data?.chapterId || nodes.length < 2) return null;
+    const moves = nodes.slice(1).map(node => node.uci);
+    if (moves.some(uci => typeof uci !== 'string')) return null;
+    return { pageId: data.chapterId, initialFen: nodes[0].fen, moves, paused: !!paused };
+  }
+
+  // Pieces, side to move, castling: Lichess may write an en passant square
+  // the service leaves out. Results are matched by ply as well.
+  const epd = fen => String(fen || '').split(' ').slice(0, 3).join(' ');
+  const resultFor = (results, node) => (results || []).find(r => r.ply === node.ply && epd(r.fen) === epd(node.fen));
+
+  // The finished results Stockfish found, for page-bridge.js setEvals (the
+  // engine bar and arrows on each move). The cloud's are left out: Lichess
+  // puts its own cloud evaluation on the moves itself.
+  function engineEvals(results) {
+    return (results || []).filter(r => r.complete && r.source === 'engine' && Array.isArray(r.pv) && r.pv.length)
+      .map(r => ({ ply: r.ply, fen: r.fen, depth: r.depth, cp: r.cp, mate: r.mate, nodes: r.nodes,
+        millis: Math.round((r.seconds || 0) * 1000), pv: r.pv }));
+  }
+
+  // The chapter as read from the page, with each move's result replaced by
+  // the deep one where that is finished and deeper: what is published.
+  function withResults(data, results, engineId = null) {
+    if (!data) return data;
+    const nodes = data.nodes.map(node => {
+      const r = resultFor(results, node);
+      if (!r || !r.complete || !Array.isArray(r.pv) || !r.pv.length || (!isNum(r.cp) && !isNum(r.mate))) return node;
+      const old = node.ceval;
+      if (usable(old) && !tooShallow(old) && (old.depth || 0) > r.depth) return node;
+      const cloud = r.source === 'cloud';
+      return { ...node, ceval: { cp: isNum(r.cp) ? r.cp : null, mate: isNum(r.mate) ? r.mate : null, depth: r.depth,
+        nodes: r.nodes || 0, engineId: cloud ? null : engineId, cloud, pv: r.pv.slice(0, LINE_PLIES) } };
+    });
+    return { ...data, nodes };
+  }
+
+  // What a publish was made from: published again only when this changes
+  // (moves added to the chapter, a deeper result).
+  function signature(data) {
+    return JSON.stringify([data?.chapterId, (data?.nodes || []).map(n => [n.uci, n.ceval?.depth ?? null])]);
+  }
+
+  OX.annotate = { judgment, status, build, moveLabel, playUci, MIN_DEPTH,
+    chapterRequest, engineEvals, withResults, signature };
 })();

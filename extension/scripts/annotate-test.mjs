@@ -172,5 +172,58 @@ test('build refuses a chapter with a move still missing', () => {
   assert.throws(() => A.build(chapter(QUEEN_HANG, evals)), /No result for 2… Nc6/);
 });
 
+// --- Deep analysis (backend/deep_analysis.py answers) -------------------------
+const deepResult = (node, extra = {}) => ({ ply: node.ply, fen: node.fen, depth: 38, cp: 10, mate: null,
+  pv: ['g1f3', 'b8c6'], nodes: 5e7, seconds: 33.2, source: 'engine', complete: true, ...extra });
+
+test('the chapter is sent as its first position and UCI moves', () => {
+  const data = chapter(['e4', 'e5', 'Nf3'], [null, null, null, null]);
+  assert.deepEqual(A.chapterRequest(data, true), {
+    pageId: 'chap1234', initialFen: data.nodes[0].fen, moves: ['e2e4', 'e7e5', 'g1f3'], paused: true });
+  assert.equal(A.chapterRequest({ ...data, nodes: data.nodes.slice(0, 1) }), null);
+  assert.equal(A.chapterRequest({ ...data, nodes: [...data.nodes, { ply: 4, fen: 'x', uci: null }] }), null);
+});
+
+test('only finished Stockfish results go on the moves, with their time', () => {
+  const data = chapter(['e4', 'e5'], [null, null, null]);
+  const [n0, n1, n2] = data.nodes;
+  const evals = A.engineEvals([deepResult(n0, { source: 'cloud' }), deepResult(n1, { complete: false }), deepResult(n2)]);
+  assert.deepEqual(evals, [{ ply: 2, fen: n2.fen, depth: 38, cp: 10, mate: null, nodes: 5e7, millis: 33200,
+    pv: ['g1f3', 'b8c6'] }]);
+});
+
+test('published: the deep result where it is finished and deeper than the page has', () => {
+  const evals = hangEvals();
+  evals[1] = { cp: 30, pv: ['e7e5'], depth: 45 };  // a deeper one already on the page stays
+  evals[2] = { cp: 25, pv: ['d1h5'], depth: 20 };
+  evals[3] = null;
+  const data = chapter(QUEEN_HANG, evals);
+  const results = [
+    deepResult(data.nodes[1], { cp: 99 }),
+    deepResult(data.nodes[2], { cp: 31, source: 'cloud', depth: 52 }),
+    deepResult(data.nodes[3], { cp: -22 }),
+    deepResult(data.nodes[4], { cp: 7, complete: false }),
+    // The same ply in another chapter's line (fen differs): not this move's.
+    { ...deepResult(data.nodes[5]), fen: data.nodes[1].fen },
+  ];
+  const full = A.withResults(data, results, 'eei_mine');
+  assert.equal(full.nodes[1].ceval.cp, 30);
+  assert.deepEqual([full.nodes[2].ceval.cp, full.nodes[2].ceval.cloud, full.nodes[2].ceval.engineId], [31, true, null]);
+  assert.deepEqual([full.nodes[3].ceval.cp, full.nodes[3].ceval.depth, full.nodes[3].ceval.engineId], [-22, 38, 'eei_mine']);
+  assert.equal(full.nodes[4].ceval.cp, 0);        // unfinished: the page's stays
+  assert.equal(full.nodes[5], data.nodes[5]);
+  assert.notEqual(A.signature(full), A.signature(data));
+  assert.equal(A.signature(full), A.signature(A.withResults(data, results, 'eei_mine')));
+  assert.equal(A.status(full).ready, true);
+});
+
+test('a Lichess FEN with an unplayable en passant square still matches', () => {
+  const data = chapter(['e4'], [null, null]);
+  const lichessFen = data.nodes[1].fen.replace(/ - (\d+ \d+)$/, ' e3 $1');
+  const page = { ...data, nodes: [data.nodes[0], { ...data.nodes[1], fen: lichessFen }] };
+  const full = A.withResults(page, [deepResult(data.nodes[1])], 'eei_mine');
+  assert.equal(full.nodes[1].ceval.depth, 38);
+});
+
 if (failures) { console.log(`FAIL  ${failures} annotate test(s)`); process.exit(1); }
 console.log('All annotate tests passed');

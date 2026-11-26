@@ -1,6 +1,6 @@
 #!/bin/sh
 # Lets the Lichess extension (Chrome) start and stop the openings app. Run once
-# (again only if you move the app folder):   sh extension/native/install.sh
+# (again if you move the app folder or this file changes):   sh extension/native/install.sh
 #
 # Sets up two things:
 #  1. a launchd job, com.openings.app, that runs ./start.sh when asked
@@ -56,6 +56,9 @@ cat > "$AGENT" <<EOF
     <key>OPENINGS_MANAGED</key><string>1</string>
   </dict>
   <key>RunAtLoad</key><false/>
+  <!-- Without it launchd throttles the job (man launchd.plist), and Stockfish,
+       run by the app, searched 35-45% slower and unevenly. -->
+  <key>ProcessType</key><string>Interactive</string>
   <key>StandardOutPath</key><string>$HOME/Library/Logs/openings-app.log</string>
   <key>StandardErrorPath</key><string>$HOME/Library/Logs/openings-app.log</string>
 </dict>

@@ -39,6 +39,16 @@ class ApiContractTests(unittest.TestCase):
             os.environ["CHESS_DB_PATH"] = self.old_db_path
         self.temp_dir.cleanup()
 
+    def test_deep_analysis_takes_json_only_and_refuses_bad_chapters(self):
+        start = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+        res = self.client.post("/api/deep-analysis", content='{"pageId": "abc"}',
+                               headers={"Content-Type": "text/plain"})
+        self.assertEqual(res.status_code, 415)
+        for body in ({"pageId": "../x", "initialFen": start, "moves": []},
+                     {"pageId": "abc", "initialFen": start, "moves": ["e2e5"]},
+                     {"pageId": "abc", "initialFen": "no", "moves": []}, ["abc"]):
+            self.assertEqual(self.client.post("/api/deep-analysis", json=body).status_code, 400, body)
+
     def test_websites_cannot_read_or_change_anything(self):
         # No CORS headers at all: a browser refuses to hand the answer to a page,
         # and refuses to send anything that needs a preflight.
