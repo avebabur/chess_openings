@@ -1,0 +1,30 @@
+name: CI
+
+# The fast checks of ./check-all.sh (the same ones the pre-commit hook runs):
+# the service's tests and the extension's unit tests. They need no network,
+# no Stockfish and no running app. The full checks (real Chrome, Lichess)
+# only run on a Mac with the app: see extension/TESTING.md.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install the service's dependencies
+        # check-all.sh runs venv/bin/python, as on the Mac.
+        run: |
+          python -m venv venv
+          venv/bin/pip install -r requirements.txt pytest
+      - name: Fast checks
+        run: ./check-all.sh
