@@ -545,5 +545,168 @@ class LocalAnalysisTests(unittest.TestCase):
         self.assertEqual(status["jobs"], 2)
 
 
+class DictStore:
+    """DeepEvalStore in memory."""
+
+    def __init__(self, items=None):
+        self.items = dict(items or {})
+        self.puts = []
+
+    def get(self, key):
+        return self.items.get(key)
+
+    def put(self, key, result):
+        self.puts.append((key, result))
+        if result["depth"] > self.items.get(key, {}).get("depth", 0):
+            self.items[key] = result
+            return True
+        return False
+
+
+START_KEY = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -"
+
+
+class SharedEngineTests(unittest.TestCase):
+    """One Stockfish for Lichess's engine bar and the study analysis: saved
+    deep results are shown at once, and the background search always gives
+    way to Lichess."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        script = Path(self.tmp.name) / "fake.py"
+        script.write_text(FAKE_ENGINE)
+        self.engine_path = Path(self.tmp.name) / "fake-engine"
+        self.engine_path.write_text(f"#!/bin/sh\nexec {sys.executable} {script}\n")
+        self.engine_path.chmod(self.engine_path.stat().st_mode | stat.S_IEXEC)
+        self.old_grace, self.old_min = lep.LIVE_GRACE_SECONDS, lep.SAVE_MIN_DEPTH
+        lep.LIVE_GRACE_SECONDS = 0.2
+
+    def tearDown(self):
+        lep.LIVE_GRACE_SECONDS, lep.SAVE_MIN_DEPTH = self.old_grace, self.old_min
+        self.tmp.cleanup()
+
+    def _provider(self, store):
+        provider = lep.LichessEngineProvider(token_getter=lambda: None, stockfish_path=str(self.engine_path),
+                                             saved_evals=store)
+        provider.engine_id = "eei_mine"
+        return provider
+
+    def _run(self, store, body):
+        async def go():
+            provider = self._provider(store)
+            try:
+                return await body(provider)
+            finally:
+                await provider.stop()
+        return asyncio.run(go())
+
+    @staticmethod
+    async def _collect(stream):
+        return [json.loads(c) async for c in stream]
+
+    def test_a_saved_deeper_result_is_shown_at_once_and_stays_the_answer(self):
+        store = DictStore({START_KEY: {"cp": 35, "depth": 32, "pv": ["d2d4", "d7d5"], "nodes": 9000}})
+        out = self._run(store, lambda p: self._collect(
+            p.local_analysis(*lep.sanitize_work(_job(movetime=100)["work"]))))
+        # The engine reaches depth 3 only: nothing it said is shown.
+        self.assertTrue(all(o["depth"] == 32 for o in out), out)
+        self.assertEqual(out[0]["pvs"][0], {"moves": ["d2d4", "d7d5"], "cp": 35, "depth": 32})
+        self.assertEqual(out[-1]["bestmove"], "d2d4")
+        # The speed Lichess shows (nodes / time) stays believable: 9000 nodes in 9 ms.
+        self.assertEqual((out[0]["nodes"], out[0]["time"]), (9000, 9))
+
+    def test_black_to_move_scores_are_turned_to_the_engines_side(self):
+        work = _job(movetime=100)["work"]
+        work["moves"] = ["e2e4"]
+        key = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq -"
+        store = DictStore({key: {"cp": 40, "depth": 30, "pv": ["e7e5"], "nodes": 1}})
+        out = self._run(store, lambda p: self._collect(p.local_analysis(*lep.sanitize_work(work))))
+        # Saved from White's side (+0.40); the page shows it from White's side too.
+        self.assertEqual(out[0]["pvs"][0]["cp"], 40)
+
+    def test_the_search_continues_past_the_saved_depth_and_saves_deeper(self):
+        lep.SAVE_MIN_DEPTH = 0
+        store = DictStore({START_KEY: {"cp": 5, "depth": 2, "pv": ["d2d4"], "nodes": 1}})
+        out = self._run(store, lambda p: self._collect(
+            p.local_analysis(*lep.sanitize_work(_job(movetime=100)["work"]))))
+        self.assertEqual([o["depth"] for o in out[:-1]], [2, 3])  # saved 2, then only 3
+        self.assertEqual(out[-1]["bestmove"], "e2e4")  # the deeper search's own move
+        self.assertEqual(store.items[START_KEY]["depth"], 3)
+        self.assertEqual(store.items[START_KEY]["pv"], ["e2e4"])
+
+    def test_shallow_results_are_not_saved(self):
+        store = DictStore()
+        self._run(store, lambda p: self._collect(
+            p.local_analysis(*lep.sanitize_work(_job(movetime=100)["work"]))))
+        self.assertEqual(store.items, {})  # depth 3 < SAVE_MIN_DEPTH
+
+    def test_the_background_search_stops_at_its_depth_and_saves(self):
+        store = DictStore()
+        depths = []
+
+        async def body(provider):
+            return await provider.deep_search(lep.chess.STARTING_FEN, 5, 0, 86400, depths.append)
+        result = self._run(store, body)
+        self.assertEqual(result["depth"], 5)
+        self.assertEqual(result["pv"], ["e2e4"])
+        self.assertEqual(depths[:5], [1, 2, 3, 4, 5])
+        self.assertEqual(store.items[START_KEY]["depth"], 5)
+
+    def test_the_background_waits_while_lichess_is_asking(self):
+        async def body(provider):
+            await self._collect(provider.local_analysis(*lep.sanitize_work(_job(movetime=100)["work"])))
+            busy = await provider.deep_search(lep.chess.STARTING_FEN, 5, 0, 86400)
+            await asyncio.sleep(0.3)  # Lichess quiet for longer than the grace
+            free = await provider.deep_search(lep.chess.STARTING_FEN, 5, 0, 86400)
+            return busy, free
+        busy, free = self._run(DictStore(), body)
+        self.assertEqual(busy, {"status": "busy"})
+        self.assertEqual(free["depth"], 5)
+
+    def test_a_lichess_request_stops_the_background_search(self):
+        async def body(provider):
+            deep = asyncio.ensure_future(provider.deep_search(lep.chess.STARTING_FEN, 10_000, 0, 86400))
+            await asyncio.sleep(0.2)
+            out = await asyncio.wait_for(self._collect(
+                provider.local_analysis(*lep.sanitize_work(_job(movetime=100)["work"]))), 5)
+            return await asyncio.wait_for(deep, 5), out
+        deep, out = self._run(DictStore(), body)
+        self.assertEqual(deep, {"status": "stopped"})
+        self.assertEqual(out[-1]["bestmove"], "e2e4")
+
+    def test_during_a_game_there_is_no_background_search(self):
+        async def body(provider):
+            await provider.set_paused(True)
+            return await provider.deep_search(lep.chess.STARTING_FEN, 5, 0, 86400), provider._engine
+        result, engine = self._run(DictStore(), body)
+        self.assertEqual(result, {"status": "paused"})
+        self.assertIsNone(engine)
+
+    def test_stop_background_stops_it(self):
+        async def body(provider):
+            deep = asyncio.ensure_future(provider.deep_search(lep.chess.STARTING_FEN, 10_000, 0, 86400))
+            await asyncio.sleep(0.2)
+            await provider.stop_background()
+            return await asyncio.wait_for(deep, 5)
+        self.assertEqual(self._run(DictStore(), body), {"status": "stopped"})
+
+    def test_castling_is_saved_as_e1g1_and_shown_as_the_engine_writes_it(self):
+        board = lep.chess.Board("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1", chess960=True)
+        result = lep.report_result("depth 30 score cp 12 nodes 5 pv e1h1 e8a8", board)
+        self.assertEqual(result, {"cp": 12, "depth": 30, "pv": ["e1g1", "e8c8"], "nodes": 5})
+        report, best = lep.saved_report(result, board)
+        self.assertEqual(best, "e1h1")
+        self.assertTrue(report.endswith("pv e1h1 e8a8"), report)
+        # Bound reports and other lines than the first are not results.
+        self.assertIsNone(lep.report_result("depth 30 score cp 12 lowerbound pv e1h1", board))
+        self.assertIsNone(lep.report_result("depth 30 multipv 2 score cp 12 pv e1h1", board))
+
+    def test_the_engine_name_comes_from_stockfish(self):
+        async def body(provider):
+            await provider.deep_search(lep.chess.STARTING_FEN, 1, 0, 86400)
+            return provider.engine_name()
+        self.assertEqual(self._run(DictStore(), body), "Fake")
+
+
 if __name__ == "__main__":
     unittest.main()

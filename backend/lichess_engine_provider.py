@@ -41,6 +41,7 @@ import chess
 import httpx
 
 import stockfish
+from position_key import position_key as deep_eval_key
 
 log = logging.getLogger(__name__)
 
@@ -65,6 +66,14 @@ KEEP_ALIVE_SECONDS = 300  # an idle Stockfish is closed after this
 PRACTICE_SECONDS = float(os.environ.get("OPENINGS_PRACTICE_SECONDS", "0"))
 SECRET_SETTING = "lichess_engine_secret"
 EMPTY_SEARCH = b"bestmove (none)\n"
+# Lichess's own results at least this deep are kept for next time
+# (evaluation_repository.DeepEvalStore); shallower ones are not worth it.
+SAVE_MIN_DEPTH = 20
+# The study analysis (study_analysis.py) borrows this Stockfish only after
+# Lichess has asked nothing for this long, so stepping through moves never
+# waits for it.
+LIVE_GRACE_SECONDS = 3.0
+BACKGROUND_HASH_MB = 256
 
 
 def search_command(work, practice_seconds=PRACTICE_SECONDS):
@@ -310,6 +319,65 @@ class BrokerEmit:
         return []
 
 
+def _standard(board):
+    """The same position on a standard board (castling written e1g1)."""
+    return chess.Board(board.fen())
+
+
+def saved_report(saved, board):
+    """A saved result (White's side, castling e1g1) as the UCI report
+    Stockfish would print for `board`: (report, best move), castling as
+    king-takes-rook like the rest of this engine's output. None if its line
+    does not fit the position."""
+    position = _standard(board)
+    moves = []
+    for uci in (saved.get("pv") or [])[:PV_MOVES]:
+        try:
+            move = position.parse_uci(uci)
+        except ValueError:
+            break
+        moves.append(position.uci(move, chess960=True))
+        position.push(move)
+    if not moves or not saved.get("depth"):
+        return None
+    sign = 1 if board.turn == chess.WHITE else -1
+    score = (f"mate {saved['mate'] * sign}" if saved.get("mate") is not None
+             else f"cp {int(saved.get('cp') or 0) * sign}")
+    depth = int(saved["depth"])
+    nodes = max(1, int(saved.get("nodes") or 0))
+    # Lichess shows nodes / time as the speed: about this Mac's 1 Mn/s, not
+    # the absurd figure a made-up 1 ms gave ("68904 Mn/s").
+    elapsed = max(1, nodes // 1000)
+    report = (f"depth {depth} seldepth {depth} multipv 1 score {score} "
+              f"nodes {nodes} time {elapsed} pv {' '.join(moves)}")
+    return report, moves[0]
+
+
+def report_result(rest, board):
+    """One UCI report (the part after "info") as a result to save: White's
+    side, castling e1g1. None unless it is a whole line (no bound) of the
+    first line (multipv 1)."""
+    info = _parse_info(rest.split())
+    if not info or info.get("bound") or info.get("multipv", 1) != 1:
+        return None
+    if "depth" not in info or "score" not in info or not info.get("pv"):
+        return None
+    position = _standard(board)
+    pv = []
+    for uci in info["pv"]:
+        try:
+            move = position.parse_uci(uci)
+        except ValueError:
+            break
+        pv.append(move.uci())
+        position.push(move)
+    if not pv:
+        return None
+    kind, value = info["score"]
+    value = value if board.turn == chess.WHITE else -value
+    return {kind: value, "depth": info["depth"], "pv": pv, "nodes": info.get("nodes", 0)}
+
+
 class UciProcess:
     """One Stockfish process, driven over UCI (adapted from the example).
 
@@ -352,9 +420,11 @@ class UciProcess:
             path, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL)
         self = cls(process)
+        self.name = "Stockfish"
         await self.send("uci")
-        while (await self.recv())[0] != "uciok":
-            pass
+        while (line := await self.recv())[0] != "uciok":
+            if line[0] == "id" and line[1].startswith("name "):
+                self.name = line[1][5:].strip()
         await self.send("setoption name UCI_AnalyseMode value true")
         await self.send("setoption name UCI_Chess960 value true")
         return self
@@ -413,18 +483,27 @@ class UciProcess:
                 log.warning("Lichess engine: Stockfish did not stop in time")
         self.searching = False
 
-    async def analyse(self, job, started, practice_seconds=PRACTICE_SECONDS, record=None, interrupted=lambda: False):
+    async def analyse(self, job, started, practice_seconds=PRACTICE_SECONDS, record=None,
+                      interrupted=lambda: False, saved=None, board=None, on_deeper=None):
         """Run one job, yielding the lines Lichess expects. ``record`` (a dict)
-        is filled in as it runs, for GET /api/lichess-engine's "recent"."""
+        is filled in as it runs, for GET /api/lichess-engine's "recent".
+
+        ``saved`` is your Stockfish's deepest earlier result for the position
+        (``board``): it is sent first, the search then reports only what goes
+        deeper, and if it gets no deeper the saved result stays the answer.
+        ``on_deeper(result)`` is told of a result deeper than that."""
         work = job["work"]
         record = record if record is not None else {}
         began = time.monotonic()
+        deepest = None  # (depth, report) of the deepest whole first line
+        saved_depth = 0
         try:
             await self.settle()
-            if work["sessionId"] != self.session_id:
-                self.session_id = work["sessionId"]
-                await self.send("ucinewgame")
-                await self.isready()
+            # No "ucinewgame" when Lichess starts a new session (a new page):
+            # it would empty the hash, which holds what this Stockfish worked
+            # out for the same game a moment ago (the study analysis, or the
+            # previous page).
+            self.session_id = work["sessionId"]
             wanted = {
                 # Lichess may send an older saved thread preference.
                 "Threads": ENGINE_THREADS,
@@ -447,6 +526,8 @@ class UciProcess:
                 record["ended"] = "paused: answered with nothing"
                 yield EMPTY_SEARCH
                 return
+            restated = (saved_report(saved, board)
+                        if saved and board is not None and not quiet and work["multiPv"] == 1 else None)
             self.searching = True
             await self.send(command)
             started.set()
@@ -454,6 +535,12 @@ class UciProcess:
 
             last_info = None
             last_rest = None  # the newest report sent, to restate as complete
+            saved_best = None  # the saved result's move, while nothing deeper came
+            if restated:
+                last_rest, saved_best = restated
+                saved_depth = int(saved["depth"])
+                record.update(saved_depth=saved_depth, lines=1)
+                yield f"info {last_rest}\n".encode()
             last_ping = time.monotonic()
             while not interrupted():
                 try:
@@ -481,6 +568,8 @@ class UciProcess:
                             yield f"info {complete}\n".encode()
                     if interrupted():
                         break
+                    if saved_best:  # nothing deeper than the saved result
+                        rest = saved_best
                     record.update(ended=f"bestmove {rest.split()[0] if rest else ''}",
                                   seconds=round(time.monotonic() - began, 2))
                     yield f"bestmove {rest}\n".encode()
@@ -497,6 +586,13 @@ class UciProcess:
                 words = f" {rest} "
                 if (head == "info" and " score " in words and " pv " in words
                         and " lowerbound " not in words and " upperbound " not in words):
+                    depth = _parse_info(rest.split()) or {}
+                    if depth.get("multipv", 1) == 1 and depth.get("depth", 0) > (deepest or (0,))[0]:
+                        deepest = (depth["depth"], rest)
+                    if restated and depth.get("depth", 0) <= saved_depth:
+                        continue  # the saved result is deeper: keep showing it
+                    if restated and depth.get("multipv", 1) == 1:
+                        saved_best = None
                     if quiet:
                         last_info = f"info {complete_report(rest, work)}\n".encode()
                     else:
@@ -510,6 +606,14 @@ class UciProcess:
             if record.get("ended") == "running":
                 # Lichess moved on (a newer request) or closed the stream.
                 record.update(ended="stopped early", seconds=round(time.monotonic() - began, 2))
+            if (on_deeper and deepest and board is not None and not quiet
+                    and deepest[0] > saved_depth and deepest[0] >= SAVE_MIN_DEPTH):
+                result = report_result(deepest[1], board)
+                if result:
+                    try:
+                        on_deeper(result)
+                    except Exception:
+                        log.exception("Lichess engine: saving a result failed")
             try:
                 await self.settle()
             except EOFError:
@@ -536,7 +640,7 @@ class LichessEngineProvider:
     """Background task: keeps the engine registered and answers Lichess."""
 
     def __init__(self, token_getter=None, secret_store=None, stockfish_path=None,
-                 transport=None, poll_pause=5.0, on_activity=None, paused=False):
+                 transport=None, poll_pause=5.0, on_activity=None, paused=False, saved_evals=None):
         # Called for every job Lichess sends: the engine being used counts as
         # the service being used (idle_exit.py), whatever the extension says.
         self._on_activity = on_activity
@@ -565,6 +669,13 @@ class LichessEngineProvider:
         self.paused = bool(paused)
         self._pause_generation = 0
         self.recent = collections.deque(maxlen=40)  # what Lichess asked, newest last
+        # Your Stockfish's deepest results per position (DeepEvalStore), or
+        # None to keep nothing (tests).
+        self._saved_evals = saved_evals
+        self._last_live = 0.0  # when Lichess last asked or was last answered
+        self._background = None  # the study analysis's search, while it runs
+        # Set to stop it, even before it has started searching.
+        self._background_cancelled = False
 
     def status(self):
         return {
@@ -584,6 +695,8 @@ class LichessEngineProvider:
         if paused and not self.paused:
             self._pause_generation += 1
         self.paused = bool(paused)
+        if self.paused:
+            self._background_cancelled = True
         if self.paused and self._engine and self._engine.searching:
             try:
                 await self._engine.stop()
@@ -708,6 +821,7 @@ class LichessEngineProvider:
     async def _claim_engine(self, interrupted):
         """Stop the search in progress, wait for its job to end and make sure
         Stockfish runs. False if a game started meanwhile. Under _claim_lock."""
+        self._background_cancelled = True  # Lichess goes first
         if self._engine and self._engine.alive():
             try:
                 await self._engine.stop()
@@ -749,6 +863,7 @@ class LichessEngineProvider:
             return
         generation = self._pause_generation
         gone = []  # set once the page stopped listening
+        self._last_live = time.monotonic()
 
         def interrupted():
             return bool(gone) or self.paused or generation != self._pause_generation
@@ -756,11 +871,13 @@ class LichessEngineProvider:
         out = asyncio.Queue()
         task = None
         try:
+            saved = await self._saved_for(board)
             async with self._claim_lock:
                 if await self._claim_engine(interrupted):
                     started = asyncio.Event()
                     task = self._job_task = asyncio.create_task(
-                        self._handle_local(work, emit, out, started, interrupted, record, gone))
+                        self._handle_local(work, emit, out, started, interrupted, record, gone,
+                                           saved, board))
                     await started.wait()
             if task is None:
                 record["ended"] = "paused: answered with nothing"
@@ -784,12 +901,32 @@ class LichessEngineProvider:
             except EOFError:
                 pass
 
-    async def _handle_local(self, work, emit, out, started, interrupted, record, gone):
+    async def _saved_for(self, board):
+        """The saved deepest result for `board`, or None."""
+        if self._saved_evals is None or board is None:
+            return None
+        try:
+            return await asyncio.to_thread(self._saved_evals.get, deep_eval_key(board))
+        except Exception:
+            log.exception("Lichess engine: reading a saved result failed")
+            return None
+
+    def _saver(self, board):
+        """on_deeper for analyse(): keeps a deeper result, off the event loop."""
+        if self._saved_evals is None or board is None:
+            return None
+        key = deep_eval_key(board)
+        loop = asyncio.get_running_loop()
+        return lambda result: loop.run_in_executor(None, self._saved_evals.put, key, result)
+
+    async def _handle_local(self, work, emit, out, started, interrupted, record, gone,
+                            saved=None, board=None):
         self.jobs += 1
         self.local_jobs += 1
         if self._on_activity:
             self._on_activity()
-        lines = self._engine.analyse({"work": work}, started, record=record, interrupted=interrupted)
+        lines = self._engine.analyse({"work": work}, started, record=record, interrupted=interrupted,
+                                     saved=saved, board=board, on_deeper=self._saver(board))
         try:
             async for line in lines:
                 for chunk in emit.feed(line):
@@ -810,6 +947,7 @@ class LichessEngineProvider:
                 out.put_nowait(chunk)
             out.put_nowait(None)
             started.set()
+            self._last_live = time.monotonic()
 
     async def _answer_nothing(self, http, job):
         """During a game: answer Lichess with no analysis at all, just the
@@ -841,7 +979,14 @@ class LichessEngineProvider:
             "moves": len(work.get("moves") or []),
         }
         self.recent.append(record)
-        lines = self._engine.analyse(job, started, record=record, interrupted=interrupted)
+        self._last_live = time.monotonic()
+        try:
+            board = sanitize_work(work)[1]
+        except InvalidWork:
+            board = None
+        saved = await self._saved_for(board)
+        lines = self._engine.analyse(job, started, record=record, interrupted=interrupted,
+                                     saved=saved, board=board, on_deeper=self._saver(board))
         try:
             res = await http.post(f"{BROKER}/api/external-engine/work/{job['id']}",
                                   content=lines, timeout=httpx.Timeout(None))
@@ -860,3 +1005,117 @@ class LichessEngineProvider:
             except (EOFError, RuntimeError):
                 pass
             started.set()
+            self._last_live = time.monotonic()
+
+
+    # --- the study analysis's searches (study_analysis.SharedSearch) ----------
+
+    def engine_name(self):
+        return getattr(self._engine, "name", None) or "Stockfish"
+
+    async def deep_search(self, fen, min_depth, target_seconds, hard_seconds, on_depth=None):
+        """One background search on this same Stockfish, at the lowest
+        priority: it starts only when Lichess has asked nothing for
+        LIVE_GRACE_SECONDS, and any Lichess request stops it at once.
+
+        Searches at least `target_seconds` and to at least `min_depth`, at most
+        `hard_seconds`. Returns the result (White's side, castling e1g1:
+        "cp"/"mate", "depth", "pv", "nodes"), or {"status": "busy"} (Lichess
+        is using the engine: try again later), {"status": "paused"} (a game is
+        on) or {"status": "stopped"} (Lichess, a game or the app stopped it)."""
+        if self.paused:
+            return {"status": "paused"}
+        # Reset before anything is awaited: a stop that comes while Stockfish
+        # is starting must still count.
+        self._background_cancelled = False
+        async with self._claim_lock:
+            if self.paused:
+                return {"status": "paused"}
+            if ((self._job_task and not self._job_task.done())
+                    or time.monotonic() - self._last_live < LIVE_GRACE_SECONDS):
+                return {"status": "busy"}
+            if not (self._engine and self._engine.alive()):
+                self._engine = await UciProcess.create(self._stockfish_path)
+            task = self._job_task = self._background = asyncio.create_task(
+                self._deep(self._engine, fen, min_depth, target_seconds, hard_seconds, on_depth))
+        try:
+            return await asyncio.shield(task)
+        finally:
+            if self._background is task:
+                self._background = None
+
+    async def stop_background(self):
+        """Stop the study analysis's search (a game started, or it was told to)."""
+        self._background_cancelled = True
+        task = self._background
+        if task is not None and not task.done() and self._job_task is task and self._engine:
+            try:
+                await self._engine.stop()
+            except EOFError:
+                pass
+
+    async def _deep(self, engine, fen, min_depth, target_seconds, hard_seconds, on_depth):
+        board = chess.Board(fen)
+        record = {"at": time.strftime("%H:%M:%S"), "via": "study analysis", "moves": 0}
+        self.recent.append(record)
+        began = time.monotonic()
+        best = None
+        stopped_by_us = False
+        try:
+            await engine.settle()
+            wanted = {"Threads": ENGINE_THREADS,
+                      # Lichess's hash size if it set one: changing it empties the hash.
+                      "Hash": engine.options.get("Hash") or BACKGROUND_HASH_MB,
+                      "MultiPV": 1, "UCI_Variant": "chess"}
+            changed = False
+            for name, value in wanted.items():
+                if engine.options.get(name) != value:
+                    await engine.send(f"setoption name {name} value {value}")
+                    engine.options[name] = value
+                    changed = True
+            if changed:
+                await engine.isready()
+            if self._background_cancelled or self.paused:
+                record.update(ended="stopped")
+                return {"status": "stopped"}
+            await engine.send(f"position fen {fen}")
+            engine.searching = True
+            command = f"go movetime {int(hard_seconds * 1000)}"
+            await engine.send(command)
+            record.update(go=command, threads=engine.options["Threads"], ended="running")
+            while True:
+                head, rest = await engine.recv(timeout=hard_seconds + 30)
+                engine.last_used = time.monotonic()
+                if head == "bestmove":
+                    engine.searching = False
+                    break
+                if head != "info" or stopped_by_us:
+                    continue
+                if self._background_cancelled or self.paused:
+                    await engine.stop()  # its bestmove ends the loop
+                    continue
+                result = report_result(rest, board)
+                if result is None:
+                    continue
+                best = result
+                if on_depth:
+                    on_depth(result["depth"])
+                elapsed = time.monotonic() - began
+                if result["depth"] >= 245 or (result["depth"] >= min_depth and elapsed >= target_seconds):
+                    stopped_by_us = True
+                    await engine.stop()
+        except (asyncio.TimeoutError, EOFError) as exc:
+            record.update(ended=f"failed: {exc.__class__.__name__}")
+            try:
+                await engine.settle()
+            except EOFError:
+                pass
+            return {"status": "stopped"}
+        finished = stopped_by_us or time.monotonic() - began >= hard_seconds - 0.5
+        record.update(ended=f"depth {best['depth'] if best else 0}" if finished and best else "stopped",
+                      seconds=round(time.monotonic() - began, 2))
+        if not finished or best is None:
+            return {"status": "stopped"}
+        if self._saved_evals is not None:
+            await asyncio.to_thread(self._saved_evals.put, deep_eval_key(board), best)
+        return best

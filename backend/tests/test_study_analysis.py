@@ -708,3 +708,126 @@ class ApiTest(unittest.TestCase):
         listed = self.client.get("/api/study-analysis").json()
         self.assertEqual(listed["counts"], {"published": 1})
         self.assertEqual(listed["games"][0]["state"], "published")
+
+
+class SharedSearchTest(unittest.TestCase):
+    """SharedSearch borrows the engine bar's Stockfish (provider.deep_search)
+    from the analysis thread."""
+
+    class Provider:
+        def __init__(self, answers):
+            self.answers = list(answers)
+            self.asked = 0
+            self.stopped = 0
+
+        async def deep_search(self, fen, min_depth, target, hard, on_depth=None):
+            self.asked += 1
+            if on_depth:
+                on_depth(7)
+            return self.answers.pop(0) if self.answers else {"status": "busy"}
+
+        async def stop_background(self):
+            self.stopped += 1
+
+        def engine_name(self):
+            return "Stockfish 19"
+
+    def setUp(self):
+        import study_analysis
+        self.sa = importlib.reload(study_analysis)
+        self.loop = __import__("asyncio").new_event_loop()
+        self.thread = threading.Thread(target=self.loop.run_forever, daemon=True)
+        self.thread.start()
+
+    def tearDown(self):
+        self.loop.call_soon_threadsafe(self.loop.stop)
+        self.thread.join(2)
+        self.loop.close()
+
+    def test_waits_while_lichess_uses_the_engine_then_searches(self):
+        provider = self.Provider([{"status": "busy"}, {"status": "stopped"},
+                                  {"cp": 20, "depth": 33, "pv": ["e2e4"], "nodes": 5}])
+        search = self.sa.SharedSearch(provider, self.loop)
+        search.RETRY_SECONDS = 0.01
+        depths = []
+        got = search.search(chess.Board(), on_depth=depths.append)
+        self.assertEqual(got, {"cp": 20, "depth": 33, "pv": ["e2e4"], "nodes": 5, "source": "stockfish"})
+        self.assertEqual(provider.asked, 3)
+        self.assertEqual(depths, [7, 7, 7])
+        self.assertEqual(search.name, "Stockfish 19")
+
+    def test_an_interrupt_ends_the_wait_and_stops_the_search(self):
+        provider = self.Provider([])  # always busy
+        search = self.sa.SharedSearch(provider, self.loop)
+        threading.Timer(0.2, search.interrupt).start()
+        started = time.monotonic()
+        with self.assertRaises(self.sa.Interrupted):
+            search.search(chess.Board())
+        self.assertLess(time.monotonic() - started, 3)
+        time.sleep(0.1)
+        self.assertEqual(provider.stopped, 1)
+
+
+class SavedEvalTest(DatabaseCase):
+    def test_the_store_keeps_only_deeper_results(self):
+        import evaluation_repository
+        store = importlib.reload(evaluation_repository).DeepEvalStore()
+        key = "k"
+        self.assertTrue(store.put(key, {"cp": 10, "depth": 30, "pv": ["e2e4"], "nodes": 1}))
+        self.assertFalse(store.put(key, {"cp": 99, "depth": 25, "pv": ["d2d4"], "nodes": 1}))
+        self.assertTrue(store.put(key, {"mate": -3, "depth": 40, "pv": ["d2d4", "e7e5"], "nodes": 9}))
+        self.assertEqual(store.get(key), {"mate": -3, "depth": 40, "pv": ["d2d4", "e7e5"], "nodes": 9})
+        self.assertIsNone(store.get("other"))
+
+    def test_positions_already_searched_to_32_are_not_searched_again(self):
+        self.sa.MIN_DEPTH = 32
+        self.db.set_setting(self.sa.SINCE_KEY, "2026-11-25T09:00:00+00:00")
+        game = self.add_game()
+        boards, _ = self.sa.read_game(QUEEN_HANG)
+        from position_key import position_key
+        saved = {position_key(boards[3]): {"cp": 12, "depth": 40, "pv": ["d2d4"], "nodes": 7},
+                 position_key(boards[4]): {"cp": 12, "depth": 20, "pv": ["d2d4"], "nodes": 7}}
+
+        class Store:
+            def get(self, key):
+                return saved.get(key)
+
+            def put(self, key, result):
+                saved.setdefault(key, result)
+
+        engine = FakeEngine(depths=40)
+        a = self.sa.StudyAnalyzer(NoCloud(), engine_factory=lambda: engine, saved_evals=Store())
+        a._studies = FakeStudies()
+        a.start()
+        a.hold(False)
+        try:
+            end = time.monotonic() + 5
+            while time.monotonic() < end and (self.state(game) or {}).get("state") != "ready":
+                time.sleep(0.02)
+        finally:
+            a.shutdown()
+        self.assertEqual(self.state(game)["state"], "ready")
+        self.assertNotIn(boards[3].fen(), engine.searched)  # depth 40 saved
+        self.assertIn(boards[4].fen(), engine.searched)     # only depth 20 saved
+        self.assertEqual(json.loads(self.state(game)["scores"])[3]["depth"], 40)
+        self.assertIn(position_key(boards[5]), saved)      # new results are saved
+
+    def test_earlier_games_results_are_copied_to_the_store(self):
+        game = self.add_game()
+        boards, _ = self.sa.read_game(QUEEN_HANG)
+        scores = [{"cp": 1, "source": "cloud", "pv": ["e2e4"], "depth": 60}] + [
+            {"cp": i, "source": "stockfish", "pv": ["e2e4"], "depth": 32, "nodes": 1}
+            for i in range(1, len(boards))]
+        self.sa.queue_game(game)
+        self.sa._update(game, state="published", scores=scores)
+        from position_key import position_key
+        saved = {}
+
+        class Store:
+            def put(self, key, result):
+                saved[key] = result
+        a = self.sa.StudyAnalyzer(NoCloud(), saved_evals=Store())
+        a._backfill()
+        self.assertNotIn(position_key(boards[0]), saved)  # the cloud's: Lichess has it
+        self.assertEqual(saved[position_key(boards[2])]["cp"], 2)
+        self.assertEqual(len(saved), len(boards) - 1)

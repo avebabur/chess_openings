@@ -6,8 +6,9 @@ a sync has imported it) goes through three steps, one game at a time:
 1. **Imported** into a private study of yours on Lichess (the official study
    API, with the Lichess token saved in settings; it needs `study:write`).
    The study is created the first time, and a new one when it is full.
-2. **Analysed** by this Mac's Stockfish (3 threads, 256 MB of hash, normal
-   priority), position by position:
+2. **Analysed** by this Mac's Stockfish, the same one process that serves
+   Lichess's engine bar (3 threads, 256 MB of hash, normal priority), only
+   while Lichess is not using it, position by position:
    - a finished position (mate, stalemate) needs nothing;
    - with seven pieces or fewer the Lichess tablebase decides: draw 0.00,
      a win or loss a mate score (or +-10.00 when it gives no mate distance),
@@ -33,6 +34,8 @@ every move that has one, so the others are left without.
 Nothing runs while a game is being played: the extension's live-game lock
 holds this worker, and stops a search already under way.
 """
+import asyncio
+import concurrent.futures
 import io
 import json
 import logging
@@ -50,6 +53,7 @@ import httpx
 import lichess_tablebase
 import stockfish
 from database import get_db, get_setting, set_setting
+from position_key import position_key
 
 log = logging.getLogger("study_analysis")
 
@@ -232,13 +236,25 @@ def _clean(score):
 
 
 class DeepSearch:
-    """Stockfish searches that can be stopped from another thread."""
+    """Searches on a Stockfish of its own (python-chess), stoppable from
+    another thread. The app uses SharedSearch instead; this one is for tests
+    and for when the Lichess engine link is off."""
 
     def __init__(self, engine):
         self.engine = engine
         self._lock = threading.Lock()
         self._current = None
         self._interrupted = False
+
+    @property
+    def name(self):
+        return self.engine.id.get("name", "Stockfish")
+
+    def close(self):
+        try:
+            self.engine.quit()
+        except Exception:
+            pass
 
     def reset(self):
         """Forget an earlier interrupt. Called before checking whether a
@@ -287,6 +303,60 @@ class DeepSearch:
             raise StudyError("Stockfish gave no evaluation")
         return {**_white_score(best["score"]), "pv": [m.uci() for m in best["pv"]],
                 "depth": best["depth"], "nodes": int(best.get("nodes") or 0), "source": "stockfish"}
+
+
+class SharedSearch:
+    """Searches on the one Stockfish that also serves Lichess's engine bar
+    (lichess_engine_provider.deep_search): one process, one hash, so what it
+    works out here is still in its memory when you open the game. Lichess
+    always goes first: while it is using the engine this waits, and a search
+    Lichess interrupts is simply done again afterwards."""
+
+    RETRY_SECONDS = 2.0
+
+    def __init__(self, provider, loop):
+        self.provider = provider
+        self.loop = loop
+        self._interrupted = threading.Event()
+
+    @property
+    def name(self):
+        return self.provider.engine_name()
+
+    def close(self):
+        pass  # the Stockfish is the provider's
+
+    def reset(self):
+        self._interrupted.clear()
+
+    def interrupt(self):
+        self._interrupted.set()
+        try:
+            asyncio.run_coroutine_threadsafe(self.provider.stop_background(), self.loop)
+        except RuntimeError:
+            pass  # the app is closing
+
+    def search(self, board, on_depth=None):
+        while True:
+            if self._interrupted.is_set():
+                raise Interrupted()
+            try:
+                future = asyncio.run_coroutine_threadsafe(
+                    self.provider.deep_search(board.fen(), MIN_DEPTH, TARGET_SECONDS, HARD_SECONDS,
+                                              on_depth), self.loop)
+            except RuntimeError:
+                raise Interrupted()  # the app is closing
+            try:
+                result = future.result(timeout=HARD_SECONDS + 60)
+            except concurrent.futures.TimeoutError:
+                future.cancel()
+                raise StudyError("Stockfish did not answer")
+            except Exception as exc:
+                raise StudyError(f"Stockfish: {exc}")
+            if result.get("status") is None:
+                return {**result, "source": "stockfish"}
+            # busy (Lichess is using it), paused (a game) or stopped: try again.
+            self._interrupted.wait(self.RETRY_SECONDS)
 
 
 def read_game(pgn):
@@ -676,11 +746,18 @@ def new_engine():
 class StudyAnalyzer:
     """One thread: import, then analyse, one game at a time, newest first."""
 
-    def __init__(self, http, tablebase=None, engine_factory=new_engine, allow_network=True):
+    def __init__(self, http, tablebase=None, engine_factory=new_engine, allow_network=True,
+                 searcher_factory=None, saved_evals=None):
         self._studies = LichessStudies(http)
         self._http = http
         self._tablebase = tablebase
         self._engine_factory = engine_factory
+        # The app passes SharedSearch (the engine bar's Stockfish); without it
+        # a Stockfish of its own (tests, or the engine link switched off).
+        self._searcher_factory = searcher_factory
+        # evaluation_repository.DeepEvalStore: a position already searched to
+        # MIN_DEPTH (here or in Lichess's engine bar) is not searched again.
+        self._saved_evals = saved_evals
         self._allow_network = allow_network
         self._wake = threading.Event()
         self._stop = threading.Event()
@@ -732,6 +809,10 @@ class StudyAnalyzer:
             self._thread.join(5)
 
     def _run(self):
+        try:
+            self._backfill()
+        except Exception:
+            log.exception("copying earlier results to the saved store failed")
         while not self._stop.is_set():
             self._wake.wait(60)
             self._wake.clear()
@@ -741,7 +822,7 @@ class StudyAnalyzer:
         """Everything there is to do now. Stockfish (and its 256 MB) runs only
         for this round; an unexpected error counts against the game it was on
         and ends the round, never the thread."""
-        engine = None
+        searcher = None
         game = None
         try:
             while not self._stop.is_set():
@@ -757,13 +838,16 @@ class StudyAnalyzer:
                 if game["state"] == "queued":
                     self._import(game)
                     continue
-                if engine is None:
-                    if not stockfish.availability()["available"] and self._engine_factory is new_engine:
-                        self._set(error="Stockfish is not installed")
-                        return
-                    engine = self._engine_factory()
-                    self._search = DeepSearch(engine)
-                self._analyse(game, engine)
+                if searcher is None:
+                    if self._searcher_factory is not None:
+                        searcher = self._searcher_factory()
+                    else:
+                        if not stockfish.availability()["available"] and self._engine_factory is new_engine:
+                            self._set(error="Stockfish is not installed")
+                            return
+                        searcher = DeepSearch(self._engine_factory())
+                    self._search = searcher
+                self._analyse(game, searcher)
         except Exception as exc:
             log.exception("study analysis failed")
             self._set(error=f"Analysis failed: {exc}")
@@ -771,11 +855,30 @@ class StudyAnalyzer:
                 self._fail(game, exc)
         finally:
             self._search = None
-            if engine is not None:
-                try:
-                    engine.quit()
-                except Exception:
-                    pass
+            if searcher is not None:
+                searcher.close()
+
+    def _backfill(self):
+        """Games analysed before results were saved per position: their
+        Stockfish results go to the store, so Lichess's engine bar shows them
+        too. Harmless to repeat: the store keeps only deeper results."""
+        if not self._saved_evals:
+            return
+        conn = get_db()
+        try:
+            rows = conn.execute(
+                "SELECT s.scores, g.pgn FROM study_games s JOIN games g ON g.id = s.game_id "
+                "WHERE s.scores IS NOT NULL").fetchall()
+        finally:
+            conn.close()
+        for row in rows:
+            try:
+                boards, _ = read_game(row["pgn"])
+            except StudyError:
+                continue
+            for board, score in zip(boards, json.loads(row["scores"])):
+                if score.get("source") == "stockfish" and score.get("pv"):
+                    self._saved_evals.put(position_key(board), score)
 
     def _fail(self, game, exc):
         attempts = game["attempts"] + 1
@@ -804,7 +907,7 @@ class StudyAnalyzer:
         _update(game["game_id"], state="imported", study_id=study_id, chapter_id=chapter_id,
                 error="", attempts=0, retry_at=None)
 
-    def _analyse(self, game, engine):
+    def _analyse(self, game, searcher):
         try:
             boards, moves = read_game(game["pgn"])
         except StudyError as exc:
@@ -820,9 +923,16 @@ class StudyAnalyzer:
                 raise Interrupted()
 
         def search(board):
-            self._search.reset()
+            key = position_key(board)
+            saved = self._saved_evals.get(key) if self._saved_evals else None
+            if saved and saved.get("depth", 0) >= MIN_DEPTH:
+                return {**saved, "source": "stockfish"}  # searched deep enough already
+            searcher.reset()
             quiet_now()
-            return self._search.search(board, on_depth=lambda d: self._set(depth=d))
+            result = searcher.search(board, on_depth=lambda d: self._set(depth=d))
+            if self._saved_evals:
+                self._saved_evals.put(key, result)
+            return result
 
         def progress(index, total):
             quiet_now()
@@ -835,7 +945,7 @@ class StudyAnalyzer:
                 save=lambda s: _update(game["game_id"], scores=s))
             document = build_document(
                 boards, moves, scores, game["study_id"], game["chapter_id"],
-                get_setting(USER_KEY) or "", engine.id.get("name", "Stockfish"),
+                get_setting(USER_KEY) or "", searcher.name,
                 tablebase=self._tablebase)
         except Interrupted:
             return  # held or closing: the scores so far are kept

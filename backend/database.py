@@ -139,6 +139,19 @@ SCHEMA = """
         created_at TEXT DEFAULT (datetime('now')),
         updated_at TEXT DEFAULT (datetime('now'))
     );
+    -- The deepest result your Stockfish has reached for a position, from the
+    -- study analysis or from Lichess's engine bar (evaluation_repository.py).
+    -- `position` is the FEN's first four fields; scores are from White's side;
+    -- `pv` is the line in UCI, space-separated, castling as e1g1.
+    CREATE TABLE IF NOT EXISTS deep_evals (
+        position TEXT PRIMARY KEY,
+        depth INTEGER NOT NULL,
+        cp INTEGER,
+        mate INTEGER,
+        pv TEXT NOT NULL DEFAULT '',
+        nodes INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT DEFAULT (datetime('now'))
+    );
     -- Exact endgame results from the Lichess tablebase. `position` is the
     -- FEN without its fullmove number (the halfmove clock stays: the 50-move
     -- rule can change the result). Rows never go stale.

@@ -46,6 +46,7 @@ from sync_service import AccountSyncService  # noqa: E402
 from services import ExternalApiClients, SQLiteService  # noqa: E402
 from account_game_repository import ActiveAccountSync  # noqa: E402
 from repertoire_repository import RepertoireConflict  # noqa: E402
+from evaluation_repository import DeepEvalStore  # noqa: E402
 
 # Route handlers that touch SQLite are plain `def`, not `async def`: FastAPI runs
 # those in its threadpool. As coroutines they ran on the event loop itself, so a
@@ -155,17 +156,22 @@ async def lifespan(target_app):
     target_app.state.opening_tree_cache = ot.OpeningTreeCache()
     target_app.state.game_analyzer = game_analysis.GameAnalyzer()
     target_app.state.game_analyzer.hold(True)
-    clients = target_app.state.external_clients
-    target_app.state.study_analyzer = study_analysis.StudyAnalyzer(
-        clients.http,
-        tablebase=lambda fen: clients.tablebase(fen, _external_network_allowed()),
-        allow_network=_external_network_allowed())
     target_app.state.idle_exit = idle_exit.from_environment()
     # Starts paused (fail-closed): the extension says at once whether a game
     # is on in a Lichess tab (background.js tells it when it sees the app up).
     target_app.state.lichess_engine = lichess_engine_provider.LichessEngineProvider(
         on_activity=target_app.state.idle_exit.touch if target_app.state.idle_exit else None,
-        paused=True)
+        paused=True, saved_evals=DeepEvalStore())
+    # New games into a study: analysed on that same Stockfish (one process,
+    # one hash), only while Lichess is not using it.
+    clients = target_app.state.external_clients
+    provider, loop = target_app.state.lichess_engine, asyncio.get_running_loop()
+    target_app.state.study_analyzer = study_analysis.StudyAnalyzer(
+        clients.http,
+        tablebase=lambda fen: clients.tablebase(fen, _external_network_allowed()),
+        allow_network=_external_network_allowed(),
+        searcher_factory=lambda: study_analysis.SharedSearch(provider, loop),
+        saved_evals=DeepEvalStore())
 
     def analyse_new_games(account_id, imported):
         """Search the games a sync just brought in for mistakes. Capped, so a
@@ -207,9 +213,11 @@ async def lifespan(target_app):
             auto_sync.cancel()
         if idle_watch:
             idle_watch.cancel()
+        # The study analysis first, with the event loop still running: its
+        # search is stopped there (the engine is the provider's).
+        await asyncio.to_thread(target_app.state.study_analyzer.shutdown)
         await target_app.state.lichess_engine.stop()
         target_app.state.game_analyzer.shutdown()
-        target_app.state.study_analyzer.shutdown()
         target_app.state.sync_service.shutdown()
         target_app.state.external_clients.close()
         target_app.state.database.close()
